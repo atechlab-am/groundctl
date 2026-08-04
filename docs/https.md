@@ -4,11 +4,25 @@
 
 Both the FastAPI API (uvicorn, port 8000) and the published-repo nginx
 (port 8080 by default) terminate TLS. `install.sh`'s `ensure_tls_cert`
-(`scripts/lib/tls.sh`) generates a self-signed ed25519 cert at
+(`scripts/lib/tls.sh`) generates a self-signed **ECDSA P-256** cert at
 `/etc/groundctl/tls/{cert.pem,key.pem}` on first install if none exists —
 idempotent, never regenerated on re-run (matches `ensure_ansible_keypair`'s
 precedent). `install-relay.sh` does the same on relay hosts, using the
 relay's own hostname as the cert's CN.
+
+**Not ED25519**, despite being otherwise the stronger choice at a given
+key size — an earlier version of this script generated ED25519 certs, and
+a real browser test (Chrome) failed to negotiate the connection at all
+(`ERR_SSL_VERSION_OR_CIPHER_MISMATCH`, not even the normal "connection
+isn't private" warning a browser shows for an *untrusted-but-negotiable*
+cert). `curl`/OpenSSL on the host itself handled the ED25519 cert fine,
+which is what made this easy to miss without an actual browser hitting
+the URL. ED25519 TLS certificate support is inconsistent across browsers
+and OS TLS stacks in a way P-256 is not — P-256 is supported everywhere
+current browsers run. If you already installed with an older version and
+hit this, delete `/etc/groundctl/tls/{cert.pem,key.pem}` and re-run
+`install.sh` to regenerate with P-256 (`ensure_tls_cert` never overwrites
+an existing cert/key pair on its own — this is a manual, one-time step).
 
 Plain HTTP on port 80 now only exists as a 301 redirect to HTTPS
 (`nginx-groundctl.conf.template`) — there is no unencrypted serving path

@@ -27,6 +27,26 @@ history, even though the phases were built sequentially.
 
 ## [0.10.2] - 2026-08-04
 
+### Fixed: self-signed TLS cert unusable in Chrome (ERR_SSL_VERSION_OR_CIPHER_MISMATCH)
+
+- `ensure_tls_cert` (`scripts/lib/tls.sh`, shared by `install.sh` and
+  `install-relay.sh`) generated a self-signed **ED25519** certificate.
+  Found live: Chrome failed to negotiate the connection to the web UI at
+  all (`ERR_SSL_VERSION_OR_CIPHER_MISMATCH`) — not the normal "connection
+  isn't private" warning a browser shows for an untrusted-but-negotiable
+  cert, a hard negotiation failure. `curl`/OpenSSL on the host itself
+  handled the same cert fine, which is what let this ship unnoticed —
+  ED25519 TLS certificate support is genuinely inconsistent across
+  browsers/OS TLS stacks, unlike ECDSA P-256. Fixed by switching to
+  `-newkey ec -pkeyopt ec_paramgen_curve:P-256`, still meaningfully
+  stronger than RSA at a comparable key size and supported by every
+  current browser. Verified the generated cert is valid (`id-ecPublicKey`,
+  256-bit) and that the cert/key pair genuinely correspond. Existing
+  installs keep their ED25519 cert until manually regenerated (delete
+  `/etc/groundctl/tls/{cert.pem,key.pem}` and re-run `install.sh` —
+  `ensure_tls_cert` never overwrites an existing cert/key pair on its
+  own, matching every other idempotent step's don't-clobber posture).
+
 ### Fixed: main silently stopped tracking dev once a version was already tagged
 
 - `.github/workflows/release.yml`'s "Fast-forward main to dev" step was

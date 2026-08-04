@@ -20,7 +20,16 @@ ensure_tls_cert() {
 
     log_info "generating self-signed TLS cert for ${fleet_hostname}"
     mkdir -p "${cert_dir}"
-    openssl req -x509 -newkey ed25519 -days 825 -nodes \
+    # ECDSA P-256, not ed25519: found live that Chrome fails ED25519 cert
+    # negotiation outright (ERR_SSL_VERSION_OR_CIPHER_MISMATCH, not even
+    # the normal "not private" warning a browser shows for an untrusted
+    # cert it can otherwise negotiate) — ED25519 TLS certificate support
+    # is inconsistent across browsers/OS TLS stacks in a way P-256 is not;
+    # curl/OpenSSL on the host itself negotiated the ED25519 cert fine,
+    # which is what made this easy to miss without an actual browser test.
+    # P-256 is supported everywhere and still meaningfully stronger than
+    # RSA for a self-signed cert at this key size.
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -days 825 -nodes \
         -keyout "${TLS_KEY_PATH}" -out "${TLS_CERT_PATH}" \
         -subj "/CN=${fleet_hostname}" \
         -addext "subjectAltName=DNS:${fleet_hostname}" \
