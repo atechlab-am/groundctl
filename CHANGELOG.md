@@ -27,6 +27,24 @@ history, even though the phases were built sequentially.
 
 ## [0.10.1] - 2026-08-04
 
+### Fixed: fresh install failing at SSH keypair generation with "Permission denied"
+
+- `ensure_ansible_keypair` (`scripts/lib/app.sh`) ran `chown
+  groundctl:groundctl` on `/etc/groundctl/ansible-keys` *after* calling
+  `sudo -u groundctl ssh-keygen -f ${key_dir}/id_ed25519` — but `mkdir -p`
+  just above it creates that directory as root (the whole script runs as
+  root), so on a genuinely fresh install `ssh-keygen` tried to write into
+  a directory the `groundctl` user didn't yet own and failed with
+  "Permission denied," aborting `install.sh` mid-`main()` before TLS,
+  `groundctl.env`, the Postgres role/db, migrations, or any systemd
+  service ever got set up. Only worked by accident on a re-run, once the
+  directory already existed with the right owner from a prior successful
+  pass. Found via a real first-time install on Ubuntu. Fixed by moving
+  the `chown`/`chmod` of the directory to before `ssh-keygen` runs, with
+  a final `chown`/`chmod` on the two key files themselves afterward as a
+  defensive follow-up (in case `ssh-keygen`'s own umask left them looser
+  than intended).
+
 ### Fixed: release.yml's own release step failing because CHANGELOG content was being executed as a shell script
 
 - `.github/workflows/release.yml`'s "Tag and create GitHub Release" step

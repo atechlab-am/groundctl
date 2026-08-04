@@ -103,14 +103,23 @@ _read_or_generate() {
 ensure_ansible_keypair() {
     local key_dir="/etc/groundctl/ansible-keys"
     mkdir -p "${key_dir}"
+    # Ownership must be fixed BEFORE ssh-keygen runs as the groundctl user
+    # below — mkdir -p above creates the directory as root (this whole
+    # script runs as root), and `sudo -u groundctl ssh-keygen -f
+    # ${key_dir}/id_ed25519` fails with "Permission denied" writing into a
+    # directory groundctl doesn't yet own. A real bug found on a fresh
+    # install: the chown used to run after ssh-keygen, which only worked
+    # by accident on a re-run once the directory already existed with the
+    # right owner from wherever it first got created correctly.
+    chown -R groundctl:groundctl "${key_dir}"
+    chmod 700 "${key_dir}"
     if [[ ! -f "${key_dir}/id_ed25519" ]]; then
         log_info "generating ansible SSH keypair"
         sudo -u groundctl ssh-keygen -t ed25519 -f "${key_dir}/id_ed25519" -N "" -q
     else
         log_info "ansible SSH keypair already exists — leaving as-is"
     fi
-    chown -R groundctl:groundctl "${key_dir}"
-    chmod 700 "${key_dir}"
+    chown groundctl:groundctl "${key_dir}/id_ed25519" "${key_dir}/id_ed25519.pub"
     chmod 600 "${key_dir}/id_ed25519"
     chmod 644 "${key_dir}/id_ed25519.pub"
 }
