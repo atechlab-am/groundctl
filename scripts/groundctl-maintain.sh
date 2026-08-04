@@ -67,11 +67,6 @@ cmd_upgrade() {
     git reset --hard origin/main --quiet
 
     after_version="$(cat VERSION 2>/dev/null || echo unknown)"
-    if [[ "${before_version}" == "${after_version}" ]]; then
-        log_info "already up to date (v${after_version})."
-        return
-    fi
-    log_info "upgrading v${before_version} -> v${after_version}"
 
     # Source the SAME shared library functions install.sh uses — direct
     # reuse of already-idempotent provisioning logic, not a shell-out to
@@ -81,6 +76,22 @@ cmd_upgrade() {
     . "${REPO_ROOT}/scripts/lib/os.sh"
     # shellcheck source=scripts/lib/app.sh
     . "${REPO_ROOT}/scripts/lib/app.sh"
+
+    # Always reinstall groundctl-maintain itself, even when VERSION is
+    # unchanged — a real bug found live: this used to run only inside the
+    # "something changed" branch below, gated on the VERSION diff. But a
+    # checkout can already be sitting on the latest VERSION (e.g. from an
+    # earlier partial/interrupted pull) while /usr/local/bin/
+    # groundctl-maintain still has older *content* — VERSION doesn't bump
+    # on every commit, so "no version change" does not mean "no script
+    # change." Cheap (a single `install`) and idempotent either way.
+    install_maintain_script
+
+    if [[ "${before_version}" == "${after_version}" ]]; then
+        log_info "already up to date (v${after_version})."
+        return
+    fi
+    log_info "upgrading v${before_version} -> v${after_version}"
 
     detect_os
     log_info "updating apt package index..."
@@ -95,7 +106,6 @@ cmd_upgrade() {
     install_groundctl_service
     install_groundctl_worker_service
     install_groundctl_beat_service
-    install_maintain_script  # keep /usr/local/bin/groundctl-maintain itself current
 
     log_info "upgrade complete — now on v${after_version}."
 }

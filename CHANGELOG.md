@@ -25,6 +25,35 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-08-04
+
+### Fixed: `groundctl-maintain upgrade` skipped reinstalling itself when VERSION hadn't changed, even if the script's content had
+
+- `install_maintain_script` (re-copying `scripts/groundctl-maintain.sh`
+  to `/usr/local/bin/groundctl-maintain`) only ran inside the "something
+  changed" branch of `cmd_upgrade`, gated on comparing `VERSION` before
+  and after the `git reset --hard origin/main`. Found live, immediately
+  after `0.10.3` shipped `regen-cert`: a real host's checkout had already
+  landed on `v0.10.3` from an earlier pull (before `regen-cert` itself
+  was pushed in a later, non-version-bumping commit within the same
+  `0.10.3` cycle), so a subsequent `groundctl-maintain upgrade` correctly
+  saw no `VERSION` diff and reported "already up to date" — but silently
+  skipped reinstalling `/usr/local/bin/groundctl-maintain`, leaving the
+  *installed* binary without the `regen-cert` subcommand the checkout's
+  own `scripts/groundctl-maintain.sh` already had. `sudo groundctl-maintain
+  regen-cert` failed with "unknown command" until a full `install.sh`
+  re-run (which unconditionally reinstalls it) was run instead. `VERSION`
+  not changing does not mean the script's content didn't change — this
+  project doesn't bump `VERSION` on every single commit. Fixed by moving
+  `install_maintain_script` outside the version-diff gate so it always
+  runs (cheap — a single `install`), before the "already up to date"
+  early return. Verified against two real disposable git remotes: a
+  checkout already sitting on the latest `VERSION` still gets
+  `groundctl-maintain` reinstalled and correctly reports "already up to
+  date" with every other provisioning step skipped; a checkout genuinely
+  behind still performs the full upgrade with `install_maintain_script`
+  called exactly once, not duplicated.
+
 ## [0.10.3] - 2026-08-04
 
 ### Added: `groundctl-maintain regen-cert` — regenerate the self-signed TLS cert without a full reinstall
@@ -586,7 +615,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.10.3...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.10.4...HEAD
+[0.10.4]: https://github.com/OWNER/groundctl/releases/tag/v0.10.4
 [0.10.3]: https://github.com/OWNER/groundctl/releases/tag/v0.10.3
 [0.10.2]: https://github.com/OWNER/groundctl/releases/tag/v0.10.2
 [0.10.1]: https://github.com/OWNER/groundctl/releases/tag/v0.10.1
