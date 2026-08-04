@@ -25,6 +25,28 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-08-04
+
+### Fixed: release.yml's own release step failing because CHANGELOG content was being executed as a shell script
+
+- `.github/workflows/release.yml`'s "Tag and create GitHub Release" step
+  interpolated `${{ steps.changelog.outputs.notes }}` directly into a
+  `run:` block's `--notes "..."` argument. GitHub Actions substitutes
+  `${{ }}` expressions into the script's source text *before* the shell
+  ever runs it — so the multi-line CHANGELOG excerpt (containing its own
+  quotes, backticks, and text that happens to look like shell tokens —
+  `install.sh`, `--fleet-hostname`, `/etc/groundctl/maintain.conf`, etc.)
+  broke out of the intended string argument and got executed as a
+  sequence of separate shell commands, each failing with "command not
+  found." Same latent issue existed one step earlier for `VERSION`
+  (interpolated the same way, just with lower-risk single-line content).
+  Fixed by passing both through `env:` instead — an environment variable
+  is data the shell only ever reads via `"${VAR}"`, never re-parsed as
+  code, regardless of its content. Verified by reproducing the argument
+  count locally (multi-line notes containing quotes/backticks/flags stay
+  exactly one shell argument via the `env:` + `"${RELEASE_NOTES}"`
+  pattern, versus fragmenting into many when interpolated directly).
+
 ## [0.10.0] - 2026-08-04
 
 ### Added: interactive install.sh prompts and a standalone `groundctl-maintain upgrade` command
@@ -412,7 +434,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/OWNER/groundctl/releases/tag/v0.10.1
 [0.10.0]: https://github.com/OWNER/groundctl/releases/tag/v0.10.0
 [0.9.2]: https://github.com/OWNER/groundctl/releases/tag/v0.9.2
 [0.9.1]: https://github.com/OWNER/groundctl/releases/tag/v0.9.1

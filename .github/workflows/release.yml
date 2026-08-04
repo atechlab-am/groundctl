@@ -45,8 +45,11 @@ jobs:
       - name: Extract this version's CHANGELOG section
         if: steps.version_check.outputs.should_release == 'true'
         id: changelog
+        env:
+          # Via env, not interpolated with ${{ }} into the script body —
+          # see the "Tag and create GitHub Release" step below for why.
+          VERSION: ${{ steps.version_check.outputs.current_version }}
         run: |
-          VERSION="${{ steps.version_check.outputs.current_version }}"
           # Pull the section between "## [$VERSION]" and the next "## [" —
           # fails loudly (empty notes) rather than silently if CHANGELOG.md
           # wasn't updated to match VERSION, since that's a real authoring
@@ -81,9 +84,16 @@ jobs:
         if: steps.version_check.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version_check.outputs.current_version }}
+          # Passed via env, NOT interpolated into the run: script with
+          # ${{ }} — the changelog excerpt is arbitrary multi-line text
+          # (backticks, flags, paths) that GitHub Actions would substitute
+          # into the script's source BEFORE the shell runs it, so bash
+          # would try to execute the release notes as commands. An env var
+          # is inert data the shell only ever reads, never parses as code.
+          RELEASE_NOTES: ${{ steps.changelog.outputs.notes }}
         run: |
-          VERSION="${{ steps.version_check.outputs.current_version }}"
           gh release create "v${VERSION}" \
             --target main \
             --title "v${VERSION}" \
-            --notes "${{ steps.changelog.outputs.notes }}"
+            --notes "${RELEASE_NOTES}"
