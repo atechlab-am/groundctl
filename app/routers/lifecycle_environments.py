@@ -171,6 +171,8 @@ def promote_environment(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="environment not found")
 
     content_view = db.get(ContentView, environment.content_view_id)
+    if content_view is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="environment's content view no longer exists")
 
     if payload.content_view_version_id is not None:
         version = db.get(ContentViewVersion, payload.content_view_version_id)

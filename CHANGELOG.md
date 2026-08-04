@@ -21,6 +21,50 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-04
+
+### Fixed
+
+- Resolved all 48 mypy errors surfaced by CI's (non-blocking) typecheck
+  job. Not cosmetic — a handful were real gaps worth closing:
+  - `app/aptly_client.py`: 7 methods (`cleanup_db`, `create_mirror`,
+    `sync_mirror`, `create_snapshot_from_mirror`, `publish_snapshot`,
+    `switch_publish`, `create_filtered_snapshot`) declared `-> dict` while
+    sharing a helper that can return `dict | list` — added
+    `_json_object_or_empty`, which asserts the response really is a JSON
+    object (true for all 7 of aptly's documented endpoints here) instead
+    of silently widening every caller's type.
+  - `app/tasks.py`: several task bodies dereferenced `db.get(...)` results
+    (`Server`, `LifecycleEnvironment`, `Job`) without a `None` check —
+    foreign keys guarantee these in the paths that dispatch each task
+    today, but a dangling/deleted row was previously an unguarded
+    `AttributeError` instead of a clear error. Added explicit checks
+    (new `_get_job_or_raise` helper, reused across 4 call sites) and a
+    `TypeGuard` on `_relay_is_usable` so mypy can see the narrowing that
+    was already true at runtime.
+  - `app/routers/compliance.py`: `do_check_compliance` didn't guard
+    against its `ContentViewVersion` lookup returning `None` (a dangling
+    FK); `_highest_version_per_name_arch`'s return type claimed
+    `arch: str` when aptly entries can genuinely omit `Architecture`.
+  - `app/routers/lifecycle_environments.py`: `promote_environment` didn't
+    guard against its `ContentView` lookup returning `None`.
+  - `app/routers/sites.py`, `app/routers/host_groups.py`:
+    `Model.__table__.delete()` isn't typed by SQLAlchemy's stubs the way
+    `delete(Model)` is — switched to the latter (also more idiomatic
+    SQLAlchemy 2.0), no behavior change.
+  - `app/routers/content_views.py`: passed an ORM `ContentViewVersion`
+    directly into a field typed `ContentViewVersionRead`, relying on
+    implicit pydantic coercion — made explicit with `.model_validate()`.
+  - `app/routers/jobs.py`: `Job.server_ids` is a response-only attribute
+    with no mapped column (attached at request time for `JobRead` to
+    serialize) — annotated instead of left for mypy to flag as missing.
+  - `app/main.py`: one remaining error is a genuine `slowapi`/Starlette
+    stub-typing mismatch in a third-party function signature, not
+    fixable from groundctl's side — suppressed with a documented
+    `# type: ignore[arg-type]`.
+  - Full pytest suite reconfirmed green after every fix (211 passed, 24
+    skipped — no regressions).
+
 ## [0.9.0] - 2026-08-04
 
 ROADMAP Phase 8 — Interface.
@@ -316,7 +360,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/OWNER/groundctl/releases/tag/v0.9.1
 [0.9.0]: https://github.com/OWNER/groundctl/releases/tag/v0.9.0
 [0.8.0]: https://github.com/OWNER/groundctl/releases/tag/v0.8.0
 [0.7.0]: https://github.com/OWNER/groundctl/releases/tag/v0.7.0

@@ -93,7 +93,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Groundctl", lifespan=lifespan)
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# slowapi's handler is typed narrowly for RateLimitExceeded; Starlette's
+# add_exception_handler wants the broader Exception signature — a known
+# stub mismatch between the two libraries, not a real type error here.
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 app.add_middleware(SlowAPIMiddleware)
 
 

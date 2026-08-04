@@ -98,6 +98,10 @@ def _resolve_targets(db: Session, selector: BulkTargetSelector) -> tuple[list[Se
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="host group not found")
         return group.servers, group.id, JobTargetType.host_group
 
+    # The bool(...) == bool(...) check above guarantees server_ids is set
+    # (non-None, non-empty) here — this branch is only reached when
+    # host_group_id was falsy, so its counterpart must be truthy.
+    assert selector.server_ids is not None
     servers = list(db.execute(select(Server).where(Server.id.in_(selector.server_ids))).scalars())
     found_ids = {s.id for s in servers}
     missing = set(selector.server_ids) - found_ids
@@ -110,7 +114,11 @@ def _resolve_targets(db: Session, selector: BulkTargetSelector) -> tuple[list[Se
 
 
 def _job_with_server_ids(db: Session, job: Job) -> Job:
-    job.server_ids = [
+    # Job has no mapped server_ids column — JobRead (schemas.py) declares
+    # one anyway so responses can carry the resolved target-server set
+    # (JobServer rows), and this attaches it as a plain, unmapped attribute
+    # for from_attributes=True to pick up. Not a column mypy can see.
+    job.server_ids = [  # type: ignore[attr-defined]
         row.server_id for row in db.execute(select(JobServer).where(JobServer.job_id == job.id)).scalars()
     ]
     return job

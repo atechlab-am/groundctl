@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.auth import require_role
@@ -115,9 +115,7 @@ def replace_host_group_members(
     added = found_ids - existing_ids
     removed = existing_ids - found_ids
 
-    db.execute(
-        HostGroupServer.__table__.delete().where(HostGroupServer.host_group_id == host_group_id)
-    )
+    db.execute(delete(HostGroupServer).where(HostGroupServer.host_group_id == host_group_id))
     for server_id in found_ids:
         db.add(HostGroupServer(host_group_id=host_group_id, server_id=server_id))
 

@@ -46,6 +46,19 @@ class AptlyClient:
             return {}
         return response.json()
 
+    @staticmethod
+    def _json_object_or_empty(response: httpx.Response) -> dict:
+        # Same as _json_or_empty, narrowed for the endpoints below whose
+        # documented aptly response shape is always a single JSON object,
+        # never a bare array — asserting that here (rather than widening
+        # every caller's return type to dict | list) keeps the honest
+        # per-endpoint contract instead of pushing an impossible case onto
+        # callers that never need to handle it.
+        result = AptlyClient._json_or_empty(response)
+        if not isinstance(result, dict):
+            raise AptlyError(f"expected a JSON object from aptly, got {type(result).__name__}")
+        return result
+
     # -- health / maintenance ------------------------------------------------
 
     def ping(self) -> None:
@@ -64,7 +77,7 @@ class AptlyClient:
         docs/limitations.md).
         """
         response = self._request("POST", "/api/db/cleanup", timeout=1800.0)
-        return self._json_or_empty(response)
+        return self._json_object_or_empty(response)
 
     # -- mirrors ------------------------------------------------------------
 
@@ -104,7 +117,7 @@ class AptlyClient:
                 # aptly 1.6.3 instance.
             },
         )
-        return self._json_or_empty(response)
+        return self._json_object_or_empty(response)
 
     def sync_mirror(self, name: str) -> dict:
         _validate_name(name)
@@ -112,7 +125,7 @@ class AptlyClient:
         # minutes (docs/limitations.md) — much longer than the default
         # client timeout used for quick metadata calls.
         response = self._request("PUT", f"/api/mirrors/{name}", timeout=1800.0)
-        return self._json_or_empty(response)
+        return self._json_object_or_empty(response)
 
     def get_mirror_packages(self, name: str) -> list[dict]:
         _validate_name(name)
@@ -135,7 +148,7 @@ class AptlyClient:
             json={"Name": snapshot_name},
             timeout=1800.0,
         )
-        return self._json_or_empty(response)
+        return self._json_object_or_empty(response)
 
     def get_snapshot_packages(self, snapshot_name: str) -> list[dict]:
         _validate_name(snapshot_name)
@@ -187,7 +200,7 @@ class AptlyClient:
             },
             timeout=1800.0,
         )
-        return self._json_or_empty(response)
+        return self._json_object_or_empty(response)
 
     def switch_publish(
         self, prefix: str, distribution: str, sources: list[tuple[str, str]], gpg_key_id: str | None = None
@@ -212,7 +225,7 @@ class AptlyClient:
             },
             timeout=1800.0,
         )
-        return self._json_or_empty(response)
+        return self._json_object_or_empty(response)
 
     def create_filtered_snapshot(self, source_snapshot_name: str, new_snapshot_name: str, query: str) -> dict:
         """Cut a filtered copy of an existing snapshot via aptly's snapshot
@@ -240,7 +253,7 @@ class AptlyClient:
             },
             timeout=1800.0,
         )
-        return self._json_or_empty(response)
+        return self._json_object_or_empty(response)
 
 
 def get_aptly_client() -> AptlyClient:

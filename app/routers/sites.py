@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.auth import require_role
@@ -166,7 +166,7 @@ def replace_site_environments(
     added = found_ids - existing_ids
     removed = existing_ids - found_ids
 
-    db.execute(SiteEnvironment.__table__.delete().where(SiteEnvironment.site_id == site_id))
+    db.execute(delete(SiteEnvironment).where(SiteEnvironment.site_id == site_id))
     for environment_id in found_ids:
         db.add(SiteEnvironment(site_id=site_id, environment_id=environment_id))
 

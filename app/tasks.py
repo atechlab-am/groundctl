@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Callable, TypeGuard
 
 import redis
 from celery.exceptions import MaxRetriesExceededError
@@ -106,7 +106,7 @@ def _update_checkin_and_reachability(db: Session, servers: list[Server], ansible
     db.commit()
 
 
-def _relay_is_usable(relay: Relay | None) -> bool:
+def _relay_is_usable(relay: Relay | None) -> TypeGuard[Relay]:
     if relay is None or relay.sync_status != RelaySyncStatus.healthy or relay.last_sync_time is None:
         return False
     threshold = datetime.now(timezone.utc) - timedelta(hours=settings.relay_stale_threshold_hours)
@@ -254,6 +254,18 @@ def _handle_generic_exception(job_id: str, exc: Exception) -> None:
         db.close()
 
 
+def _get_job_or_raise(db: Session, job_id: str) -> Job:
+    # job_id is always a row this same request/task chain just created and
+    # committed moments earlier (see each *_task's dispatch site) — this
+    # should never actually be None, but db.get() is typed Optional and a
+    # dangling/deleted row is cheap to guard against explicitly rather than
+    # assume away.
+    job = db.get(Job, uuid.UUID(job_id))
+    if job is None:
+        raise ValueError(f"job {job_id} not found")
+    return job
+
+
 def _run_locked_job(self, job_id: str, lock_key: str, work: Callable[[Session, Job], tuple[str, str]]) -> str:
     """Shared skeleton for single-resource job tasks: opens a session, marks
     the job running, acquires the per-resource lock (fail-fast, no blocking
@@ -362,7 +374,11 @@ def _run_locked_job_multi(self, job_id: str, server_ids: list[str], work: Callab
 def bootstrap_task(self, job_id: str) -> str:
     def work(db: Session, job: Job) -> tuple[str, str]:
         server = db.get(Server, job.server_id)
+        if server is None:
+            raise ValueError(f"job {job.id} references a server that no longer exists")
         environment = db.get(LifecycleEnvironment, server.environment_id)
+        if environment is None:
+            raise ValueError(f"server {server.id}'s environment no longer exists")
 
         components: list[str] = ["main"]
         if environment.current_version_id is not None:
@@ -411,7 +427,7 @@ def bootstrap_task(self, job_id: str) -> str:
 
     job_row = SessionLocal()
     try:
-        server_id = job_row.get(Job, uuid.UUID(job_id)).server_id
+        server_id = _get_job_or_raise(job_row, job_id).server_id
     finally:
         job_row.close()
     return _run_locked_job(self, job_id, f"groundctl:lock:server:{server_id}", work)
@@ -433,7 +449,7 @@ def apply_updates_task(self, job_id: str) -> str:
 
     job_row = SessionLocal()
     try:
-        environment_id = job_row.get(Job, uuid.UUID(job_id)).environment_id
+        environment_id = _get_job_or_raise(job_row, job_id).environment_id
     finally:
         job_row.close()
     return _run_locked_job(self, job_id, f"groundctl:lock:environment:{environment_id}", work)
@@ -500,7 +516,7 @@ def gather_facts_task(self, job_id: str) -> str:
 
     job_row = SessionLocal()
     try:
-        environment_id = job_row.get(Job, uuid.UUID(job_id)).environment_id
+        environment_id = _get_job_or_raise(job_row, job_id).environment_id
     finally:
         job_row.close()
     return _run_locked_job(self, job_id, f"groundctl:lock:environment:{environment_id}", work)
@@ -533,6 +549,8 @@ def run_command_task(self, job_id: str) -> str:
                 AuditLog.resource_id == str(job.id), AuditLog.action == AuditAction.trigger_run_command
             )
         ).scalar_one()
+        if audit.detail is None:
+            raise ValueError(f"audit log for job {job.id} is missing its command detail")
         command = audit.detail["command"]
         ansible_status, log_output, _facts = run_playbook(
             "run_command.yml",
@@ -552,11 +570,15 @@ def run_command_task(self, job_id: str) -> str:
 def manage_package_task(self, job_id: str) -> str:
     def work(db: Session, job: Job) -> tuple[str, str]:
         server = db.get(Server, job.server_id)
+        if server is None:
+            raise ValueError(f"job {job.id} references a server that no longer exists")
         audit = db.execute(
             select(AuditLog).where(
                 AuditLog.resource_id == str(job.id), AuditLog.action == AuditAction.trigger_manage_package
             )
         ).scalar_one()
+        if audit.detail is None:
+            raise ValueError(f"audit log for job {job.id} is missing its package detail")
         package_name = audit.detail["package_name"]
         package_state = "present" if audit.detail["action"] == "install" else "absent"
         ansible_status, log_output, _facts = run_playbook(
@@ -571,7 +593,7 @@ def manage_package_task(self, job_id: str) -> str:
 
     job_row = SessionLocal()
     try:
-        server_id = job_row.get(Job, uuid.UUID(job_id)).server_id
+        server_id = _get_job_or_raise(job_row, job_id).server_id
     finally:
         job_row.close()
     return _run_locked_job(self, job_id, f"groundctl:lock:server:{server_id}", work)
@@ -798,7 +820,11 @@ def scheduled_purge_audit_logs() -> str:
         threshold = datetime.now(timezone.utc) - timedelta(days=settings.audit_log_retention_days)
         result = db.execute(delete(AuditLog).where(AuditLog.created_at < threshold))
         db.commit()
-        return f"purged {result.rowcount} audit log rows older than {settings.audit_log_retention_days}d"
+        # Session.execute()'s return type is the generic Result[Any] in
+        # SQLAlchemy's stubs; .rowcount is real on the CursorResult a DELETE
+        # actually returns at runtime, mypy just can't see that from here.
+        rowcount = result.rowcount  # type: ignore[attr-defined]
+        return f"purged {rowcount} audit log rows older than {settings.audit_log_retention_days}d"
     finally:
         db.close()
 

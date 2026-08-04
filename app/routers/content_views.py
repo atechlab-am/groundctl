@@ -315,4 +315,4 @@ def publish_content_view(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view not found")
 
     version, cut = do_publish(content_view, db, aptly, current_user)
-    return PublishResponse(content_view_version=version, version_cut=cut)
+    return PublishResponse(content_view_version=ContentViewVersionRead.model_validate(version), version_cut=cut)

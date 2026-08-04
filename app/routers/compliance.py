@@ -24,10 +24,11 @@ from app.version_compare import dpkg_compare
 router = APIRouter()
 
 
-def _highest_version_per_name_arch(packages: list[dict]) -> dict[tuple[str, str], str]:
+def _highest_version_per_name_arch(packages: list[dict]) -> dict[tuple[str, str | None], str]:
     # aptly's ?format=details entries use "Package" (not "Name") for the
     # package name — verified against a real aptly 1.6.3 instance.
-    highest: dict[tuple[str, str], str] = {}
+    # Architecture is occasionally absent on real entries, hence str | None.
+    highest: dict[tuple[str, str | None], str] = {}
     for pkg in packages:
         name = pkg.get("Package")
         arch = pkg.get("Architecture")
@@ -66,6 +67,9 @@ def do_check_compliance(server: Server, db: Session, aptly: AptlyClient) -> Comp
         raise ComplianceDataNotReadyError("server's environment has not been published yet")
 
     version = db.get(ContentViewVersion, environment.current_version_id)
+    if version is None:
+        raise ComplianceDataNotReadyError("environment's published content view version no longer exists")
+
     # A content view version can aggregate snapshots from multiple
     # repositories — fetch each and merge before ranking, rather than the
     # single get_snapshot_packages call this had when one environment mapped
@@ -81,6 +85,7 @@ def do_check_compliance(server: Server, db: Session, aptly: AptlyClient) -> Comp
     drift: list[PackageDrift] = []
     for (name, arch), installed_version in installed_by_name_arch.items():
         available_version = available.get((name, arch))
+        pkg_status: Literal["outdated", "up_to_date", "not_in_environment"]
         if available_version is None:
             pkg_status = "not_in_environment"
         elif installed_version is None:
