@@ -66,12 +66,10 @@ export function RepositoriesPage() {
     mutationFn: createRepositoriesBatch,
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["repositories"] });
-      if (result.created.length > 0) {
-        toast.success(
-          result.created.length === 1
-            ? `Repository "${result.created[0].name}" created`
-            : `${result.created.length} repositories created`,
-        );
+      if (result.created.length === 1 && result.created[0]) {
+        toast.success(`Repository "${result.created[0].name}" created`);
+      } else if (result.created.length > 1) {
+        toast.success(`${result.created.length} repositories created`);
       }
       if (result.errors.length > 0) {
         for (const err of result.errors) {

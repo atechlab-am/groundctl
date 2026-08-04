@@ -93,6 +93,26 @@ history, even though the phases were built sequentially.
   maximally hostile token value can't break the generated script's
   syntax.
 
+### Fixed: CI failures in the repository-batch-create endpoint and the repositories UI, caught after this version's other changes landed
+
+- `mypy app/` (CI): `create_repositories_batch` (`app/routers/repositories.py`)
+  collected raw `Repository` ORM objects into a list typed for
+  `RepositoryBatchCreateResult.created: list[RepositoryRead]`. It worked
+  at runtime (FastAPI serializes ORM objects via `response_model`'s
+  `from_attributes`), but the static type was wrong. Fixed by converting
+  each `Repository` to `RepositoryRead.model_validate(...)` before
+  appending. Verified with `mypy app/` (clean) and the full
+  `test_repositories.py` suite (20/20, unaffected).
+- `npm run build` (CI, `tsc -b`): `RepositoriesPage.tsx`'s batch-create
+  success toast indexed `result.created[0]` inside a `.length > 0`
+  check — with `noUncheckedIndexedAccess` enabled, TypeScript can't
+  narrow an index access from a separate `.length` check, so it's still
+  typed as possibly `undefined`. Fixed by checking `result.created[0]`
+  directly rather than relying on the length check to imply it.
+  Verified with the actual CI command, `npm run build` (`tsc -b && vite
+  build`), not just `tsc --noEmit` (which doesn't catch project-reference
+  build-mode errors) — confirmed passing end-to-end.
+
 ### Fixed: `groundctl-maintain upgrade` skipped reinstalling itself when VERSION hadn't changed, even if the script's content had
 
 - `install_maintain_script` (re-copying `scripts/groundctl-maintain.sh`

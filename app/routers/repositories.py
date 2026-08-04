@@ -152,7 +152,7 @@ def create_repositories_batch(
     picked several independent distributions and a failure on one shouldn't
     discard progress on the rest.
     """
-    created: list[Repository] = []
+    created: list[RepositoryRead] = []
     errors: list[RepositoryBatchCreateError] = []
 
     for distribution in payload.distributions:
@@ -178,7 +178,7 @@ def create_repositories_batch(
 
         db.commit()
         db.refresh(repository)
-        created.append(repository)
+        created.append(RepositoryRead.model_validate(repository))
 
     return RepositoryBatchCreateResult(created=created, errors=errors)
 
