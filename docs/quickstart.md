@@ -303,8 +303,21 @@ curl -X POST https://<HOST>:8000/activation-keys \
 # response includes "token" — copy it now, it is never shown again
 ```
 
-On the new host — this is the **one unauthenticated mutating endpoint** in
-groundctl; the token itself is the credential:
+On the new host, the easiest path is the generated enrollment script — the
+Satellite "Global Registration" equivalent. `GET /enrollment/script` (also
+unauthenticated beyond the token) returns a ready-to-run script that
+registers the host **and** installs groundctl's fleet SSH key into
+`/root/.ssh/authorized_keys`, so no separate manual key-copying step is
+needed afterward. The web UI's activation-key creation dialog shows this
+exact command with a copy button; via `curl` directly:
+
+```bash
+curl -sSL "https://<HOST>:8000/enrollment/script?token=$TOKEN" | sudo bash
+```
+
+This is equivalent to, but does strictly more than, calling the raw
+registration endpoint by hand — this is the **one unauthenticated mutating
+endpoint** in groundctl; the token itself is the credential:
 
 ```bash
 curl -X POST https://<HOST>:8000/enrollment/register \
@@ -312,9 +325,9 @@ curl -X POST https://<HOST>:8000/enrollment/register \
   -d '{"token": "'$TOKEN'", "hostname": "web05.example.net", "ip_address": "10.10.20.35", "ssh_user": "root"}'
 ```
 
-This creates the `Server` row (inheriting the key's environment and host
-group) but does **not** SSH to it — bootstrap it the same as any other
-server once its SSH key is in place:
+Either way this creates the `Server` row (inheriting the key's environment
+and host group) — bootstrap it the same as any other server once its SSH
+key is in place (already true if you ran the generated script above):
 
 ```bash
 curl -X POST https://<HOST>:8000/jobs/bootstrap/$SERVER_ID -H "Authorization: Bearer $TOKEN"

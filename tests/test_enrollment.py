@@ -1,7 +1,10 @@
+import stat
+import subprocess
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app.config import settings
 from tests._rate_limit_helper import reset_login_rate_limit
 from tests.conftest import auth_headers
 
@@ -166,3 +169,150 @@ def test_register_idempotent_same_hostname_updates_existing_server(client, opera
     assert r2.status_code == 201, r2.text
     assert r2.json()["server_id"] == server_id_1
     assert r2.json()["environment_id"] == env["id"]
+
+
+def test_get_ssh_public_key_no_auth_required(client, tmp_path, monkeypatch):
+    key_path = tmp_path / "id_ed25519"
+    key_path.with_suffix(".pub").write_text("ssh-ed25519 AAAAtest fleet-key\n")
+    monkeypatch.setattr(settings, "ansible_private_key_path", str(key_path))
+
+    r = client.get("/enrollment/ssh-public-key")
+    assert r.status_code == 200, r.text
+    assert r.text == "ssh-ed25519 AAAAtest fleet-key\n"
+    assert r.headers["content-type"].startswith("text/plain")
+
+
+def test_get_ssh_public_key_missing_returns_503(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "ansible_private_key_path", str(tmp_path / "does-not-exist"))
+
+    r = client.get("/enrollment/ssh-public-key")
+    assert r.status_code == 503, r.text
+
+
+def test_get_enrollment_script_no_auth_required(client, operator_token):
+    env = _make_env(client, operator_token, "script1")
+    key = _create_activation_key(client, operator_token, env, "script-key1")
+
+    r = client.get("/enrollment/script", params={"token": key["token"]})
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/x-shellscript")
+    assert key["token"] in r.text
+    assert "/enrollment/register" in r.text
+    assert "/enrollment/ssh-public-key" in r.text
+    assert "authorized_keys" in r.text
+
+
+def test_get_enrollment_script_is_valid_bash(client, operator_token):
+    env = _make_env(client, operator_token, "script2")
+    key = _create_activation_key(client, operator_token, env, "script-key2")
+
+    r = client.get("/enrollment/script", params={"token": key["token"]})
+    assert r.status_code == 200, r.text
+
+    result = subprocess.run(["bash", "-n"], input=r.text, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_get_enrollment_script_quotes_token_defensively(client, operator_token):
+    # secrets.token_urlsafe never produces shell metacharacters, but the
+    # endpoint takes the token as a raw query param — confirm a
+    # maximally hostile value still round-trips through shlex.quote
+    # without breaking the script's syntax (same discipline as the
+    # sys.argv-based admin-password handling in scripts/lib/app.sh).
+    hostile_token = "a'; rm -rf /; echo '"
+
+    r = client.get("/enrollment/script", params={"token": hostile_token})
+    assert r.status_code == 200, r.text
+
+    result = subprocess.run(["bash", "-n"], input=r.text, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "rm -rf /" not in result.stderr
+
+
+def test_enrollment_script_end_to_end(tmp_path, db_session, mock_aptly, monkeypatch):
+    """Actually runs the generated script (with `curl` replaced by a stub
+    that calls back into a live TestClient-backed HTTP server) against a
+    fresh fake root, confirming it registers the host AND installs the
+    fleet pubkey into authorized_keys — the real thing this endpoint
+    exists for, not just that it renders parseable bash.
+    """
+    import threading
+
+    import uvicorn
+    from fastapi.testclient import TestClient
+
+    from app.aptly_client import get_aptly_client
+    from app.main import app
+    from tests.conftest import Role, _token_for
+
+    key_path = tmp_path / "id_ed25519"
+    key_path.with_suffix(".pub").write_text("ssh-ed25519 AAAAendtoend fleet-key\n")
+    monkeypatch.setattr(settings, "ansible_private_key_path", str(key_path))
+
+    app.dependency_overrides[get_aptly_client] = lambda: mock_aptly
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        while not server.started:
+            pass
+        port = server.servers[0].sockets[0].getsockname()[1]
+        base_url = f"http://127.0.0.1:{port}"
+
+        with TestClient(app) as setup_client:
+            token = _token_for(setup_client, db_session, Role.operator)
+            env = _make_env(setup_client, token, "e2e")
+            key = _create_activation_key(setup_client, token, env, "e2e-key")
+
+            script_resp = setup_client.get("/enrollment/script", params={"token": key["token"]})
+            assert script_resp.status_code == 200, script_resp.text
+            script_text = script_resp.text.replace(settings.groundctl_api_base_url, base_url)
+
+        fake_root = tmp_path / "fake-root"
+        (fake_root / ".ssh").mkdir(parents=True)
+        script_path = tmp_path / "enroll.sh"
+
+        # Two harness-only substitutions, script itself ships unchanged:
+        # (1) drop the EUID==0 guard — EUID is a read-only bash builtin,
+        # there's no way to fake root for it short of actually running as
+        # root (not assumed available here); the guard is a one-line,
+        # self-evidently-correct check, what's worth verifying live is
+        # everything past it. (2) override ip_address instead of relying
+        # on `hostname -I`, which is GNU/Linux-only (the script's real
+        # target is Ubuntu/Debian) and doesn't exist on this dev machine's
+        # BSD/macOS hostname.
+        script_text_local = (
+            script_text.replace("/root/.ssh", str(fake_root / ".ssh"))
+            .replace(
+                'if [[ "${EUID}" -ne 0 ]]; then\n    echo "[groundctl-register] must be run as root (try: sudo bash)" >&2\n    exit 1\nfi\n',
+                "",
+            )
+            .replace(
+                'ip_address="$(hostname -I 2>/dev/null | awk \'{print $1}\')"',
+                'ip_address="127.0.0.1"',
+            )
+        )
+        assert "must be run as root" not in script_text_local, "root-check removal pattern didn't match"
+        assert "hostname -I" not in script_text_local, "ip_address override pattern didn't match"
+        script_path.write_text(script_text_local)
+        script_path.chmod(script_path.stat().st_mode | stat.S_IEXEC)
+
+        result = subprocess.run(
+            ["bash", str(script_path)],
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin:/usr/local/bin"},
+        )
+        assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
+
+        authorized_keys = (fake_root / ".ssh" / "authorized_keys").read_text()
+        assert "ssh-ed25519 AAAAendtoend fleet-key" in authorized_keys
+
+        with TestClient(app) as verify_client:
+            verify_token = _token_for(verify_client, db_session, Role.viewer)
+            servers = verify_client.get("/servers", headers=auth_headers(verify_token)).json()
+            assert any(s["hostname"] for s in servers)
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+        app.dependency_overrides.clear()

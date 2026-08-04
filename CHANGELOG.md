@@ -57,6 +57,42 @@ history, even though the phases were built sequentially.
   still available (e.g. for scripting against one exact mirror
   directly); the batch/probe endpoints are additive.
 
+## [0.12.0] - 2026-08-04
+
+### Added: generated one-shot server enrollment script — Satellite "Global Registration" equivalent
+
+- New `GET /enrollment/script?token=<activation-key-token>` — returns a
+  ready-to-run shell script (`text/x-shellscript`) for a brand-new host:
+  it calls the existing `POST /enrollment/register` (creating the
+  `Server` row, inheriting the activation key's environment/host group —
+  see `docs/quickstart.md` step 13, previously only documented as a raw
+  `curl` command run by hand) and then installs groundctl's shared fleet
+  SSH public key into `/root/.ssh/authorized_keys`, closing the gap
+  where self-registration created the DB row but never actually SSHed
+  to the host — an operator had to separately, manually copy the fleet
+  key over before `POST /jobs/bootstrap` would work. Same auth posture
+  as `/enrollment/register` itself: unauthenticated beyond the
+  activation-key token, which *is* the credential (see
+  `docs/limitations.md` — a leaked token now grants standing SSH access
+  via this path, not just a bogus `Server` row, documented there).
+- New `GET /enrollment/ssh-public-key` — the fleet SSH public key as
+  plain text, unauthenticated (a public key isn't a secret — same trust
+  model as GitHub's `/user.keys`). The generated script fetches this at
+  run time rather than embedding a copy, so it always installs the
+  current key even if the fleet key is rotated after the script was
+  downloaded/saved.
+- Web UI: the activation-key creation dialog now shows a ready-to-copy
+  `curl -sSL .../enrollment/script?token=... | sudo bash` command
+  alongside the raw token, matching Satellite's registration-command
+  copy button.
+- Verified live end-to-end (`tests/test_enrollment.py`): a real
+  uvicorn-served instance, the actual generated script executed via
+  `bash` (not just `bash -n` syntax-checked), confirming it genuinely
+  registers the host over HTTP and genuinely writes the fleet key into
+  `authorized_keys` — plus a defensive-quoting test confirming a
+  maximally hostile token value can't break the generated script's
+  syntax.
+
 ### Fixed: `groundctl-maintain upgrade` skipped reinstalling itself when VERSION hadn't changed, even if the script's content had
 
 - `install_maintain_script` (re-copying `scripts/groundctl-maintain.sh`
@@ -645,7 +681,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/OWNER/groundctl/releases/tag/v0.12.0
 [0.11.0]: https://github.com/OWNER/groundctl/releases/tag/v0.11.0
 [0.10.3]: https://github.com/OWNER/groundctl/releases/tag/v0.10.3
 [0.10.2]: https://github.com/OWNER/groundctl/releases/tag/v0.10.2

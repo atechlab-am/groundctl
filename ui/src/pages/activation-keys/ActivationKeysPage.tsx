@@ -24,6 +24,7 @@ import {
   listActivationKeys,
   createActivationKey,
   revokeActivationKey,
+  enrollmentScriptCommand,
   type ActivationKeyCreate,
   type ActivationKeyCreateResponse,
 } from "@/api/activationKeys";
@@ -86,9 +87,9 @@ export function ActivationKeysPage() {
     createMutation.mutate(form);
   }
 
-  async function copyToken(token: string) {
+  async function copyToClipboard(text: string) {
     try {
-      await navigator.clipboard.writeText(token);
+      await navigator.clipboard.writeText(text);
       toast.success("Copied to clipboard");
     } catch {
       toast.error("Could not copy — select and copy manually");
@@ -187,16 +188,33 @@ export function ActivationKeysPage() {
             </DialogDescription>
           </DialogHeader>
           {createdKey && (
-            <div className="mt-4 flex flex-col gap-3">
+            <div className="mt-4 flex flex-col gap-4">
               <Alert variant="warning">
                 <AlertTitle>This is the only time you'll see this token</AlertTitle>
                 <AlertDescription>Copy it now and store it securely.</AlertDescription>
               </Alert>
               <div className="flex items-center gap-2 rounded-md border bg-muted p-3">
                 <code className="flex-1 break-all text-xs">{createdKey.token}</code>
-                <Button variant="outline" size="icon" onClick={() => void copyToken(createdKey.token)}>
+                <Button variant="outline" size="icon" onClick={() => void copyToClipboard(createdKey.token)}>
                   <Copy className="h-4 w-4" />
                 </Button>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Run this on the new host</Label>
+                <p className="text-xs text-muted-foreground">
+                  Registers the host with groundctl and installs groundctl's SSH key — ready to bootstrap
+                  immediately after.
+                </p>
+                <div className="flex items-center gap-2 rounded-md border bg-muted p-3">
+                  <code className="flex-1 break-all text-xs">{enrollmentScriptCommand(createdKey.token)}</code>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => void copyToClipboard(enrollmentScriptCommand(createdKey.token))}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
             </div>
           )}
