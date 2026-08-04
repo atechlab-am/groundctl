@@ -34,8 +34,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/tls.sh
 . "${REPO_ROOT}/scripts/lib/tls.sh"
 
-FLEET_HOSTNAME="${GROUNDCTL_FLEET_HOSTNAME:-groundctl.local}"
-NGINX_PORT="${GROUNDCTL_NGINX_PORT:-8080}"
+# Empty (not defaulted here) so prompt_if_unset (scripts/lib/os.sh) can
+# tell "flag/env supplied" apart from "prompt for it, falling back to the
+# placeholder default if unattended." Flags parsed below and the
+# GROUNDCTL_* env vars both still fully bypass the prompt, unchanged.
+FLEET_HOSTNAME="${GROUNDCTL_FLEET_HOSTNAME:-}"
+NGINX_PORT="${GROUNDCTL_NGINX_PORT:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -60,6 +64,11 @@ done
 main() {
     require_root
     detect_os
+
+    prompt_if_unset FLEET_HOSTNAME \
+        "Fleet hostname (address managed hosts will reach this server at)" \
+        "groundctl.local"
+    prompt_if_unset NGINX_PORT "nginx published-repo port" "8080"
 
     if [[ "${FLEET_HOSTNAME}" == "groundctl.local" ]]; then
         log_warn "using placeholder fleet hostname 'groundctl.local' — pass --fleet-hostname" \
@@ -95,6 +104,7 @@ main() {
     install_groundctl_service
     install_groundctl_worker_service
     install_groundctl_beat_service
+    install_maintain_script
 
     configure_nginx_site "${NGINX_PORT}"
 
@@ -114,6 +124,8 @@ main() {
     log_info ""
     log_info "  aptly data root (grows unbounded — put it on a volume with headroom):"
     log_info "    /var/lib/groundctl/aptly"
+    log_info ""
+    log_info "  to upgrade later: sudo groundctl-maintain upgrade"
     log_info ""
     if [[ "${FLEET_HOSTNAME}" == "groundctl.local" ]]; then
         log_warn "PUBLISHED_REPO_BASE_URL is still the placeholder 'groundctl.local' —" \

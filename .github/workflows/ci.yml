@@ -47,7 +47,7 @@ jobs:
           REDIS_URL: "redis://localhost:6379/0"
       - name: bash syntax check
         run: |
-          for f in install.sh install-relay.sh scripts/backup.sh scripts/lib/*.sh; do
+          for f in install.sh install-relay.sh scripts/backup.sh scripts/groundctl-maintain.sh scripts/lib/*.sh; do
             bash -n "$f"
           done
       - name: ansible playbook syntax check

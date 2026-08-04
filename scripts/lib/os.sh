@@ -12,6 +12,27 @@ require_root() {
     fi
 }
 
+# Prompts for a value with a default shown in brackets, but ONLY if the
+# variable wasn't already set via flag or env var — flags/env always win
+# silently, no prompt, so scripted/non-interactive runs never block on
+# stdin. Skips prompting entirely if stdin isn't a TTY (piped input,
+# cron, CI) — falls through to the default in that case rather than
+# hanging.
+prompt_if_unset() {
+    local varname="$1" prompt_text="$2" default_value="$3"
+    local current="${!varname}"
+    if [[ -n "${current}" ]]; then
+        return  # already set via flag/env — don't prompt
+    fi
+    if [[ ! -t 0 ]]; then
+        printf -v "${varname}" '%s' "${default_value}"
+        return
+    fi
+    local input
+    read -r -p "${prompt_text} [${default_value}]: " input
+    printf -v "${varname}" '%s' "${input:-${default_value}}"
+}
+
 install_base_prereqs() {
     log_info "installing base prerequisites..."
     apt-get install -y --no-install-recommends openssl >/dev/null

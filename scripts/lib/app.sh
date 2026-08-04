@@ -160,6 +160,26 @@ EOF
 
     # ensure_postgres_role_and_db needs the password too — export for caller.
     GENERATED_PG_PASSWORD="${pg_password}"
+
+    write_maintain_conf
+}
+
+# Install-tooling-only metadata for groundctl-maintain (scripts/groundctl-maintain.sh)
+# — deliberately separate from groundctl.env above, which is the
+# application's own runtime config, sourced by the app process itself.
+# Records the git checkout install.sh was run from, so `groundctl-maintain
+# upgrade` (run later as a standalone command, possibly from a different
+# working directory or even a different shell session entirely) knows
+# where to git fetch/checkout into.
+write_maintain_conf() {
+    local conf_file="/etc/groundctl/maintain.conf"
+    log_info "writing ${conf_file}"
+    umask 077
+    cat > "${conf_file}" <<EOF
+GROUNDCTL_REPO_ROOT=${REPO_ROOT}
+EOF
+    chown root:root "${conf_file}"
+    chmod 600 "${conf_file}"
 }
 
 # Shared by groundctl.service, groundctl-worker.service, groundctl-beat.service
@@ -204,4 +224,16 @@ install_groundctl_worker_service() {
 
 install_groundctl_beat_service() {
     _install_app_service "groundctl-beat"
+}
+
+# Installs scripts/groundctl-maintain.sh to /usr/local/bin — a standalone
+# command (NOT a wrapper around install.sh, see the script's own header)
+# for post-install operations, `upgrade` today. Same install pattern
+# scripts/lib/aptly.sh uses for the aptly binary itself. Re-run on every
+# install.sh invocation (and by `groundctl-maintain upgrade` itself, at
+# the end of its own run) so the installed copy never drifts from the
+# checkout's source.
+install_maintain_script() {
+    log_info "installing groundctl-maintain to /usr/local/bin"
+    install -m 0755 "${REPO_ROOT}/scripts/groundctl-maintain.sh" /usr/local/bin/groundctl-maintain
 }

@@ -25,6 +25,19 @@ All services run as a dedicated, non-root `groundctl` system user.
 ## Usage
 
 ```bash
+sudo ./install.sh
+```
+
+Run with no arguments, `install.sh` prompts interactively for the fleet hostname and nginx port (showing the default in brackets — press Enter to accept it):
+
+```
+Fleet hostname (address managed hosts will reach this server at) [groundctl.local]: repo.example.com
+nginx published-repo port [8080]:
+```
+
+For scripted/non-interactive installs, flags or environment variables bypass the prompt entirely (checked first — if either is already set, that value is used silently, no prompt shown):
+
+```bash
 sudo ./install.sh --fleet-hostname repo.example.com --nginx-port 8080
 ```
 
@@ -36,17 +49,34 @@ set -a; source install.env; set +a
 sudo -E ./install.sh
 ```
 
-`--fleet-hostname` must be an address every managed host can actually reach — it gets baked into `PUBLISHED_REPO_BASE_URL`, which is what `bootstrap_client.yml` writes into each managed host's `sources.list.d/groundctl.list`. Getting this wrong doesn't break the control plane, but it does mean fleet hosts can't reach their published repos — the script warns if you leave it at the `groundctl.local` placeholder.
+`--fleet-hostname` must be an address every managed host can actually reach — it gets baked into `PUBLISHED_REPO_BASE_URL`, which is what `bootstrap_client.yml` writes into each managed host's `sources.list.d/groundctl.list`. Getting this wrong doesn't break the control plane, but it does mean fleet hosts can't reach their published repos — the script warns if you leave it at the `groundctl.local` placeholder (whether that placeholder came from an unattended run or from pressing Enter at the prompt).
 
-## Re-running
+## Re-running `install.sh`
 
-The script is idempotent — safe to re-run after `git pull`ing changes, to pick up config changes, or just to confirm state matches what's expected:
+The script is idempotent — safe to re-run to pick up **config changes** (fleet hostname, nginx port, TLS) or just to confirm state matches what's expected:
 
 - Generated secrets (Postgres password, JWT secret) are read back from the existing `/etc/groundctl/groundctl.env` and never regenerated.
 - An existing Ansible SSH keypair is never overwritten — overwriting it would break every already-authorized managed host.
 - Already-healthy services aren't unnecessarily bounced; they only restart if their config actually changed.
 
-To pick up new app code after a `git pull`, just re-run `install.sh` — it copies the updated `app/` into `/opt/groundctl` and restarts the `groundctl` service.
+Re-running `install.sh` after a `git pull` also picks up new app code (it copies the updated `app/` into `/opt/groundctl` and restarts services if needed) — but for routine **code upgrades**, prefer `groundctl-maintain upgrade` below, which is a smaller, purpose-built operation.
+
+## Upgrading: `groundctl-maintain upgrade`
+
+`install.sh` installs a second, standalone command to `/usr/local/bin/groundctl-maintain` — **not a wrapper around `install.sh`**, a separate script, so there's no ambiguity about which one to reach for:
+
+- **`install.sh`** — first-time provisioning, and applying *config* changes (fleet hostname, nginx port, TLS) afterward. Run manually from inside a checkout.
+- **`groundctl-maintain upgrade`** — routine *code* upgrades. Run from anywhere, no checkout path to remember:
+
+```bash
+sudo groundctl-maintain upgrade
+```
+
+This does, in order: `git fetch`/`checkout` the checkout it was installed from to the latest `main` (the released/stable branch — see `docs/releasing.md`), rebuilds the web UI, resyncs app code, updates Python dependencies, applies pending database migrations, and restarts `groundctl`/`groundctl-worker`/`groundctl-beat` (only if anything actually changed). Running it again with nothing new to pull reports "already up to date" and touches nothing.
+
+It deliberately does **not** touch one-time provisioning or config — no Postgres/Redis/aptly/nginx reinstall, no TLS cert regeneration, no fleet-hostname/nginx-port changes. If you need any of those, that's `install.sh`'s job, run manually.
+
+`groundctl-maintain` finds its checkout via `/etc/groundctl/maintain.conf` (written by `install.sh`, holds `GROUNDCTL_REPO_ROOT`) — if that file is missing or doesn't point at a valid git checkout, it fails with a clear error rather than guessing.
 
 ## Layout on disk
 
@@ -54,6 +84,8 @@ To pick up new app code after a `git pull`, just re-run `install.sh` — it copi
 |---|---|
 | `/opt/groundctl/` | App code + Python venv |
 | `/etc/groundctl/groundctl.env` | Resolved config/secrets — not repo-tracked |
+| `/etc/groundctl/maintain.conf` | `groundctl-maintain`'s own metadata (the git checkout path) — not repo-tracked |
+| `/usr/local/bin/groundctl-maintain` | Standalone upgrade command — see "Upgrading" above |
 | `/etc/groundctl/aptly.conf` | aptly config |
 | `/etc/groundctl/ansible-keys/` | Shared fleet SSH keypair (initial bootstrap connections) |
 | `/etc/groundctl/ansible-keys/hosts/<server-id>/` | Per-host SSH keypairs, generated at bootstrap time (Phase 6) |

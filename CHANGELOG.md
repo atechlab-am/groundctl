@@ -25,6 +25,44 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-04
+
+### Added: interactive install.sh prompts and a standalone `groundctl-maintain upgrade` command
+
+- `install.sh` now prompts interactively for the fleet hostname and nginx
+  port when run with no `--fleet-hostname`/`--nginx-port` flags and no
+  `GROUNDCTL_FLEET_HOSTNAME`/`GROUNDCTL_NGINX_PORT` env vars set — new
+  `prompt_if_unset` helper (`scripts/lib/os.sh`). Flags/env vars still
+  fully bypass the prompt (unchanged precedence); a non-TTY invocation
+  (piped input, cron, CI) falls back to the default silently rather than
+  hanging on `read`.
+- New standalone command `groundctl-maintain`, installed to
+  `/usr/local/bin` by `install.sh` (`install_maintain_script`,
+  `scripts/lib/app.sh`). **Deliberately a separate script from
+  `install.sh`, not a wrapper around it** — `install.sh` is for
+  first-time provisioning and config changes (fleet hostname, nginx
+  port, TLS); `groundctl-maintain upgrade` is the standing command for
+  routine code upgrades: `git fetch`/`checkout`s the install's own
+  checkout to the latest `main` (via a new `/etc/groundctl/maintain.conf`
+  recording the checkout path), then rebuilds the web UI, resyncs app
+  code, updates Python deps, applies pending migrations, and restarts
+  `groundctl`/`groundctl-worker`/`groundctl-beat` — by sourcing and
+  calling the same `scripts/lib/app.sh` functions `install.sh` itself
+  uses, not a duplicated implementation. Deliberately never touches
+  one-time provisioning or config (Postgres/Redis/aptly/nginx install,
+  TLS cert, fleet hostname/port) — an upgrade can't accidentally reset
+  `PUBLISHED_REPO_BASE_URL` to a placeholder.
+- Verified live: `prompt_if_unset`'s three paths (env-preset/no-prompt,
+  non-TTY/default-fallback, real interactive input via `expect`) all
+  behave correctly; a full `groundctl-maintain upgrade` run against a
+  real scratch git remote correctly detected a version bump, updated the
+  checkout, called every expected provisioning function in order, left
+  config/one-time-provisioning functions uncalled, and correctly
+  no-op'd ("already up to date") on a second immediate run; all error
+  paths (missing `maintain.conf`, a `maintain.conf` pointing at a
+  non-git directory, an unknown subcommand) produce clean messages and
+  exit 1, not tracebacks.
+
 ## [0.9.2] - 2026-08-04
 
 ### Fixed: bump GitHub Actions to Node 24-native majors, fixing the Node 20 deprecation warning on every CI job
@@ -374,7 +412,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/OWNER/groundctl/releases/tag/v0.10.0
 [0.9.2]: https://github.com/OWNER/groundctl/releases/tag/v0.9.2
 [0.9.1]: https://github.com/OWNER/groundctl/releases/tag/v0.9.1
 [0.9.0]: https://github.com/OWNER/groundctl/releases/tag/v0.9.0
