@@ -1,0 +1,24 @@
+server {
+    listen 80;
+    server_name _;
+    # Redirect to HTTPS — see docs/https.md for the self-signed-by-default
+    # posture and how to swap in a CA-issued cert for production.
+    return 301 https://$host:__NGINX_PORT__$request_uri;
+}
+
+server {
+    listen __NGINX_PORT__ ssl;
+    server_name _;
+
+    ssl_certificate __TLS_CERT_PATH__;
+    ssl_certificate_key __TLS_KEY_PATH__;
+
+    # aptly publishes to <rootDir>/public/<prefix>/... which is exactly
+    # the layout apt expects at http://host/<prefix>/dists/... and
+    # http://host/<prefix>/pool/...
+    root /var/lib/groundctl/aptly/public;
+
+    location / {
+        autoindex on;
+    }
+}

@@ -1,0 +1,23 @@
+---
+- name: Run an ad-hoc command (groundctl run-command)
+  hosts: all
+  become: true
+  tasks:
+    # ansible.builtin.command deliberately, NOT ansible.builtin.shell:
+    # command does not invoke a shell, so shell metacharacters in
+    # groundctl_command are passed as literal argv text, never interpreted
+    # (no pipe/redirect/subshell/expansion). The Pydantic-layer validator
+    # (RunCommandRequest in app/schemas.py) additionally rejects shell
+    # metacharacters outright as defense in depth — this task would treat
+    # them as inert literal characters even without that, but rejecting
+    # avoids confusing "why didn't my pipe work" reports. See
+    # docs/limitations.md — this endpoint runs as root against every
+    # targeted host and is as dangerous as SSH access to the fleet.
+    - name: Execute command
+      ansible.builtin.command: "{{ groundctl_command }}"
+      register: groundctl_command_result
+      changed_when: true
+
+    - name: Show output
+      ansible.builtin.debug:
+        var: groundctl_command_result.stdout_lines

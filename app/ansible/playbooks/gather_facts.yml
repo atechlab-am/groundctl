@@ -1,0 +1,27 @@
+---
+- name: Gather host facts (packages, OS, kernel, uptime, disk, services)
+  hosts: all
+  become: false
+  tasks:
+    # package_facts gives clean structured {name: [{version, arch, ...}]}
+    # output under ansible_facts.packages — no dpkg -l text parsing needed.
+    - name: Collect installed apt packages
+      ansible.builtin.package_facts:
+        manager: apt
+
+    # Narrow gather_subset — avoids pulling network/hardware facts groundctl
+    # doesn't use. "min" covers distribution/kernel/uptime; "mounts" adds
+    # disk. Lands in ansible_facts.{distribution,distribution_version,kernel,
+    # uptime_seconds,mounts} — captured automatically by run_playbook's
+    # existing runner_on_ok -> facts_by_host mechanism, no code change there.
+    - name: Collect standard system facts (OS, kernel, uptime, mounts)
+      ansible.builtin.setup:
+        gather_subset:
+          - "!all"
+          - "min"
+          - "distribution"
+          - "mounts"
+
+    # Lands in the top-level "services" fact, {name: {state, status, ...}}.
+    - name: Collect service facts
+      ansible.builtin.service_facts: {}

@@ -1,0 +1,23 @@
+[Unit]
+Description=groundctl control plane (FastAPI app)
+After=network.target postgresql.service aptly.service redis-server.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=groundctl
+Group=groundctl
+WorkingDirectory=/opt/groundctl
+EnvironmentFile=/etc/groundctl/groundctl.env
+ExecStart=/opt/groundctl/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --ssl-certfile __TLS_CERT_PATH__ --ssl-keyfile __TLS_KEY_PATH__ --log-config app/uvicorn_log_config.json
+Restart=on-failure
+RestartSec=3
+
+# Note: this process serves the API only — job execution runs in
+# groundctl-worker.service (Celery), which is what actually survives
+# restarts/crashes without losing in-flight jobs. This process's own
+# lifespan startup hook reaps any Job rows left `running` by a worker that
+# died since this process last started (see ROADMAP.md Phase 2).
+
+[Install]
+WantedBy=multi-user.target

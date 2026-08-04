@@ -1,0 +1,39 @@
+import { api } from "./client";
+
+export interface RepositoryCreate {
+  name: string;
+  archive_url: string;
+  distribution: string;
+  components: string[];
+  architectures: string[];
+}
+
+export interface RepositoryRead {
+  id: string;
+  name: string;
+  archive_url: string;
+  distribution: string;
+  components: string[];
+  architectures: string[];
+  last_synced_at: string | null;
+  created_at: string;
+}
+
+export interface ListRepositoriesParams {
+  distribution?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function listRepositories(params: ListRepositoriesParams = {}): Promise<RepositoryRead[]> {
+  return api.get<RepositoryRead[]>("/repositories", params);
+}
+
+export function createRepository(payload: RepositoryCreate): Promise<RepositoryRead> {
+  return api.post<RepositoryRead>("/repositories", payload);
+}
+
+// name, not id — aptly object names are the primary key here.
+export function syncRepository(name: string): Promise<RepositoryRead> {
+  return api.post<RepositoryRead>(`/repositories/${encodeURIComponent(name)}/sync`);
+}

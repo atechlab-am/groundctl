@@ -1,0 +1,151 @@
+---
+- name: Bootstrap groundctl-managed apt source
+  hosts: all
+  tasks:
+    # Per-host SSH key install — runs over the connection established with
+    # the shared fleet key (the only credential a brand-new host has ever
+    # seen), installing this host's OWN key so all subsequent job execution
+    # against it stops relying on the shared key. groundctl_host_pubkey is
+    # only set when tasks.py's bootstrap_task generated a new keypair for
+    # this host (Server.ssh_key_path was previously unset) — omitted
+    # entirely on repeat bootstraps of an already-keyed host.
+    # ansible.posix.authorized_key (2.2.2) fails unconditionally under
+    # playbook execution on this ansible-core/Python combination — "Module
+    # failed: list index out of range", reproduced even with become: false
+    # and no other options set, while the exact same operation via `ansible
+    # -m ansible.posix.authorized_key` (ad-hoc, not playbook mode) succeeds.
+    # A real environment bug, not anything module-parameter-specific to
+    # this playbook. Worked around with the builtin lineinfile module
+    # instead, which has no such issue and no collection dependency.
+    - name: Ensure .ssh directory exists for the per-host key
+      become: true
+      when: groundctl_host_pubkey is defined
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.ssh"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0700"
+
+    - name: Install this host's own SSH key for future groundctl connections
+      become: true
+      ansible.builtin.lineinfile:
+        path: "/home/{{ ansible_user }}/.ssh/authorized_keys"
+        line: "{{ groundctl_host_pubkey }}"
+        create: true
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+      when: groundctl_host_pubkey is defined
+
+    # GPG signing key — fetched from the PRIMARY's local keyring (delegate_to:
+    # localhost, no HTTP involved) and pushed to the host over this same SSH
+    # connection. Avoids the chicken-and-egg problem of needing to already
+    # trust HTTPS to fetch the thing that makes HTTPS trusted. Only runs when
+    # the environment has gpg_key_id configured — see docs/gpg-signing.md.
+    - name: Export environment's GPG public key from the primary's keyring
+      when: gpg_key_id is defined and gpg_key_id is not none
+      delegate_to: localhost
+      become: false
+      ansible.builtin.command: "gpg --export --armor {{ gpg_key_id }}"
+      register: groundctl_gpg_export
+      changed_when: false
+
+    - name: Install the GPG signing key on the managed host
+      become: true
+      when: gpg_key_id is defined and gpg_key_id is not none
+      ansible.builtin.copy:
+        content: "{{ groundctl_gpg_export.stdout }}"
+        dest: "/etc/apt/keyrings/groundctl-{{ environment_name }}.asc"
+        mode: "0644"
+
+    - name: Dearmor the GPG signing key
+      become: true
+      when: gpg_key_id is defined and gpg_key_id is not none
+      ansible.builtin.command: >-
+        gpg --dearmor --batch --yes
+        -o /etc/apt/keyrings/groundctl-{{ environment_name }}.gpg
+        /etc/apt/keyrings/groundctl-{{ environment_name }}.asc
+      args:
+        creates: "/etc/apt/keyrings/groundctl-{{ environment_name }}.gpg"
+
+    # TLS CA cert — same delegate_to: localhost pattern, only relevant when
+    # published_repo_base_url uses the default self-signed cert (see
+    # docs/https.md). Omitted (groundctl_tls_ca_path unset) when the
+    # primary is using a CA-issued cert, since the host's existing trust
+    # store already covers that case.
+    - name: Read the primary's TLS CA cert, if using the self-signed default
+      when: groundctl_tls_ca_path is defined and groundctl_tls_ca_path is not none
+      delegate_to: localhost
+      become: false
+      ansible.builtin.slurp:
+        src: "{{ groundctl_tls_ca_path }}"
+      register: groundctl_tls_ca_slurp
+
+    - name: Trust the primary's self-signed TLS CA cert on the managed host
+      become: true
+      when: groundctl_tls_ca_path is defined and groundctl_tls_ca_path is not none
+      ansible.builtin.copy:
+        content: "{{ groundctl_tls_ca_slurp.content | b64decode }}"
+        dest: "/usr/local/share/ca-certificates/groundctl-primary.crt"
+        mode: "0644"
+      notify: Update CA certificates
+
+    # Additive: filename is derived from the environment name
+    # (groundctl-<environment_name>.list), not a single fixed groundctl.list.
+    # Bootstrapping the same host against a second environment writes a
+    # second, independent file rather than overwriting the first — a host
+    # can end up trusting multiple groundctl-managed environments at once.
+    # Re-running bootstrap against the SAME environment still fully
+    # overwrites that one file (idempotent), which is correct: it's the
+    # single source of truth for that environment's entry.
+    #
+    # /etc/apt/sources.list itself, and any of the host's own sources, are
+    # never touched.
+    #
+    # Components come from the environment's mirror components, never
+    # hardcoded to "main" (see CLAUDE.md known-bad-patterns).
+    #
+    # Signed (gpg_key_id set) uses [signed-by=...] against the key installed
+    # above; unsigned falls back to [trusted=yes] — an explicit opt-in
+    # (LifecycleEnvironmentCreate.allow_unsigned), not a hardcoded default,
+    # and logged here via the debug task below so an unsigned bootstrap is
+    # never silent.
+    - name: Write groundctl apt source for this environment (signed)
+      become: true
+      when: gpg_key_id is defined and gpg_key_id is not none
+      ansible.builtin.copy:
+        dest: "/etc/apt/sources.list.d/groundctl-{{ environment_name }}.list"
+        content: >-
+          deb [signed-by=/etc/apt/keyrings/groundctl-{{ environment_name }}.gpg]
+          {{ published_repo_base_url }}/{{ publish_prefix }}/
+          {{ release }} {{ components | join(' ') }}
+        mode: "0644"
+
+    - name: Write groundctl apt source for this environment (unsigned, explicit opt-in)
+      become: true
+      when: gpg_key_id is not defined or gpg_key_id is none
+      ansible.builtin.copy:
+        dest: "/etc/apt/sources.list.d/groundctl-{{ environment_name }}.list"
+        content: >-
+          deb [trusted=yes] {{ published_repo_base_url }}/{{ publish_prefix }}/
+          {{ release }} {{ components | join(' ') }}
+        mode: "0644"
+
+    - name: Warn that this environment is publishing unsigned
+      when: gpg_key_id is not defined or gpg_key_id is none
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: environment '{{ environment_name }}' has no GPG signing
+          key configured — apt is trusting this repo's metadata unverified
+          ([trusted=yes]). See docs/gpg-signing.md.
+
+    - name: Refresh apt cache
+      become: true
+      ansible.builtin.apt:
+        update_cache: true
+
+  handlers:
+    - name: Update CA certificates
+      become: true
+      ansible.builtin.command: update-ca-certificates

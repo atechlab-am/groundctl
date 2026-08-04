@@ -1,0 +1,24 @@
+[Unit]
+Description=groundctl job worker (Celery)
+After=network.target postgresql.service aptly.service redis-server.service
+Requires=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=groundctl
+Group=groundctl
+WorkingDirectory=/opt/groundctl
+EnvironmentFile=/etc/groundctl/groundctl.env
+ExecStart=/opt/groundctl/venv/bin/celery -A app.celery_app worker --loglevel=info
+Restart=on-failure
+RestartSec=3
+
+# This is what actually executes bootstrap/apply-updates/gather-facts jobs
+# (ansible_runner.run() calls happen here, not in groundctl.service). A
+# crash here leaves any in-flight Job row at status=running until
+# groundctl.service's next startup reaps it (ROADMAP.md Phase 2's
+# stuck-job reaper) — Restart=on-failure gets the worker itself back up
+# quickly, but doesn't resume the specific job that was interrupted.
+
+[Install]
+WantedBy=multi-user.target

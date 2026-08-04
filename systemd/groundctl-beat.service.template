@@ -1,0 +1,21 @@
+[Unit]
+Description=groundctl scheduled job dispatcher (Celery Beat)
+After=network.target redis-server.service
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=groundctl
+Group=groundctl
+WorkingDirectory=/opt/groundctl
+EnvironmentFile=/etc/groundctl/groundctl.env
+ExecStart=/opt/groundctl/venv/bin/celery -A app.celery_app beat --loglevel=info
+Restart=on-failure
+RestartSec=3
+
+# Beat only schedules tasks (enqueues them for groundctl-worker to pick up)
+# — it never executes ansible itself, so it doesn't need the ansible
+# private key or Postgres access beyond what Celery's scheduler itself uses.
+
+[Install]
+WantedBy=multi-user.target

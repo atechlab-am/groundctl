@@ -1,0 +1,23 @@
+[Unit]
+Description=aptly REST API server (groundctl content backend)
+After=network.target
+
+[Service]
+Type=simple
+User=groundctl
+Group=groundctl
+WorkingDirectory=/var/lib/groundctl/aptly
+# HOME must resolve to the groundctl user's home dir: aptly shells out to
+# gpgv, which verifies against $HOME/.gnupg/trustedkeys.gpg specifically,
+# not the default keyring. Getting this wrong breaks mirror signature
+# verification with a confusing "no public key" error.
+Environment=HOME=/var/lib/groundctl
+# SECURITY: must bind 127.0.0.1 only. aptly's REST API has no authentication
+# of its own — it is reachable exclusively over loopback by design. Never
+# change -listen to 0.0.0.0 or a public interface.
+ExecStart=/usr/local/bin/aptly api serve -listen=127.0.0.1:8090 -no-lock -config=/etc/groundctl/aptly.conf
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

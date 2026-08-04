@@ -1,0 +1,89 @@
+name: Release
+
+# Runs after CI finishes on `dev`. Only acts if CI succeeded AND the VERSION
+# file actually changed on that push — i.e. a release is opt-in per-commit
+# (bump VERSION + add a CHANGELOG.md section in the same PR that should
+# ship), not automatic on every green build. See CHANGELOG.md's header and
+# docs/releasing.md for the full contributor-facing procedure.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [dev]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+          # Default GITHUB_TOKEN pushes don't trigger other workflows, which
+          # is fine here — pushing to main is the end of this pipeline, not
+          # meant to re-trigger CI/release on main.
+
+      - name: Check whether VERSION changed on this push
+        id: version_check
+        run: |
+          CURRENT_VERSION="$(tr -d '[:space:]' < VERSION)"
+          echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+
+          if git rev-parse "v${CURRENT_VERSION}" >/dev/null 2>&1; then
+            echo "tag v${CURRENT_VERSION} already exists — nothing to release"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract this version's CHANGELOG section
+        if: steps.version_check.outputs.should_release == 'true'
+        id: changelog
+        run: |
+          VERSION="${{ steps.version_check.outputs.current_version }}"
+          # Pull the section between "## [$VERSION]" and the next "## [" —
+          # fails loudly (empty notes) rather than silently if CHANGELOG.md
+          # wasn't updated to match VERSION, since that's a real authoring
+          # mistake worth surfacing in the release body, not masking.
+          NOTES="$(awk -v ver="[$VERSION]" '
+            /^\[.+\]: http/ { if (found) exit }
+            $0 ~ "^## \\[" { if (found) exit; if (index($0, ver)) { found=1; next } }
+            found { print }
+          ' CHANGELOG.md)"
+          if [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ]; then
+            echo "::warning::No CHANGELOG.md section found for [${VERSION}] — release notes will be empty. Add a '## [${VERSION}] - YYYY-MM-DD' section."
+          fi
+          {
+            echo "notes<<GROUNDCTL_CHANGELOG_EOF"
+            echo "$NOTES"
+            echo "GROUNDCTL_CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fast-forward main to dev
+        if: steps.version_check.outputs.should_release == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          # Fast-forward only — if main has diverged (e.g. a hotfix landed
+          # directly on main), fail loudly rather than force-pushing over it.
+          git merge --ff-only origin/dev
+          git push origin main
+
+      - name: Tag and create GitHub Release
+        if: steps.version_check.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version_check.outputs.current_version }}"
+          gh release create "v${VERSION}" \
+            --target main \
+            --title "v${VERSION}" \
+            --notes "${{ steps.changelog.outputs.notes }}"

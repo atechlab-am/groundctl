@@ -1,0 +1,17 @@
+---
+- name: Install or remove a single package (groundctl manage-package)
+  hosts: all
+  become: true
+  tasks:
+    - name: apt update
+      ansible.builtin.apt:
+        update_cache: true
+
+    # groundctl_package_state is computed router-side from the PackageAction
+    # enum (install -> present, remove -> absent) — never a free-form
+    # client-supplied string, so "latest" can never sneak in as a stealth
+    # full-upgrade through this endpoint.
+    - name: "{{ groundctl_package_state }} {{ groundctl_package_name }}"
+      ansible.builtin.apt:
+        name: "{{ groundctl_package_name }}"
+        state: "{{ groundctl_package_state }}"

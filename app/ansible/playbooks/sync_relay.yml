@@ -1,0 +1,50 @@
+---
+- name: Sync published content to a relay (groundctl relay sync)
+  hosts: all
+  # No become — the relay's sync user (groundctl-sync, see
+  # scripts/lib/relay.sh's ensure_relay_sync_user_and_dirs) already owns
+  # /var/lib/groundctl outright, so root isn't needed for this playbook,
+  # unlike bootstrap_client.yml/apply_updates.yml which modify system-owned
+  # paths on managed hosts.
+  vars:
+    # groundctl_prefixes: list of publish_prefix strings this relay's site
+    # allowlists (SiteEnvironment) — passed via extra_vars by
+    # scheduled_sync_relays. Each is a subdirectory of the primary's aptly
+    # publish root, synced verbatim to the same relative path on the relay.
+    groundctl_local_root: /var/lib/groundctl/aptly/public
+    groundctl_relay_root: /var/lib/groundctl/aptly/public
+  tasks:
+    - name: Ensure relay publish root exists
+      ansible.builtin.file:
+        path: "{{ groundctl_relay_root }}"
+        state: directory
+        mode: "0755"
+
+    # ansible.posix.synchronize defaults to pushing FROM the controller
+    # (where ansible-runner executes, i.e. the primary) TO the play's
+    # target host (the relay) — exactly the direction groundctl needs.
+    # Requires the ansible.posix collection on the primary (see
+    # docs/relays.md) — not part of ansible-core. rsync's own SSH
+    # subprocess doesn't inherit the inventory's ansible_ssh_private_key_file
+    # automatically — the module's `private_key` param is the correct way
+    # to pass it (an `rsh:` param does not exist on this module version;
+    # passing -i via rsync_opts instead breaks --rsh's single-value parsing
+    # since each rsync_opts list item becomes its own unquoted argv element).
+    # Found via live verification.
+    - name: Rsync each allowlisted environment's published prefix
+      ansible.posix.synchronize:
+        src: "{{ groundctl_local_root }}/{{ item }}/"
+        dest: "{{ groundctl_relay_root }}/{{ item }}/"
+        delete: true
+        private_key: "{{ ansible_ssh_private_key_file }}"
+      loop: "{{ groundctl_prefixes }}"
+      delegate_to: localhost
+
+    - name: Measure synced content size
+      ansible.builtin.command: "du -sb {{ groundctl_relay_root }}"
+      register: groundctl_relay_du
+      changed_when: false
+
+    - name: Report content size back as a fact
+      ansible.builtin.set_fact:
+        groundctl_content_size_bytes: "{{ groundctl_relay_du.stdout.split()[0] }}"

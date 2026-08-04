@@ -1,0 +1,23 @@
+.env
+ansible-keys/*
+!ansible-keys/.gitkeep
+app/ansible/keys/*
+!app/ansible/keys/.gitkeep
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/
+
+# Web UI (ROADMAP Phase 8) — ui/dist and app/static are build output, not
+# source; app/static is only ever populated by scripts/lib/app.sh's build_ui.
+ui/node_modules/
+ui/dist/
+app/static/
+
+# CLI (ROADMAP Phase 8) — local editable-install/build artifacts.
+cli/.venv/
+cli/**/__pycache__/
+cli/*.egg-info/
+CLAUDE.MD
+ROADMAP.MD
+.claude/settings.local.json

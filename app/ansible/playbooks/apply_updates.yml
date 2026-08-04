@@ -1,0 +1,9 @@
+---
+- name: Apply pending package updates
+  hosts: all
+  become: true
+  tasks:
+    - name: apt update && full-upgrade
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: "yes"
