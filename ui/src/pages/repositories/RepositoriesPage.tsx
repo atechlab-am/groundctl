@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Plus, RefreshCw } from "lucide-react";
+import { Plus, RefreshCw, Search } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryState } from "@/components/QueryState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   Dialog,
@@ -19,38 +20,77 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { RoleGate } from "@/layout/RoleGate";
-import { listRepositories, createRepository, syncRepository, type RepositoryCreate } from "@/api/repositories";
+import {
+  listRepositories,
+  probeRepositoryArchive,
+  createRepositoriesBatch,
+  syncRepository,
+} from "@/api/repositories";
 import { formatDateTime } from "@/lib/format";
 import { errorMessage } from "@/lib/errors";
 
-const EMPTY_FORM: RepositoryCreate = {
-  name: "",
-  archive_url: "",
-  distribution: "",
-  components: [],
-  architectures: [],
-};
+const DEFAULT_ARCHIVE_URL = "http://archive.ubuntu.com/ubuntu";
 
 export function RepositoriesPage() {
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [form, setForm] = useState<RepositoryCreate>(EMPTY_FORM);
-  const [componentsInput, setComponentsInput] = useState("");
-  const [architecturesInput, setArchitecturesInput] = useState("");
+  const [archiveUrl, setArchiveUrl] = useState(DEFAULT_ARCHIVE_URL);
+  const [distributions, setDistributions] = useState<string[] | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [componentsInput, setComponentsInput] = useState("main,universe");
+  const [architecturesInput, setArchitecturesInput] = useState("amd64");
   const [formError, setFormError] = useState<string | null>(null);
 
   const repositoriesQuery = useQuery({ queryKey: ["repositories"], queryFn: () => listRepositories({ limit: 100 }) });
 
-  const createMutation = useMutation({
-    mutationFn: (payload: RepositoryCreate) => createRepository(payload),
-    onSuccess: () => {
-      toast.success("Repository created");
-      void queryClient.invalidateQueries({ queryKey: ["repositories"] });
-      setDialogOpen(false);
-      setForm(EMPTY_FORM);
-      setComponentsInput("");
-      setArchitecturesInput("");
+  function resetDialog() {
+    setArchiveUrl(DEFAULT_ARCHIVE_URL);
+    setDistributions(null);
+    setSelected(new Set());
+    setComponentsInput("main,universe");
+    setArchitecturesInput("amd64");
+    setFormError(null);
+  }
+
+  const probeMutation = useMutation({
+    mutationFn: (url: string) => probeRepositoryArchive(url),
+    onSuccess: (result) => {
+      setDistributions(result.distributions);
+      setSelected(new Set());
       setFormError(null);
+    },
+    onError: (err) => setFormError(errorMessage(err)),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: createRepositoriesBatch,
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["repositories"] });
+      if (result.created.length > 0) {
+        toast.success(
+          result.created.length === 1
+            ? `Repository "${result.created[0].name}" created`
+            : `${result.created.length} repositories created`,
+        );
+      }
+      if (result.errors.length > 0) {
+        for (const err of result.errors) {
+          toast.error(`${err.distribution}: ${err.detail}`);
+        }
+      }
+      if (result.errors.length === 0) {
+        setDialogOpen(false);
+        resetDialog();
+      } else {
+        // Leave the dialog open so the user can see which distributions
+        // failed and retry just those — successful ones are already
+        // created, re-selecting them would just 409.
+        setSelected((prev) => {
+          const next = new Set(prev);
+          for (const created of result.created) next.delete(created.name);
+          return next;
+        });
+      }
     },
     onError: (err) => setFormError(errorMessage(err)),
   });
@@ -64,11 +104,31 @@ export function RepositoriesPage() {
     onError: (err) => toast.error(errorMessage(err)),
   });
 
-  function handleSubmit(e: React.FormEvent) {
+  function handleProbe(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
+    probeMutation.mutate(archiveUrl);
+  }
+
+  function toggleDistribution(name: string, checked: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(name);
+      else next.delete(name);
+      return next;
+    });
+  }
+
+  function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    setFormError(null);
+    if (selected.size === 0) {
+      setFormError("Select at least one distribution.");
+      return;
+    }
     createMutation.mutate({
-      ...form,
+      archive_url: archiveUrl,
+      distributions: Array.from(selected),
       components: componentsInput
         .split(",")
         .map((s) => s.trim())
@@ -87,7 +147,13 @@ export function RepositoriesPage() {
         description="Upstream apt archives mirrored by aptly"
         actions={
           <RoleGate minRole="operator">
-            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <Dialog
+              open={dialogOpen}
+              onOpenChange={(open) => {
+                setDialogOpen(open);
+                if (!open) resetDialog();
+              }}
+            >
               <DialogTrigger asChild>
                 <Button size="sm">
                   <Plus className="h-4 w-4" />
@@ -95,74 +161,94 @@ export function RepositoriesPage() {
                 </Button>
               </DialogTrigger>
               <DialogContent>
-                <form onSubmit={handleSubmit}>
-                  <DialogHeader>
-                    <DialogTitle>Create repository</DialogTitle>
-                    <DialogDescription>
-                      Creates an aptly mirror of an upstream archive. Names must match{" "}
-                      <code className="text-xs">^[a-zA-Z0-9._-]+$</code>.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="mt-4 flex flex-col gap-4">
-                    {formError && <p className="text-sm text-destructive">{formError}</p>}
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor="repo-name">Name</Label>
-                      <Input
-                        id="repo-name"
-                        value={form.name}
-                        onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                        placeholder="jammy-main"
-                        required
-                      />
+                {distributions === null ? (
+                  <form onSubmit={handleProbe}>
+                    <DialogHeader>
+                      <DialogTitle>Browse an archive</DialogTitle>
+                      <DialogDescription>
+                        Enter an upstream apt archive URL — groundctl lists the distributions it publishes so you
+                        can pick which ones to mirror.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="mt-4 flex flex-col gap-4">
+                      {formError && <p className="text-sm text-destructive">{formError}</p>}
+                      <div className="flex flex-col gap-1.5">
+                        <Label htmlFor="archive-url">Archive URL</Label>
+                        <Input
+                          id="archive-url"
+                          type="url"
+                          value={archiveUrl}
+                          onChange={(e) => setArchiveUrl(e.target.value)}
+                          placeholder={DEFAULT_ARCHIVE_URL}
+                          required
+                        />
+                      </div>
                     </div>
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor="repo-url">Archive URL</Label>
-                      <Input
-                        id="repo-url"
-                        type="url"
-                        value={form.archive_url}
-                        onChange={(e) => setForm((f) => ({ ...f, archive_url: e.target.value }))}
-                        placeholder="http://archive.ubuntu.com/ubuntu"
-                        required
-                      />
+                    <DialogFooter className="mt-6">
+                      <Button type="submit" disabled={probeMutation.isPending}>
+                        <Search className="h-4 w-4" />
+                        {probeMutation.isPending ? "Browsing…" : "Browse"}
+                      </Button>
+                    </DialogFooter>
+                  </form>
+                ) : (
+                  <form onSubmit={handleCreate}>
+                    <DialogHeader>
+                      <DialogTitle>Select distributions</DialogTitle>
+                      <DialogDescription>
+                        Found {distributions.length} distributions at <code className="text-xs">{archiveUrl}</code>.
+                        Pick the ones to mirror.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="mt-4 flex flex-col gap-4">
+                      {formError && <p className="text-sm text-destructive">{formError}</p>}
+                      <div className="flex max-h-64 flex-col gap-2 overflow-y-auto rounded-md border p-3">
+                        {distributions.map((name) => (
+                          <div key={name} className="flex items-center gap-2">
+                            <Checkbox
+                              id={`dist-${name}`}
+                              checked={selected.has(name)}
+                              onCheckedChange={(checked) => toggleDistribution(name, checked === true)}
+                            />
+                            <Label htmlFor={`dist-${name}`} className="cursor-pointer font-normal">
+                              {name}
+                            </Label>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <Label htmlFor="repo-components">Components (comma-separated)</Label>
+                        <Input
+                          id="repo-components"
+                          value={componentsInput}
+                          onChange={(e) => setComponentsInput(e.target.value)}
+                          placeholder="main,universe"
+                          required
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <Label htmlFor="repo-architectures">Architectures (comma-separated)</Label>
+                        <Input
+                          id="repo-architectures"
+                          value={architecturesInput}
+                          onChange={(e) => setArchitecturesInput(e.target.value)}
+                          placeholder="amd64,arm64"
+                          required
+                        />
+                      </div>
                     </div>
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor="repo-distribution">Distribution</Label>
-                      <Input
-                        id="repo-distribution"
-                        value={form.distribution}
-                        onChange={(e) => setForm((f) => ({ ...f, distribution: e.target.value }))}
-                        placeholder="jammy"
-                        required
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor="repo-components">Components (comma-separated)</Label>
-                      <Input
-                        id="repo-components"
-                        value={componentsInput}
-                        onChange={(e) => setComponentsInput(e.target.value)}
-                        placeholder="main,universe"
-                        required
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor="repo-architectures">Architectures (comma-separated)</Label>
-                      <Input
-                        id="repo-architectures"
-                        value={architecturesInput}
-                        onChange={(e) => setArchitecturesInput(e.target.value)}
-                        placeholder="amd64,arm64"
-                        required
-                      />
-                    </div>
-                  </div>
-                  <DialogFooter className="mt-6">
-                    <Button type="submit" disabled={createMutation.isPending}>
-                      {createMutation.isPending ? "Creating…" : "Create"}
-                    </Button>
-                  </DialogFooter>
-                </form>
+                    <DialogFooter className="mt-6 flex items-center justify-between sm:justify-between">
+                      <Button type="button" variant="outline" onClick={() => setDistributions(null)}>
+                        Back
+                      </Button>
+                      <Button type="submit" disabled={createMutation.isPending}>
+                        {createMutation.isPending
+                          ? "Creating…"
+                          : `Create ${selected.size || ""} repositor${selected.size === 1 ? "y" : "ies"}`}
+                      </Button>
+                    </DialogFooter>
+                  </form>
+                )}
               </DialogContent>
             </Dialog>
           </RoleGate>

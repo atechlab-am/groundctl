@@ -33,6 +33,35 @@ export function createRepository(payload: RepositoryCreate): Promise<RepositoryR
   return api.post<RepositoryRead>("/repositories", payload);
 }
 
+export interface RepositoryProbeResult {
+  distributions: string[];
+}
+
+export function probeRepositoryArchive(archiveUrl: string): Promise<RepositoryProbeResult> {
+  return api.post<RepositoryProbeResult>("/repositories/probe", { archive_url: archiveUrl });
+}
+
+export interface RepositoryBatchCreate {
+  archive_url: string;
+  distributions: string[];
+  components: string[];
+  architectures: string[];
+}
+
+export interface RepositoryBatchCreateError {
+  distribution: string;
+  detail: string;
+}
+
+export interface RepositoryBatchCreateResult {
+  created: RepositoryRead[];
+  errors: RepositoryBatchCreateError[];
+}
+
+export function createRepositoriesBatch(payload: RepositoryBatchCreate): Promise<RepositoryBatchCreateResult> {
+  return api.post<RepositoryBatchCreateResult>("/repositories/batch", payload);
+}
+
 // name, not id — aptly object names are the primary key here.
 export function syncRepository(name: string): Promise<RepositoryRead> {
   return api.post<RepositoryRead>(`/repositories/${encodeURIComponent(name)}/sync`);

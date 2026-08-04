@@ -25,7 +25,37 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
-## [0.10.4] - 2026-08-04
+## [0.11.0] - 2026-08-04
+
+### Added: browse an upstream archive and multi-select distributions to mirror, instead of creating repositories one at a time
+
+- New `POST /repositories/probe` — given an `archive_url`, fetches its
+  `dists/` directory listing (the standard Apache/nginx autoindex every
+  apt archive publishes) and returns the distribution names found (e.g.
+  `jammy`, `jammy-updates`, `jammy-security`). Read-only, one outbound
+  HTTP GET, nothing persisted; gated at `require_role(operator)` — the
+  same role already required to actually create a mirror from that
+  archive_url, since probing is strictly less powerful than mirroring.
+  New `app/archive_probe.py` parses the listing HTML directly (aptly has
+  no "browse an archive" concept of its own, so this doesn't go through
+  `AptlyClient`); response size is capped and the parent-directory link
+  is excluded. Verified live against `archive.ubuntu.com/ubuntu` (55
+  real distributions parsed correctly).
+- New `POST /repositories/batch` — given the same `archive_url` plus a
+  list of selected distributions and shared components/architectures,
+  creates one `Repository` (aptly mirror) per distribution, named after
+  the distribution itself. Failures are reported per-item
+  (`RepositoryBatchCreateResult.errors`) rather than aborting the whole
+  batch — one distribution's name already existing, or aptly rejecting
+  one of several mirrors, shouldn't discard the others that succeeded.
+- Web UI: "New repository" is now a two-step flow — enter an archive
+  URL and browse it, then check off which distributions to mirror
+  (shared components/architectures for the batch) — replacing the old
+  single-distribution form that required already knowing the exact
+  distribution name, components, and architectures to type in by hand.
+- The single-repository `POST /repositories` endpoint is unchanged and
+  still available (e.g. for scripting against one exact mirror
+  directly); the batch/probe endpoints are additive.
 
 ### Fixed: `groundctl-maintain upgrade` skipped reinstalling itself when VERSION hadn't changed, even if the script's content had
 
@@ -615,8 +645,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.10.4...HEAD
-[0.10.4]: https://github.com/OWNER/groundctl/releases/tag/v0.10.4
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/OWNER/groundctl/releases/tag/v0.11.0
 [0.10.3]: https://github.com/OWNER/groundctl/releases/tag/v0.10.3
 [0.10.2]: https://github.com/OWNER/groundctl/releases/tag/v0.10.2
 [0.10.1]: https://github.com/OWNER/groundctl/releases/tag/v0.10.1

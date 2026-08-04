@@ -161,6 +161,50 @@ class RepositoryRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RepositoryProbeRequest(BaseModel):
+    archive_url: HttpUrl
+
+
+class RepositoryProbeResult(BaseModel):
+    distributions: list[str]
+
+
+class RepositoryBatchCreate(BaseModel):
+    """Creates one Repository (aptly mirror) per selected distribution, all
+    sharing the same archive_url/components/architectures — the backend for
+    the "browse an archive, multi-select distributions" UI flow. Each
+    resulting repository is named after its distribution (e.g. "jammy",
+    "jammy-updates") — same aptly object name uniqueness rules as the
+    single-repository endpoint, so a name collision surfaces as a per-item
+    error in RepositoryBatchCreateResult rather than failing the batch.
+    """
+
+    archive_url: HttpUrl
+    distributions: list[str] = Field(min_length=1)
+    components: list[str]
+    architectures: list[str]
+
+    @field_validator("distributions")
+    @classmethod
+    def _validate_distributions(cls, v: list[str]) -> list[str]:
+        return [validate_aptly_name(item) for item in v]
+
+    @field_validator("components")
+    @classmethod
+    def _validate_batch_components(cls, v: list[str]) -> list[str]:
+        return [validate_aptly_name(item) for item in v]
+
+
+class RepositoryBatchCreateError(BaseModel):
+    distribution: str
+    detail: str
+
+
+class RepositoryBatchCreateResult(BaseModel):
+    created: list[RepositoryRead]
+    errors: list[RepositoryBatchCreateError]
+
+
 # ---------------------------------------------------------------------------
 # content views
 # ---------------------------------------------------------------------------
