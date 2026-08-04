@@ -8,15 +8,26 @@ TLS_KEY_PATH="/etc/groundctl/tls/key.pem"
 
 ensure_tls_cert() {
     local fleet_hostname="$1"
-    local cert_dir
-    cert_dir="$(dirname "${TLS_CERT_PATH}")"
 
     if [[ -f "${TLS_CERT_PATH}" && -f "${TLS_KEY_PATH}" ]]; then
         log_info "TLS cert already exists at ${TLS_CERT_PATH} — leaving as-is"
         log_info "(to switch to a CA-issued cert, replace both files and restart" \
-                 "groundctl + nginx — see docs/https.md)"
+                 "groundctl + nginx — see docs/https.md; to regenerate a" \
+                 "self-signed cert, see 'groundctl-maintain regen-cert')"
         return
     fi
+
+    _generate_tls_cert "${fleet_hostname}"
+}
+
+# Unconditional — no existence check. Called by ensure_tls_cert above
+# (only reached once no cert exists yet) and by groundctl-maintain's
+# regen-cert subcommand (explicit, operator-requested overwrite of an
+# existing cert — e.g. switching key type, or the fleet hostname changed).
+_generate_tls_cert() {
+    local fleet_hostname="$1"
+    local cert_dir
+    cert_dir="$(dirname "${TLS_CERT_PATH}")"
 
     log_info "generating self-signed TLS cert for ${fleet_hostname}"
     mkdir -p "${cert_dir}"

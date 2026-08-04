@@ -25,6 +25,33 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-08-04
+
+### Added: `groundctl-maintain regen-cert` — regenerate the self-signed TLS cert without a full reinstall
+
+- New subcommand alongside `upgrade`. Reads the fleet hostname back from
+  `/etc/groundctl/groundctl.env`'s `PUBLISHED_REPO_BASE_URL` (no
+  re-prompting), backs up the existing cert/key pair to
+  `/etc/groundctl/tls/backup-<timestamp>/`, regenerates via the same
+  `_generate_tls_cert` helper `install.sh`'s `ensure_tls_cert` uses
+  (factored out of it, no duplicated openssl/chown/chmod logic), and
+  restarts `groundctl` + `nginx` to pick up the new cert. Direct
+  motivation: `ensure_tls_cert` never overwrites an existing cert on its
+  own (by design, to avoid clobbering a swapped-in CA-issued cert on a
+  routine re-run) — after `0.10.2`'s ED25519→P-256 fix, there was no
+  supported way to force a regeneration short of manually deleting the
+  cert files and re-running all of `install.sh`. Directly motivated by a
+  real deployed host that pulled the P-256 fix via `groundctl-maintain
+  upgrade` but kept failing with `ERR_SSL_VERSION_OR_CIPHER_MISMATCH` —
+  `upgrade` never touches an already-existing cert file, so the fix alone
+  wasn't enough to actually resolve a live instance without this.
+  Verified live (stubbed root/systemctl calls, real hostname-parsing/
+  backup/regeneration logic): the fleet hostname is parsed correctly from
+  a real `groundctl.env`, an existing cert is genuinely backed up
+  (confirmed by reading back the backed-up file's own CN/key-type) before
+  being overwritten, and the regenerated cert has the correct new CN and
+  key type.
+
 ## [0.10.2] - 2026-08-04
 
 ### Fixed: self-signed TLS cert unusable in Chrome (ERR_SSL_VERSION_OR_CIPHER_MISMATCH)
@@ -559,7 +586,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/OWNER/groundctl/releases/tag/v0.10.3
 [0.10.2]: https://github.com/OWNER/groundctl/releases/tag/v0.10.2
 [0.10.1]: https://github.com/OWNER/groundctl/releases/tag/v0.10.1
 [0.10.0]: https://github.com/OWNER/groundctl/releases/tag/v0.10.0

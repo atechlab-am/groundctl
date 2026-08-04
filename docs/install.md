@@ -69,12 +69,14 @@ The script is idempotent — safe to re-run to pick up **config changes** (fleet
 
 Re-running `install.sh` after a `git pull` also picks up new app code (it copies the updated `app/` into `/opt/groundctl` and restarts services if needed) — but for routine **code upgrades**, prefer `groundctl-maintain upgrade` below, which is a smaller, purpose-built operation.
 
-## Upgrading: `groundctl-maintain upgrade`
+## Upgrading and maintenance: `groundctl-maintain`
 
 `install.sh` installs a second, standalone command to `/usr/local/bin/groundctl-maintain` — **not a wrapper around `install.sh`**, a separate script, so there's no ambiguity about which one to reach for:
 
-- **`install.sh`** — first-time provisioning, and applying *config* changes (fleet hostname, nginx port, TLS) afterward. Run manually from inside a checkout.
-- **`groundctl-maintain upgrade`** — routine *code* upgrades. Run from anywhere, no checkout path to remember:
+- **`install.sh`** — first-time provisioning, and applying *config* changes (fleet hostname, nginx port) afterward. Run manually from inside a checkout.
+- **`groundctl-maintain`** — routine maintenance. Run from anywhere, no checkout path to remember.
+
+### `groundctl-maintain upgrade`
 
 ```bash
 sudo groundctl-maintain upgrade
@@ -82,7 +84,15 @@ sudo groundctl-maintain upgrade
 
 This does, in order: `git fetch`/`checkout` the checkout it was installed from to the latest `main` (the released/stable branch — see `docs/releasing.md`), rebuilds the web UI, resyncs app code, updates Python dependencies, applies pending database migrations, and restarts `groundctl`/`groundctl-worker`/`groundctl-beat` (only if anything actually changed). Running it again with nothing new to pull reports "already up to date" and touches nothing.
 
-It deliberately does **not** touch one-time provisioning or config — no Postgres/Redis/aptly/nginx reinstall, no TLS cert regeneration, no fleet-hostname/nginx-port changes. If you need any of those, that's `install.sh`'s job, run manually.
+It deliberately does **not** touch one-time provisioning or config — no Postgres/Redis/aptly/nginx reinstall, no TLS cert regeneration, no fleet-hostname/nginx-port changes. If you need any of those, that's `install.sh`'s job (or `groundctl-maintain regen-cert` for TLS specifically, below).
+
+### `groundctl-maintain regen-cert`
+
+```bash
+sudo groundctl-maintain regen-cert
+```
+
+Regenerates the self-signed TLS cert (fleet hostname read back from `/etc/groundctl/groundctl.env`, no re-prompting) and restarts `groundctl` + `nginx` to pick it up. Backs up the existing cert/key pair first (`/etc/groundctl/tls/backup-<timestamp>/`) — `install.sh`'s own `ensure_tls_cert` never overwrites an existing cert on its own, so this is the supported way to force a regeneration (e.g. after upgrading past a fix to how the cert is generated) without a full reinstall. See [`docs/https.md`](https.md).
 
 `groundctl-maintain` finds its checkout via `/etc/groundctl/maintain.conf` (written by `install.sh`, holds `GROUNDCTL_REPO_ROOT`) — if that file is missing or doesn't point at a valid git checkout, it fails with a clear error rather than guessing.
 
@@ -93,7 +103,7 @@ It deliberately does **not** touch one-time provisioning or config — no Postgr
 | `/opt/groundctl/` | App code + Python venv |
 | `/etc/groundctl/groundctl.env` | Resolved config/secrets — not repo-tracked |
 | `/etc/groundctl/maintain.conf` | `groundctl-maintain`'s own metadata (the git checkout path) — not repo-tracked |
-| `/usr/local/bin/groundctl-maintain` | Standalone upgrade command — see "Upgrading" above |
+| `/usr/local/bin/groundctl-maintain` | Standalone upgrade/maintenance command — see "Upgrading and maintenance" above |
 | `/etc/groundctl/aptly.conf` | aptly config |
 | `/etc/groundctl/ansible-keys/` | Shared fleet SSH keypair (initial bootstrap connections) |
 | `/etc/groundctl/ansible-keys/hosts/<server-id>/` | Per-host SSH keypairs, generated at bootstrap time (Phase 6) |

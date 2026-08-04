@@ -20,9 +20,11 @@ which is what made this easy to miss without an actual browser hitting
 the URL. ED25519 TLS certificate support is inconsistent across browsers
 and OS TLS stacks in a way P-256 is not — P-256 is supported everywhere
 current browsers run. If you already installed with an older version and
-hit this, delete `/etc/groundctl/tls/{cert.pem,key.pem}` and re-run
-`install.sh` to regenerate with P-256 (`ensure_tls_cert` never overwrites
-an existing cert/key pair on its own — this is a manual, one-time step).
+hit this, `sudo groundctl-maintain regen-cert` regenerates the cert with
+the current key type (backing up the old cert/key first) and restarts
+`groundctl` + `nginx` to pick it up — `ensure_tls_cert` itself never
+overwrites an existing cert/key pair on its own, so this is the supported
+way to force a regeneration without reinstalling.
 
 Plain HTTP on port 80 now only exists as a 301 redirect to HTTPS
 (`nginx-groundctl.conf.template`) — there is no unencrypted serving path
