@@ -25,6 +25,39 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-08-04
+
+### Fixed: main silently stopped tracking dev once a version was already tagged
+
+- `.github/workflows/release.yml`'s "Fast-forward main to dev" step was
+  gated behind the same `should_release` condition as the tag/release
+  step — so once `VERSION`'s value had already been tagged (`v0.10.1`,
+  pointing at an older commit), *every* subsequent commit pushed to
+  `dev` — including two real, already-released-in-this-changelog fixes —
+  never reached `main` at all, silently, until the next `VERSION` bump.
+  Found live: a host pulling from what was believed to be an up-to-date
+  checkout was still hitting a bug already fixed two commits earlier,
+  traced to `main` being stuck two commits behind `dev`. Promoting
+  CI-passing code to `main` and cutting a version tag are different
+  questions; only the tag should wait on a version bump. Fixed by
+  splitting the two: the fast-forward now runs unconditionally on every
+  successful CI run on `dev`, moved to the first step in the job.
+  Rewritten as a direct `git push origin HEAD:refs/heads/main
+  --force-with-lease="main:<expected-sha>"` instead of `git checkout
+  main && git merge --ff-only && git push` — checking out `main` in the
+  job's own working tree would have left every later step (the `VERSION`
+  check, the `CHANGELOG.md` extraction) reading `main`'s stale files
+  instead of `dev`'s, a second bug introduced by the split during initial
+  implementation and caught before ship via local verification (below),
+  not live. `--force-with-lease` scoped to `main`'s exact expected SHA is
+  a fast-forward-or-fail, not an actual force-push over unknown state.
+  Verified against a real disposable git remote: a clean fast-forward
+  succeeds and is a genuine fast-forward (not a rewrite — confirmed via
+  git's own `sha1..sha2` vs `+sha1...sha2` push-summary distinction); a
+  divergence introduced between the `fetch` and the `push` (simulating a
+  hotfix landing directly on `main`) correctly fails with `[rejected]
+  (stale info)`, exit 1, rather than overwriting the divergent commit.
+
 ## [0.10.1] - 2026-08-04
 
 ### Added: install.sh creates the first admin user, closing the fresh-install-to-usable-login gap
@@ -506,7 +539,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/OWNER/groundctl/releases/tag/v0.10.2
 [0.10.1]: https://github.com/OWNER/groundctl/releases/tag/v0.10.1
 [0.10.0]: https://github.com/OWNER/groundctl/releases/tag/v0.10.0
 [0.9.2]: https://github.com/OWNER/groundctl/releases/tag/v0.9.2

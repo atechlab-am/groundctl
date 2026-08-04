@@ -1,10 +1,16 @@
 name: Release
 
-# Runs after CI finishes on `dev`. Only acts if CI succeeded AND the VERSION
-# file actually changed on that push — i.e. a release is opt-in per-commit
-# (bump VERSION + add a CHANGELOG.md section in the same PR that should
-# ship), not automatic on every green build. See CHANGELOG.md's header and
-# docs/releasing.md for the full contributor-facing procedure.
+# Runs after CI finishes on `dev`. Two independent things happen here, on
+# two independent gates — this split matters, see the "Fast-forward main
+# to dev" step below for the real bug this fixes:
+#   1. main ALWAYS fast-forwards to dev's latest commit whenever CI
+#      passes — main tracks "code confirmed to build," continuously, not
+#      just release checkpoints.
+#   2. Tagging/creating a GitHub Release stays opt-in per-commit (bump
+#      VERSION + add a CHANGELOG.md section in the same PR that should
+#      ship) — this is the only part gated on should_release.
+# See CHANGELOG.md's header and docs/releasing.md for the full
+# contributor-facing procedure.
 on:
   workflow_run:
     workflows: ["CI"]
@@ -28,6 +34,34 @@ jobs:
           # Default GITHUB_TOKEN pushes don't trigger other workflows, which
           # is fine here — pushing to main is the end of this pipeline, not
           # meant to re-trigger CI/release on main.
+
+      - name: Fast-forward main to dev
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          # Fast-forward only, via a throwaway local ref — NOT `git
+          # checkout main` in the job's own working tree, which would
+          # leave every later step (VERSION check, CHANGELOG extraction)
+          # reading main's stale files instead of dev's. Push
+          # origin/dev's commit directly to refs/heads/main instead;
+          # `--force-with-lease` here is safe/equivalent to a fast-
+          # forward check because it's scoped to main's exact expected
+          # current SHA, not an actual force-push over unknown state —
+          # if main has moved since the `git fetch` above (e.g. a hotfix
+          # landed directly on main), this fails loudly rather than
+          # silently overwriting it.
+          git push origin HEAD:refs/heads/main \
+            --force-with-lease="main:$(git rev-parse origin/main)"
+          # Runs on EVERY successful CI run on dev, unconditionally — a
+          # real bug found live: this used to be gated behind
+          # should_release below, so once a version was already tagged,
+          # ANY further commit pushed to dev (even a perfectly good,
+          # CI-passing one, e.g. a bug fix) never reached main at all
+          # until the next VERSION bump — main silently stopped tracking
+          # dev. Promoting tested code to main and cutting a version tag
+          # are different questions; only the tag should wait on a
+          # version bump.
 
       - name: Check whether VERSION changed on this push
         id: version_check
@@ -67,18 +101,6 @@ jobs:
             echo "$NOTES"
             echo "GROUNDCTL_CHANGELOG_EOF"
           } >> "$GITHUB_OUTPUT"
-
-      - name: Fast-forward main to dev
-        if: steps.version_check.outputs.should_release == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout main
-          # Fast-forward only — if main has diverged (e.g. a hotfix landed
-          # directly on main), fail loudly rather than force-pushing over it.
-          git merge --ff-only origin/dev
-          git push origin main
 
       - name: Tag and create GitHub Release
         if: steps.version_check.outputs.should_release == 'true'
