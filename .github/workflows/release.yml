@@ -87,13 +87,21 @@ jobs:
           VERSION: ${{ steps.version_check.outputs.current_version }}
           # Passed via env, NOT interpolated into the run: script with
           # ${{ }} — the changelog excerpt is arbitrary multi-line text
-          # (backticks, flags, paths) that GitHub Actions would substitute
-          # into the script's source BEFORE the shell runs it, so bash
-          # would try to execute the release notes as commands. An env var
-          # is inert data the shell only ever reads, never parses as code.
+          # that GitHub Actions would otherwise substitute into the
+          # script's source BEFORE the shell runs it.
           RELEASE_NOTES: ${{ steps.changelog.outputs.notes }}
         run: |
+          # --notes-file - (stdin) rather than --notes "${RELEASE_NOTES}"
+          # as a CLI argument: bash's parameter expansion inside double
+          # quotes does not re-tokenize the expanded value (a literal `"`
+          # in $RELEASE_NOTES stays inert data, verified locally), so the
+          # --notes form is not actually unsafe here — but the notes are
+          # free-form changelog prose that will keep containing quotes,
+          # backticks, and arbitrary punctuation release over release.
+          # Piping via stdin sidesteps argument-construction entirely
+          # (no quoting to reason about at all) rather than relying on
+          # bash's expansion semantics staying correct as this evolves.
           gh release create "v${VERSION}" \
             --target main \
             --title "v${VERSION}" \
-            --notes "${RELEASE_NOTES}"
+            --notes-file - <<< "${RELEASE_NOTES}"

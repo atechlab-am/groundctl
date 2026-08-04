@@ -46,6 +46,22 @@ history, even though the phases were built sequentially.
   count locally (multi-line notes containing quotes/backticks/flags stay
   exactly one shell argument via the `env:` + `"${RELEASE_NOTES}"`
   pattern, versus fragmenting into many when interpolated directly).
+- **Follow-up, same day**: after this fix landed, a re-run of the release
+  job still showed the exact pre-fix failure — traced to the re-run
+  executing against the *stale, pre-fix* workflow file rather than the
+  fixed one (GitHub's "re-run" for a `workflow_run`-triggered job appears
+  pinned to the original triggering commit, not the branch's current
+  HEAD — confirmed by diffing the failing run's own logged `env:` block,
+  which only listed `GH_TOKEN`, against this fix's `env:` block, which
+  also lists `VERSION`/`RELEASE_NOTES`; they didn't match). No `v0.10.x`
+  tag was ever actually created. Separately hardened `--notes
+  "${RELEASE_NOTES}"` to `--notes-file - <<< "${RELEASE_NOTES}"`
+  (stdin instead of a constructed CLI argument) — confirmed locally that
+  bash's `"${VAR}"` expansion does *not* re-tokenize embedded quotes (so
+  the original form was not actually broken), but stdin sidesteps
+  argument-quoting reasoning entirely for free-form changelog prose that
+  will keep containing quotes/backticks release over release. Requires a
+  genuinely new push (not a re-run of an old job) to exercise for real.
 
 ## [0.10.0] - 2026-08-04
 
