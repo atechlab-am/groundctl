@@ -25,6 +25,38 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-08-04
+
+### Fixed: `groundctl-maintain upgrade` silently skipped redeploying app code and restarting services when `main` moved but `VERSION` didn't
+
+- Found live, immediately after `v0.12.0` shipped: a host's checkout was
+  already sitting on the correct `VERSION` (`0.12.0`) after a prior
+  `upgrade`, but a `POST /repositories/probe` call still returned "method
+  not allowed" — the running `groundctl.service` process was serving
+  *older* code than what was actually on disk in the checkout.
+  `cmd_upgrade` gated the entire redeploy (`sync_app_code`,
+  `install_groundctl_service`, restarting `groundctl`/`-worker`/`-beat`,
+  etc.) on `before_version == after_version` — comparing `VERSION` before
+  and after `git reset --hard origin/main`. But `VERSION` only bumps on a
+  release; ordinary fix commits can land on `main` in between (this
+  session's own `0.12.0` → CI-fix commits are exactly that case). When
+  that happens, `git reset --hard` genuinely pulls new app code, but
+  `VERSION` reads the same before and after, so `cmd_upgrade` reported
+  "already up to date" and skipped `sync_app_code`/the service restart
+  entirely — leaving the running process on stale code indefinitely,
+  invisible until an operator manually restarted `groundctl.service` (as
+  happened here) or went looking. Same shape as the `0.10.4` fix to this
+  same function's `install_maintain_script` gating, but hitting the
+  running service itself instead of the `groundctl-maintain` binary.
+  Fixed by gating on whether `HEAD` actually moved (`git rev-parse HEAD`
+  before/after the reset), not on `VERSION` — the real signal for "is
+  there new code to deploy." Verified against three live disposable git
+  remote scenarios: no new commits still correctly reports "already up to
+  date" and touches nothing; new commits with `VERSION` unchanged now
+  correctly redeploys (`sync_app_code`, service restarts, etc.) instead of
+  silently skipping; a genuine version bump still upgrades and reports
+  correctly, and a follow-up re-run correctly no-ops.
+
 ## [0.11.0] - 2026-08-04
 
 ### Added: browse an upstream archive and multi-select distributions to mirror, instead of creating repositories one at a time
@@ -701,7 +733,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/OWNER/groundctl/releases/tag/v0.12.1
 [0.12.0]: https://github.com/OWNER/groundctl/releases/tag/v0.12.0
 [0.11.0]: https://github.com/OWNER/groundctl/releases/tag/v0.11.0
 [0.10.3]: https://github.com/OWNER/groundctl/releases/tag/v0.10.3

@@ -51,8 +51,9 @@ cmd_upgrade() {
     local repo_root="${GROUNDCTL_REPO_ROOT}"
     cd "${repo_root}"
 
-    local before_version after_version
+    local before_version after_version before_commit after_commit
     before_version="$(cat VERSION 2>/dev/null || echo unknown)"
+    before_commit="$(git rev-parse HEAD)"
 
     log_info "fetching latest release (origin/main)..."
     git fetch origin main --tags --quiet
@@ -67,6 +68,7 @@ cmd_upgrade() {
     git reset --hard origin/main --quiet
 
     after_version="$(cat VERSION 2>/dev/null || echo unknown)"
+    after_commit="$(git rev-parse HEAD)"
 
     # Source the SAME shared library functions install.sh uses — direct
     # reuse of already-idempotent provisioning logic, not a shell-out to
@@ -77,8 +79,8 @@ cmd_upgrade() {
     # shellcheck source=scripts/lib/app.sh
     . "${REPO_ROOT}/scripts/lib/app.sh"
 
-    # Always reinstall groundctl-maintain itself, even when VERSION is
-    # unchanged — a real bug found live: this used to run only inside the
+    # Always reinstall groundctl-maintain itself, even when nothing else
+    # changed — a real bug found live: this used to run only inside the
     # "something changed" branch below, gated on the VERSION diff. But a
     # checkout can already be sitting on the latest VERSION (e.g. from an
     # earlier partial/interrupted pull) while /usr/local/bin/
@@ -87,11 +89,26 @@ cmd_upgrade() {
     # change." Cheap (a single `install`) and idempotent either way.
     install_maintain_script
 
-    if [[ "${before_version}" == "${after_version}" ]]; then
+    # Gate on the actual commit, not VERSION — a second real bug found
+    # live, same shape as the one above but hitting the running service
+    # instead of groundctl-maintain itself. VERSION only bumps on a
+    # release; several ordinary commits (fixes, features without a version
+    # bump yet) can land on main in between. Gating the redeploy purely on
+    # "did VERSION change" meant a checkout could genuinely pull new app
+    # code via git reset --hard, report "already up to date" because
+    # VERSION hadn't moved, and skip sync_app_code/service restart
+    # entirely — leaving groundctl.service running the OLD code
+    # indefinitely, invisible until an operator manually restarts it or
+    # goes looking. HEAD is the actual "did anything change" signal.
+    if [[ "${before_commit}" == "${after_commit}" ]]; then
         log_info "already up to date (v${after_version})."
         return
     fi
-    log_info "upgrading v${before_version} -> v${after_version}"
+    if [[ "${before_version}" == "${after_version}" ]]; then
+        log_info "new commits on main (v${after_version} unchanged) — redeploying app code and restarting services"
+    else
+        log_info "upgrading v${before_version} -> v${after_version}"
+    fi
 
     detect_os
     log_info "updating apt package index..."

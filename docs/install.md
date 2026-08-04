@@ -82,7 +82,7 @@ Re-running `install.sh` after a `git pull` also picks up new app code (it copies
 sudo groundctl-maintain upgrade
 ```
 
-This does, in order: `git fetch`/`checkout` the checkout it was installed from to the latest `main` (the released/stable branch — see `docs/releasing.md`), rebuilds the web UI, resyncs app code, updates Python dependencies, applies pending database migrations, and restarts `groundctl`/`groundctl-worker`/`groundctl-beat` (only if anything actually changed). Running it again with nothing new to pull reports "already up to date" and touches nothing.
+This does, in order: `git fetch`/`checkout` the checkout it was installed from to the latest `main` (the released/stable branch — see `docs/releasing.md`), rebuilds the web UI, resyncs app code, updates Python dependencies, applies pending database migrations, and restarts `groundctl`/`groundctl-worker`/`groundctl-beat` — whenever `main` actually moved, whether or not `VERSION` itself changed (several ordinary commits can land on `main` between version bumps; gating a redeploy on the version string alone previously let a checkout silently skip syncing/restarting even though it had genuinely pulled newer app code — see `CHANGELOG.md`). Running it again with nothing new to pull reports "already up to date" and touches nothing.
 
 It deliberately does **not** touch one-time provisioning or config — no Postgres/Redis/aptly/nginx reinstall, no TLS cert regeneration, no fleet-hostname/nginx-port changes. If you need any of those, that's `install.sh`'s job (or `groundctl-maintain regen-cert` for TLS specifically, below).
 
