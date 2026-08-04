@@ -13,6 +13,10 @@ is what CI reads to decide what to tag and release. Every version bump here
 must have a matching `VERSION` change in the same commit/PR; see
 [`docs/releasing.md`](docs/releasing.md).
 
+Each `### Added`/`### Fixed`/`### Changed`/`### Known gaps` heading carries a
+short summary after a colon, e.g. `### Fixed: bump GitHub Actions to Node
+24-native majors` — written to double as a git commit subject line.
+
 Versions below map 1:1 to [`ROADMAP.md`](ROADMAP.md)'s phases. All of them
 share one date because groundctl's git history begins from a single
 "Initial commit" with no earlier per-phase commit trail to date each entry
@@ -21,9 +25,19 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-04
+
+### Fixed: bump GitHub Actions to Node 24-native majors, fixing the Node 20 deprecation warning on every CI job
+
+- Bumped `actions/checkout` (v4→v5), `actions/setup-python` (v5→v6), and
+  `actions/setup-node` (v4→v5) across `.github/workflows/ci.yml` and
+  `release.yml` — the pinned versions bundled Node 20, which GitHub's
+  runners now force-upgrade to Node 24 at runtime with a deprecation
+  warning on every job; the newer action majors support Node 24 natively.
+
 ## [0.9.1] - 2026-08-04
 
-### Fixed
+### Fixed: resolve all 48 mypy errors surfaced by CI's typecheck job
 
 - Resolved all 48 mypy errors surfaced by CI's (non-blocking) typecheck
   job. Not cosmetic — a handful were real gaps worth closing:
@@ -69,7 +83,7 @@ history, even though the phases were built sequentially.
 
 ROADMAP Phase 8 — Interface.
 
-### Added
+### Added: full-featured web UI and groundctl CLI, covering every resource with RBAC-aware auth
 
 - Full-featured web UI (`ui/`, Vite + React + TypeScript) covering every
   resource router with real list/detail/action screens — repositories,
@@ -92,7 +106,7 @@ ROADMAP Phase 8 — Interface.
   tokens persisted immediately after every use.
 - `docs/web-ui.md`, `docs/cli.md`.
 
-### Fixed
+### Fixed: SPA deep-link 404s, a CLI rate-limit misreport, and Rich swallowing help text
 
 - Starlette's `StaticFiles(html=True)` does not provide SPA deep-link
   fallback the way it's commonly assumed to — it only serves `index.html`
@@ -108,7 +122,7 @@ ROADMAP Phase 8 — Interface.
   (`[a-zA-Z0-9._-]`) in six commands' `--help` output — help text
   rephrased to avoid bracket syntax.
 
-### Known gaps
+### Known gaps: no content-views list/detail endpoint on the backend
 
 - No `GET /content-views` list/detail endpoint exists on the backend;
   both the web UI and CLI work around this client-side (explicit IDs /
@@ -118,7 +132,7 @@ ROADMAP Phase 8 — Interface.
 
 ROADMAP Phase 7 — Operations.
 
-### Added
+### Added: migrations, a real test suite + CI, pagination, structured logging, metrics, backups, health checks
 
 - Alembic migrations replacing `Base.metadata.create_all()` — a baseline
   migration (`0001_initial`) capturing the full schema, verified
@@ -139,7 +153,7 @@ ROADMAP Phase 7 — Operations.
 - Real dependency-aware health checks (`GET /health`) — actual
   operations against Postgres, aptly, and Redis, not liveness pings.
 
-### Fixed
+### Fixed: logging config being silently clobbered by Alembic and uvicorn, and an untestable health check
 
 - Alembic's `fileConfig()` silently reconfigured the root logger on every
   migration run, clobbering the JSON formatter on every app startup —
@@ -151,7 +165,7 @@ ROADMAP Phase 7 — Operations.
   `Depends()`, bypassing `app.dependency_overrides` and making the
   negative (aptly-unreachable) test path untestable.
 
-### Changed
+### Changed: corrected CLAUDE.md's testing guidance from SQLite to real Postgres
 
 - Corrected prior guidance in `CLAUDE.md`: SQLite cannot render this
   schema's `postgresql.UUID`/`ARRAY` column types at all — tests run
@@ -161,7 +175,7 @@ ROADMAP Phase 7 — Operations.
 
 ROADMAP Phase 6 — Security hardening.
 
-### Added
+### Added: enforced RBAC, GPG signing and HTTPS on by default, per-host SSH keys, refresh tokens, audit coverage
 
 - Enforced hierarchical RBAC (`require_role(min_role)`,
   admin > operator > viewer) across every endpoint, replacing the
@@ -181,7 +195,7 @@ ROADMAP Phase 6 — Security hardening.
 - Audit log coverage for `login`/`login_failed`, `GET /audit-logs`
   (filterable, admin-only), CSV export, retention/purge.
 
-### Fixed
+### Fixed: a silently-skipped pydantic validator and a broken Ansible authorized_key task
 
 - `LifecycleEnvironmentCreate.allow_unsigned`'s validator never actually
   ran when the field was omitted from the request body (the exact case
@@ -195,7 +209,7 @@ ROADMAP Phase 6 — Security hardening.
 
 ROADMAP Phase 5 — Relays (multi-site content distribution).
 
-### Added
+### Added: Relay/Site model and thin-relay content sync with SSH ProxyJump job routing
 
 - `Site` and `Relay` models — a relay mirrors published content to a
   remote site and serves that site's clients locally, deliberately thin
@@ -213,7 +227,7 @@ ROADMAP Phase 5 — Relays (multi-site content distribution).
 - Job execution routed through relays via SSH ProxyJump (not a
   relay-resident agent — keeps relays stateless and rebuildable).
 
-### Fixed
+### Fixed: ProxyJump's inner SSH hop not inheriting StrictHostKeyChecking
 
 - The bare `-o ProxyJump=` SSH shorthand does not propagate
   `StrictHostKeyChecking` to its own implicit inner hop — fixed with an
@@ -223,7 +237,7 @@ ROADMAP Phase 5 — Relays (multi-site content distribution).
 
 ROADMAP Phase 4 — Host management.
 
-### Added
+### Added: host groups, activation-key self-registration, extended facts, staleness alerting, ad-hoc execution
 
 - Host groups (`HostGroup`/`HostGroupServer`) as an independent
   many-to-many targeting mechanism for bulk actions.
@@ -242,7 +256,7 @@ ROADMAP Phase 4 — Host management.
 - Fleet-wide package search (`GET /compliance/packages/search`).
 - Per-host package install/remove (`JobType.manage_package`).
 
-### Fixed
+### Fixed: multi-task fact gathering silently overwriting instead of merging results
 
 - `ansible_runner_utils.run_playbook`'s fact capture overwrote rather
   than merged `ansible_facts` across multiple `runner_on_ok` events in
@@ -253,7 +267,7 @@ ROADMAP Phase 4 — Host management.
 
 ROADMAP Phase 3 — Errata and security intelligence.
 
-### Added
+### Added: USN/DSA errata ingestion, errata-to-host mapping, errata-aware content view filters
 
 - Ubuntu Security Notice (USN) and Debian Security Advisory (DSA)
   ingestion (`app/errata_ingest.py`), daily via Celery Beat.
@@ -265,7 +279,7 @@ ROADMAP Phase 3 — Errata and security intelligence.
   (extracted to a shared `app/version_compare.py`).
 - Errata-aware content view filters (`FilterType.errata_since`).
 
-### Known gaps
+### Known gaps: no errata severity data, no applicable-vs-installable distinction
 
 - `Erratum.severity` is never populated — neither upstream feed provides
   it — so no severity-based filtering/dashboards were built against it.
@@ -275,7 +289,7 @@ ROADMAP Phase 3 — Errata and security intelligence.
 
 ROADMAP Phase 2 — Job execution that survives restarts.
 
-### Added
+### Added: Celery + Redis job execution with retries, locking, cancellation, and progressive log streaming
 
 - Job execution moved to Celery + Redis, replacing `BackgroundTasks`.
 - Job cancellation (`POST /jobs/{id}/cancel`) — running jobs are
@@ -291,7 +305,7 @@ ROADMAP Phase 2 — Job execution that survives restarts.
   compliance scan) plus a `ComplianceCheckLog` model persisting scan
   results.
 
-### Fixed
+### Fixed: tasks silently falling back to Celery's unconfigured default app, and jobs stuck at running forever
 
 - `@shared_task` resolved against Celery's unconfigured default app
   (AMQP) when dispatched from a request handler under
@@ -304,7 +318,7 @@ ROADMAP Phase 2 — Job execution that survives restarts.
 
 ROADMAP Phase 1 — Content model parity.
 
-### Added
+### Added: Repository/ContentView/ContentViewVersion model with ordered, enforced environment promotion
 
 - `Repository` model, decoupled from `Environment` (replaces the old
   single-mirror-per-environment shape).
@@ -321,7 +335,7 @@ ROADMAP Phase 1 — Content model parity.
   environment actually had live before.
 - Content view filters (`ContentViewFilter`, include/exclude).
 
-### Known gaps
+### Known gaps: no composite content views, content view filters unverified against live aptly
 
 - Composite content views (a view built from other views) not modeled.
 - Content view filters not verified against a live aptly instance.
@@ -331,7 +345,7 @@ ROADMAP Phase 1 — Content model parity.
 ROADMAP Phase 0 — Correctness (blocking bug fixes underlying everything
 else).
 
-### Fixed
+### Fixed: promotion cutting a fresh snapshot on every call instead of only when content actually changed
 
 - **Promotion no longer cuts a fresh snapshot on every call.** `promote`
   now hashes the mirror's current package contents and only cuts a new
@@ -355,12 +369,13 @@ else).
 - Deprecated `db.query(M).get(id)` replaced with `db.get(M, id)`
   throughout.
 
-### Known gaps
+### Known gaps: single-mirror-per-environment, superseded by Phase 1's Repository/ContentView model
 
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/OWNER/groundctl/releases/tag/v0.9.2
 [0.9.1]: https://github.com/OWNER/groundctl/releases/tag/v0.9.1
 [0.9.0]: https://github.com/OWNER/groundctl/releases/tag/v0.9.0
 [0.8.0]: https://github.com/OWNER/groundctl/releases/tag/v0.8.0
