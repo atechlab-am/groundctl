@@ -10,26 +10,36 @@ default (see [`docs/https.md`](https.md)) — add `-k`/`--insecure` to the
 `curl` examples below unless you've swapped in a CA-issued cert, or trust
 the primary's cert locally first.
 
-## 1. Create your first user
+## 1. Log in as the admin user `install.sh` created
+
+`install.sh` prompts for (or auto-generates) the first admin user's
+credentials at install time and creates it directly — there's nothing to
+do here for a fresh install; just log in with those credentials (see
+`docs/install.md`'s "Usage" section for the prompt, or the generated
+password printed once in the install summary if it was auto-generated).
 
 `POST /auth/register` is **admin-only** (RBAC is enforced — see
-[`docs/limitations.md`](limitations.md)), so the very first user has to be
-created directly against the database, once, before any API call can
-create further users:
+[`docs/limitations.md`](limitations.md)), so that first user is what
+makes every subsequent user creation possible via the API. If you ever
+need to create a *second* admin directly against the database (e.g. the
+first admin's credentials are lost and no other admin exists), the same
+approach `install.sh` itself uses still works as a manual escape hatch:
 
 ```bash
-sudo -u groundctl /opt/groundctl/venv/bin/python3 -c "
+sudo -u groundctl bash -c '
+    set -a; source /etc/groundctl/groundctl.env; set +a
+    cd /opt/groundctl && exec ./venv/bin/python3 -c "
 from app.database import SessionLocal
 from app.models import User, Role
 from app.auth import hash_password
 db = SessionLocal()
-db.add(User(username='anthony', email='you@example.com', hashed_password=hash_password('...'), role=Role.admin))
+db.add(User(username=\"anthony\", email=\"you@example.com\", hashed_password=hash_password(\"...\"), role=Role.admin))
 db.commit()
 "
+'
 ```
 
-From there, log in and use that admin token to create any further users via
-the API:
+Once you have an admin token, use it to create any further users via the API:
 
 ```bash
 curl -sk -X POST https://<HOST>:8000/auth/login \

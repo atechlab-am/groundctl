@@ -82,6 +82,102 @@ run_migrations() {
     '
 }
 
+# Bootstraps the very first admin user. POST /auth/register is admin-only
+# (real, enforced RBAC — see app/routers/auth.py), so a fresh install has
+# no way to create ANY user via the API: there's no admin yet to call it
+# with. Without this, the web UI's login screen is unusable after a fresh
+# install and the only path was a manual Python one-liner run by hand
+# (see docs/quickstart.md's now-secondary "escape hatch" note).
+#
+# Idempotent like every other step here: if any role=admin user already
+# exists, this is a silent no-op — re-running install.sh after a git pull
+# must never re-prompt for credentials that are already set.
+ensure_first_admin_user() {
+    local existing_admin
+    existing_admin="$(sudo -u groundctl bash -c '
+        set -a
+        source /etc/groundctl/groundctl.env
+        set +a
+        cd /opt/groundctl && exec ./venv/bin/python3 -c "
+from sqlalchemy import select
+from app.database import SessionLocal
+from app.models import User, Role
+db = SessionLocal()
+user = db.execute(select(User).where(User.role == Role.admin)).scalars().first()
+print(user.username if user else \"\")
+"
+    ' 2>/dev/null)"
+
+    if [[ -n "${existing_admin}" ]]; then
+        log_info "admin user '${existing_admin}' already exists — skipping"
+        return
+    fi
+
+    ADMIN_USERNAME="${GROUNDCTL_ADMIN_USERNAME:-}"
+    ADMIN_EMAIL="${GROUNDCTL_ADMIN_EMAIL:-}"
+    ADMIN_PASSWORD="${GROUNDCTL_ADMIN_PASSWORD:-}"
+
+    prompt_if_unset ADMIN_USERNAME "Admin username" "admin"
+    prompt_if_unset ADMIN_EMAIL "Admin email" "admin@${FLEET_HOSTNAME}"
+
+    local generated_password=0
+    if [[ -z "${ADMIN_PASSWORD}" ]]; then
+        if [[ -t 0 ]]; then
+            local pw1 pw2
+            while true; do
+                read -r -s -p "Admin password (min 8 chars): " pw1; echo
+                read -r -s -p "Confirm password: " pw2; echo
+                if [[ "${pw1}" != "${pw2}" ]]; then
+                    log_warn "passwords did not match — try again"
+                elif [[ "${#pw1}" -lt 8 ]]; then
+                    log_warn "password must be at least 8 characters — try again"
+                else
+                    ADMIN_PASSWORD="${pw1}"
+                    break
+                fi
+            done
+        else
+            # Non-interactive (piped/cron/CI) with no password supplied —
+            # never hang on read, never fall back to a weak default.
+            # openssl is already a hard dependency (install_base_prereqs,
+            # ensure_tls_cert) so this needs no new tool.
+            ADMIN_PASSWORD="$(openssl rand -base64 18)"
+            generated_password=1
+        fi
+    fi
+
+    log_info "creating first admin user '${ADMIN_USERNAME}'..."
+    # Credentials passed via sys.argv (positional), never string-
+    # interpolated into the embedded Python source — a password
+    # containing quotes/backticks/$ must not be able to break out of the
+    # script, same injection-safety posture as the RELEASE_NOTES fix in
+    # .github/workflows/release.yml.
+    sudo -u groundctl bash -c '
+        set -a
+        source /etc/groundctl/groundctl.env
+        set +a
+        cd /opt/groundctl && exec ./venv/bin/python3 -c "
+import sys
+from app.database import SessionLocal
+from app.models import User, Role
+from app.auth import hash_password
+db = SessionLocal()
+db.add(User(username=sys.argv[1], email=sys.argv[2],
+            hashed_password=hash_password(sys.argv[3]), role=Role.admin))
+db.commit()
+" "$1" "$2" "$3"
+    ' _ "${ADMIN_USERNAME}" "${ADMIN_EMAIL}" "${ADMIN_PASSWORD}"
+
+    ADMIN_USER_CREATED=1
+    if [[ "${generated_password}" -eq 1 ]]; then
+        ADMIN_PASSWORD_WAS_GENERATED=1
+        # ADMIN_PASSWORD deliberately left set (this shell's memory only)
+        # so main()'s final summary can print it exactly once — never
+        # written to a file, never passed to log_info (which lands in
+        # journald), only echoed directly to the terminal at the very end.
+    fi
+}
+
 # Reads an existing key from groundctl.env if the file already exists, else
 # generates a fresh random value. Never regenerates an existing secret —
 # doing so on re-run would desync the app from an already-provisioned

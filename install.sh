@@ -101,6 +101,7 @@ main() {
     write_groundctl_env "${FLEET_HOSTNAME}" "${NGINX_PORT}"
     ensure_postgres_role_and_db "${GENERATED_PG_PASSWORD}"
     run_migrations
+    ensure_first_admin_user
     install_groundctl_service
     install_groundctl_worker_service
     install_groundctl_beat_service
@@ -127,6 +128,15 @@ main() {
     log_info ""
     log_info "  to upgrade later: sudo groundctl-maintain upgrade"
     log_info ""
+    if [[ "${ADMIN_USER_CREATED:-0}" -eq 1 ]]; then
+        log_info "  first admin user: ${ADMIN_USERNAME}"
+        if [[ "${ADMIN_PASSWORD_WAS_GENERATED:-0}" -eq 1 ]]; then
+            log_info "  generated password: ${ADMIN_PASSWORD}"
+            log_info "  (shown once — save it now; it is not stored anywhere and cannot be recovered)"
+        fi
+        log_info "  log in at https://<this-host>:8000"
+        log_info ""
+    fi
     if [[ "${FLEET_HOSTNAME}" == "groundctl.local" ]]; then
         log_warn "PUBLISHED_REPO_BASE_URL is still the placeholder 'groundctl.local' —" \
                  "edit /etc/groundctl/groundctl.env and 'systemctl restart groundctl' before" \

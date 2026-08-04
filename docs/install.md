@@ -28,14 +28,21 @@ All services run as a dedicated, non-root `groundctl` system user.
 sudo ./install.sh
 ```
 
-Run with no arguments, `install.sh` prompts interactively for the fleet hostname and nginx port (showing the default in brackets — press Enter to accept it):
+Run with no arguments, `install.sh` prompts interactively for the fleet hostname and nginx port (showing the default in brackets — press Enter to accept it), then — once the database is up and migrated — for the first admin user's username, email, and a password (entered twice, not echoed to the terminal):
 
 ```
 Fleet hostname (address managed hosts will reach this server at) [groundctl.local]: repo.example.com
 nginx published-repo port [8080]:
+...
+Admin username [admin]:
+Admin email [admin@repo.example.com]:
+Admin password (min 8 chars):
+Confirm password:
 ```
 
-For scripted/non-interactive installs, flags or environment variables bypass the prompt entirely (checked first — if either is already set, that value is used silently, no prompt shown):
+This is the only user that can exist without another admin creating it (`POST /auth/register` is admin-only, real enforced RBAC — see `docs/limitations.md`) — by the time `install.sh` finishes, you can log into the web UI immediately with these credentials. Re-running `install.sh` after an admin already exists skips this step silently (see "Re-running" below).
+
+For scripted/non-interactive installs, flags or environment variables bypass the prompt entirely (checked first — if either is already set, that value is used silently, no prompt shown). The admin username/email/password can be supplied the same way via `GROUNDCTL_ADMIN_USERNAME`/`GROUNDCTL_ADMIN_EMAIL`/`GROUNDCTL_ADMIN_PASSWORD` (see `install.env.example`) — if no password is supplied and the install isn't running on a real terminal (piped input, cron, CI), a random password is generated and printed once in the final summary rather than the script hanging on a prompt that can never be answered.
 
 ```bash
 sudo ./install.sh --fleet-hostname repo.example.com --nginx-port 8080
@@ -58,6 +65,7 @@ The script is idempotent — safe to re-run to pick up **config changes** (fleet
 - Generated secrets (Postgres password, JWT secret) are read back from the existing `/etc/groundctl/groundctl.env` and never regenerated.
 - An existing Ansible SSH keypair is never overwritten — overwriting it would break every already-authorized managed host.
 - Already-healthy services aren't unnecessarily bounced; they only restart if their config actually changed.
+- The admin-user prompt is skipped silently once any admin user exists — re-running never re-prompts for credentials you already set.
 
 Re-running `install.sh` after a `git pull` also picks up new app code (it copies the updated `app/` into `/opt/groundctl` and restarts services if needed) — but for routine **code upgrades**, prefer `groundctl-maintain upgrade` below, which is a smaller, purpose-built operation.
 
@@ -96,7 +104,7 @@ It deliberately does **not** touch one-time provisioning or config — no Postgr
 ## After install
 
 1. Authorize `/etc/groundctl/ansible-keys/id_ed25519.pub` on every host you plan to manage (append to that host's `~/.ssh/authorized_keys` for the user groundctl will SSH in as) — this is the shared fleet key used for initial bootstrap; Phase 6 per-host keys take over from there (see `docs/limitations.md`).
-2. Create the first admin user directly against the database (`POST /auth/register` is admin-only — see `docs/quickstart.md`'s step 1), then follow the rest of `docs/quickstart.md`'s API walkthrough against `https://<this-host>:8000` — create a mirror, sync, create an environment, promote.
+2. Log in at `https://<this-host>:8000` with the admin user `install.sh` just created (or via the API — see `docs/quickstart.md`'s walkthrough for `curl` examples), then create a mirror, sync, create an environment, and promote.
 
 ## Known limitation
 

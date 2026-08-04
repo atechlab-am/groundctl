@@ -27,6 +27,44 @@ history, even though the phases were built sequentially.
 
 ## [0.10.1] - 2026-08-04
 
+### Added: install.sh creates the first admin user, closing the fresh-install-to-usable-login gap
+
+- `POST /auth/register` is admin-only (real, enforced RBAC), so a fresh
+  install previously had zero users and no way to create one via the
+  API — the only path was a manual Python one-liner run by hand on the
+  box (`docs/quickstart.md`'s old step 1), and the web UI's login screen
+  gave no hint this was required. Found via a real first-time install.
+  New `ensure_first_admin_user` (`scripts/lib/app.sh`), called from
+  `install.sh`'s `main()` after migrations run: prompts for username
+  (default `admin`) and email via the existing `prompt_if_unset` helper,
+  and for a password via a masked (echo-disabled) prompt entered twice
+  to catch typos, validated for a mismatch and a minimum 8-character
+  length with a re-ask loop on either failure. Flags aren't offered for
+  these (a password must never appear in shell history/process list) —
+  `GROUNDCTL_ADMIN_USERNAME`/`GROUNDCTL_ADMIN_EMAIL`/
+  `GROUNDCTL_ADMIN_PASSWORD` env vars bypass the prompts for scripted
+  installs, matching the existing `GROUNDCTL_FLEET_HOSTNAME` convention.
+  If no password is supplied and stdin isn't a real terminal (piped/cron/
+  CI), a random password is generated (`openssl rand -base64 18` —
+  already a hard dependency) and printed exactly once in the final
+  install summary rather than hanging on an unanswerable prompt.
+  Idempotent like every other install step: silently skipped if any
+  `role=admin` user already exists, so re-running `install.sh` after a
+  `git pull` never re-prompts for credentials already set. Credentials
+  are passed to the embedded Python user-creation call via `sys.argv`
+  positional arguments, never string-interpolated into the script
+  source — the same injection-safety pattern just applied to
+  `release.yml`'s `RELEASE_NOTES` handling, this time built in
+  proactively. Verified live: the full password-prompt loop (mismatch →
+  retry, too-short → retry, valid → accept) exercised via `expect`
+  against the real script logic; a password containing double quotes,
+  single quotes, backticks, `$var`, `$(command)`, and `${braces}` passed
+  through the exact `sys.argv` pipeline against a real Postgres instance,
+  confirmed to land unmangled and to hash/verify correctly (right
+  password accepted, wrong password rejected); the idempotency check
+  query confirmed to correctly return empty before a user exists and the
+  correct username after.
+
 ### Fixed: fresh install failing at SSH keypair generation with "Permission denied"
 
 - `ensure_ansible_keypair` (`scripts/lib/app.sh`) ran `chown
