@@ -18,7 +18,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="flex h-screen overflow-hidden bg-background">
       <Sidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center justify-end gap-3 border-b bg-card px-6">
+        <header className="flex h-14 shrink-0 items-center justify-end gap-3 border-b bg-card/80 px-6 backdrop-blur-sm">
           {user && (
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2 text-sm">

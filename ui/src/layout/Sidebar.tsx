@@ -39,9 +39,22 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/documentation", label: "Documentation", icon: BookOpen },
 ];
 
+// Fluent 2's left-rail active state (Teams/Outlook/Admin Center): a
+// tinted background + colored icon/label + a left accent bar, not an
+// inverted filled pill — the signature that distinguishes this from a
+// generic admin-dashboard sidebar.
+function navLinkClass(isActive: boolean): string {
+  return cn(
+    "relative flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+    isActive
+      ? "bg-accent text-accent-foreground before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-primary"
+      : "text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground",
+  );
+}
+
 export function Sidebar() {
   return (
-    <nav className="flex h-full w-60 shrink-0 flex-col border-r bg-card">
+    <nav className="flex h-full w-60 shrink-0 flex-col border-r bg-secondary/50">
       <div className="flex h-14 items-center gap-2 border-b px-5">
         <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground text-sm font-bold">
           G
@@ -52,18 +65,7 @@ export function Sidebar() {
         <ul className="flex flex-col gap-0.5">
           {NAV_ITEMS.map((item) => (
             <li key={item.to}>
-              <NavLink
-                to={item.to}
-                end={item.to === "/"}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                  )
-                }
-              >
+              <NavLink to={item.to} end={item.to === "/"} className={({ isActive }) => navLinkClass(isActive)}>
                 <item.icon className="h-4 w-4 shrink-0" />
                 <span className="truncate">{item.label}</span>
               </NavLink>
@@ -71,17 +73,7 @@ export function Sidebar() {
           ))}
           <RoleGate minRole="admin">
             <li>
-              <NavLink
-                to="/audit-logs"
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                  )
-                }
-              >
+              <NavLink to="/audit-logs" className={({ isActive }) => navLinkClass(isActive)}>
                 <ScrollText className="h-4 w-4 shrink-0" />
                 <span className="truncate">Audit Logs</span>
               </NavLink>
