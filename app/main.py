@@ -32,6 +32,7 @@ from app.routers import (
     auth,
     compliance,
     content_views,
+    docs_content,
     enrollment,
     errata,
     host_groups,
@@ -174,6 +175,10 @@ api_router.include_router(activation_keys.router, prefix="/activation-keys", tag
 api_router.include_router(enrollment.router, prefix="/enrollment", tags=["enrollment"])
 api_router.include_router(sites.router, prefix="/sites", tags=["sites"])
 api_router.include_router(audit_logs.router, prefix="/audit-logs", tags=["audit-logs"])
+# /api/docs, NOT /docs — that's FastAPI's own Swagger UI, unprefixed and
+# unaffected (see the /api-prefixing note above). Serves docs/*.md, synced
+# alongside app/ into /opt/groundctl/docs by sync_app_code.
+api_router.include_router(docs_content.router, prefix="/docs", tags=["docs"])
 app.include_router(api_router)
 
 

@@ -58,9 +58,17 @@ sync_app_code() {
     mkdir -p /opt/groundctl
     if command -v rsync >/dev/null 2>&1; then
         rsync -a --delete "${REPO_ROOT}/app/" /opt/groundctl/app/
+        # docs/ — served in-app by app/routers/docs.py (GET /api/docs-content),
+        # resolved relative to app/'s own location (one level up), same
+        # pattern app/main.py uses for app/static. Sibling to app/, not
+        # nested inside it, so the checkout's own top-level docs/ layout
+        # stays identical in /opt/groundctl.
+        rsync -a --delete "${REPO_ROOT}/docs/" /opt/groundctl/docs/
     else
         rm -rf /opt/groundctl/app
         cp -a "${REPO_ROOT}/app" /opt/groundctl/app
+        rm -rf /opt/groundctl/docs
+        cp -a "${REPO_ROOT}/docs" /opt/groundctl/docs
     fi
     cp "${REPO_ROOT}/requirements.txt" /opt/groundctl/requirements.txt
     cp "${REPO_ROOT}/alembic.ini" /opt/groundctl/alembic.ini

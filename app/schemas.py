@@ -687,3 +687,19 @@ class AffectedServer(BaseModel):
 class AffectedServersResponse(BaseModel):
     advisory_id: str
     affected: list[AffectedServer]
+
+
+# ---------------------------------------------------------------------------
+# docs
+# ---------------------------------------------------------------------------
+
+
+class DocSummary(BaseModel):
+    filename: str
+    title: str
+
+
+class DocRead(BaseModel):
+    filename: str
+    title: str
+    content: str

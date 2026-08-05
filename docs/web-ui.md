@@ -24,6 +24,7 @@ server end to end via these screens.
 | Activation Keys | List, create (raw token shown once), revoke |
 | Sites | List, detail, register/view relay, manage synced environments |
 | Audit Logs | Filterable table, CSV export (admin-only) |
+| Documentation | Renders `docs/*.md` in-app (list + per-doc markdown view) — see `GET /api/docs` below |
 
 RBAC-gated actions match the API exactly: viewer sees read-only screens,
 operator gets create/action forms, admin additionally sees `run-command`

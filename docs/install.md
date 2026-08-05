@@ -103,6 +103,7 @@ Regenerates the self-signed TLS cert (fleet hostname read back from `/etc/ground
 | Path | Purpose |
 |---|---|
 | `/opt/groundctl/` | App code + Python venv |
+| `/opt/groundctl/docs/` | Copy of `docs/*.md`, served in-app at `GET /api/docs`/the web UI's Documentation screen |
 | `/etc/groundctl/groundctl.env` | Resolved config/secrets — not repo-tracked |
 | `/etc/groundctl/maintain.conf` | `groundctl-maintain`'s own metadata (the git checkout path) — not repo-tracked |
 | `/usr/local/bin/groundctl-maintain` | Standalone upgrade/maintenance command — see "Upgrading and maintenance" above |

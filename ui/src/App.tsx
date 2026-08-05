@@ -24,6 +24,7 @@ import { ActivationKeysPage } from "@/pages/activation-keys/ActivationKeysPage";
 import { SitesPage } from "@/pages/sites/SitesPage";
 import { SiteDetailPage } from "@/pages/sites/SiteDetailPage";
 import { AuditLogsPage } from "@/pages/audit-logs/AuditLogsPage";
+import { DocumentationPage } from "@/pages/documentation/DocumentationPage";
 import { RoleGate } from "@/layout/RoleGate";
 
 function Shell({ children }: { children: ReactNode }) {
@@ -57,6 +58,8 @@ export default function App() {
             <Route path="/activation-keys" element={<Shell><ActivationKeysPage /></Shell>} />
             <Route path="/sites" element={<Shell><SitesPage /></Shell>} />
             <Route path="/sites/:siteId" element={<Shell><SiteDetailPage /></Shell>} />
+            <Route path="/documentation" element={<Shell><DocumentationPage /></Shell>} />
+            <Route path="/documentation/:slug" element={<Shell><DocumentationPage /></Shell>} />
             <Route
               path="/audit-logs"
               element={

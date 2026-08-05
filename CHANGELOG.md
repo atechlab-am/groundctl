@@ -27,6 +27,51 @@ history, even though the phases were built sequentially.
 
 ## [0.13.2] - 2026-08-05
 
+### Added: documentation is now readable from the web UI itself, not just the repo
+
+- New sidebar item **Documentation** (`/documentation`, `/documentation/{slug}`)
+  renders `docs/*.md` as formatted HTML right inside the SPA via
+  `react-markdown` + `@tailwindcss/typography` — no separate GitHub/repo
+  access needed, works fully air-gapped.
+- New `GET /api/docs` (list, title extracted from each file's first `# H1`)
+  and `GET /api/docs/{filename}` (content), gated at `require_role(viewer)`
+  like every other read endpoint. Filenames are validated against
+  `^[a-z0-9][a-z0-9-]*\.md$` — a fixed, closed shape that can never
+  traverse outside the docs directory regardless of what's passed,
+  verified with a dedicated path-traversal test.
+- `docs/*.md` previously only existed in the git checkout — nothing
+  copied them into what the running app actually serves.
+  `sync_app_code` (`scripts/lib/app.sh`) now also syncs `docs/` into
+  `/opt/groundctl/docs` (sibling to `app/`, not nested inside it, so the
+  relative layout the endpoint resolves against — `Path(__file__)`-relative,
+  same pattern `app/main.py` already uses for `app/static` — is identical
+  in a dev checkout and in production).
+  A `groundctl-maintain upgrade` or fresh `install.sh` run is needed to
+  pick this up on an already-installed host.
+- Deliberately routed the SPA page at `/documentation`, not `/docs` —
+  FastAPI's own Swagger UI is already served, unprefixed, at bare `/docs`,
+  registered server-side ahead of the SPA's catch-all; an SPA route at
+  that same path would have hit real Swagger on a hard refresh instead of
+  ever reaching the SPA, the exact bug class the `/api` prefix work
+  earlier in this same version was written to prevent.
+- Caught a second instance of that same bug class before shipping:
+  `SPAStaticFiles`'s deep-link fallback deliberately treats any path
+  whose last segment contains a `.` as a missing-asset request, not a
+  client route (correct for real assets — a genuinely missing JS/CSS
+  file must stay a real 404). A route like `/documentation/install.md`
+  would have looked identical to that case, 404ing for real on a hard
+  refresh instead of loading the SPA. Fixed by routing on a
+  dot-free slug (`/documentation/install`, `.md` stripped/re-added at
+  the API-call boundary — `slugFor`/`filenameForSlug` in
+  `DocumentationPage.tsx`) instead of teaching the shared fallback logic
+  a per-feature exception.
+- New `tests/test_docs_content.py` (RBAC, list/detail, path-traversal and
+  invalid-filename rejection) needed the same `reset_login_rate_limit`
+  autouse fixture every other multi-token test file already carries —
+  `POST /auth/login` is rate-limited to 5/minute, and 6 tests each
+  independently minting a `viewer_token` exceeded that within the same
+  test run, caught by a real (not isolated-file) run of the full suite.
+
 ### Added: `docs/first-environment.md` — web-UI walkthrough for the repository → content view → environment → server chain
 
 - New doc covering the full required dependency chain (a lifecycle

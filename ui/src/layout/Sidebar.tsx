@@ -13,6 +13,7 @@ import {
   KeyRound,
   MapPin,
   ScrollText,
+  BookOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RoleGate } from "./RoleGate";
@@ -35,6 +36,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/host-groups", label: "Host Groups", icon: Users },
   { to: "/activation-keys", label: "Activation Keys", icon: KeyRound },
   { to: "/sites", label: "Sites", icon: MapPin },
+  { to: "/documentation", label: "Documentation", icon: BookOpen },
 ];
 
 export function Sidebar() {
