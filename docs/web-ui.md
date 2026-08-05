@@ -4,6 +4,10 @@ ROADMAP Phase 8 added a full-featured web console at `ui/` — a Vite +
 React + TypeScript SPA covering every resource router with real list,
 detail, and action screens, not just a read-only dashboard.
 
+New to groundctl? [`docs/first-environment.md`](first-environment.md) walks
+through setting up your first repository → content view → environment →
+server end to end via these screens.
+
 ## Screens
 
 | Area | Covers |

@@ -102,17 +102,34 @@ cmd_upgrade() {
     # change." Cheap (a single `install`) and idempotent either way.
     install_maintain_script
 
-    # Gate on the actual commit, not VERSION — a second real bug found
-    # live, same shape as the one above but hitting the running service
-    # instead of groundctl-maintain itself. VERSION only bumps on a
-    # release; several ordinary commits (fixes, features without a version
-    # bump yet) can land on main in between. Gating the redeploy purely on
-    # "did VERSION change" meant a checkout could genuinely pull new app
-    # code via git reset --hard, report "already up to date" because
-    # VERSION hadn't moved, and skip sync_app_code/service restart
-    # entirely — leaving groundctl.service running the OLD code
-    # indefinitely, invisible until an operator manually restarts it or
-    # goes looking. HEAD is the actual "did anything change" signal.
+    # Also always re-render and re-check the systemd units — a third real
+    # bug found live, same shape as install_maintain_script above but for
+    # groundctl.service/-worker/-beat. These were gated behind the same
+    # "did the commit move" check below, so a unit that went stale for a
+    # reason OTHER than a code change (e.g. it was written before the
+    # __GROUNDCTL_PORT__/tls.sh sourcing fix even existed) could never be
+    # repaired by upgrade alone — only a full install.sh re-run would
+    # unconditionally rewrite it, which is not what upgrade is for.
+    # _install_app_service (scripts/lib/app.sh) already does its own
+    # cheap content-diff internally (render to a temp file, cmp against
+    # what's installed, only restart if it actually differs or the
+    # service isn't running) — safe and cheap to call unconditionally,
+    # exactly like install_maintain_script above.
+    install_groundctl_service
+    install_groundctl_worker_service
+    install_groundctl_beat_service
+
+    # Gate the expensive stuff (apt, npm ci, venv rebuild, migrations) on
+    # the actual commit, not VERSION — a second real bug found live.
+    # VERSION only bumps on a release; several ordinary commits (fixes,
+    # features without a version bump yet) can land on main in between.
+    # Gating the redeploy purely on "did VERSION change" meant a checkout
+    # could genuinely pull new app code via git reset --hard, report
+    # "already up to date" because VERSION hadn't moved, and skip
+    # sync_app_code/service restart entirely — leaving groundctl.service
+    # running the OLD code indefinitely, invisible until an operator
+    # manually restarted it or went looking. HEAD is the actual "did
+    # anything change" signal.
     if [[ "${before_commit}" == "${after_commit}" ]]; then
         log_info "already up to date (v${after_version})."
         return
@@ -134,9 +151,17 @@ cmd_upgrade() {
     setup_venv
     grant_bind_low_ports
     run_migrations
-    install_groundctl_service
-    install_groundctl_worker_service
-    install_groundctl_beat_service
+    # Units already (re-)installed unconditionally above, before this
+    # gate — sync_app_code/setup_venv don't change anything the rendered
+    # unit content depends on, so re-calling _install_app_service here
+    # would just re-render identical content and no-op. What DOES need a
+    # restart post-upgrade is the app code itself; that's what
+    # ExecStart's running process picks up, not a re-render of the unit
+    # file. Restart directly instead of going through
+    # install_groundctl_service a second time.
+    systemctl restart groundctl
+    systemctl restart groundctl-worker
+    systemctl restart groundctl-beat
 
     log_info "upgrade complete — now on v${after_version}."
 }

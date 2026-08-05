@@ -1,7 +1,10 @@
 # Quickstart
 
 This walks through the API once groundctl is installed and running. If you
-haven't installed it yet, see [`docs/install.md`](install.md) first.
+haven't installed it yet, see [`docs/install.md`](install.md) first. Prefer
+clicking through the web UI instead of `curl`? See
+[`docs/first-environment.md`](first-environment.md) for the same repository
+→ content view → environment → server chain, screen by screen.
 
 The examples below use `<HOST>` for the address groundctl is listening on
 (the host you ran `install.sh` on — `install.sh`'s own output prints this

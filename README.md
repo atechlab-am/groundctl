@@ -1,6 +1,6 @@
 # Groundctl
 
-**Version:** [0.13.1](CHANGELOG.md#0131---2026-08-05) · see [`CHANGELOG.md`](CHANGELOG.md) for release history and [`docs/releasing.md`](docs/releasing.md) for how releases are cut.
+**Version:** [0.13.2](CHANGELOG.md#0132---2026-08-05) · see [`CHANGELOG.md`](CHANGELOG.md) for release history and [`docs/releasing.md`](docs/releasing.md) for how releases are cut.
 
 **A self-hosted content-view and patch-level manager for Debian/Ubuntu fleets — mirror repos, snapshot them, stage different package versions to different environments, and manage servers from one place.**
 
@@ -63,7 +63,7 @@ git clone <this repo> && cd groundctl
 sudo ./install.sh --fleet-hostname repo.example.com
 ```
 
-See [`docs/install.md`](docs/install.md) for the full walkthrough, then [`docs/quickstart.md`](docs/quickstart.md) for the API tour (register a user, mirror a repo, promote an environment).
+See [`docs/install.md`](docs/install.md) for the full walkthrough, then [`docs/quickstart.md`](docs/quickstart.md) for the API tour (register a user, mirror a repo, promote an environment) or [`docs/first-environment.md`](docs/first-environment.md) for the same flow via the web UI.
 
 ## Interfaces
 

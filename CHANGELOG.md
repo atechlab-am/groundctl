@@ -25,6 +25,54 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-08-05
+
+### Added: `docs/first-environment.md` — web-UI walkthrough for the repository → content view → environment → server chain
+
+- New doc covering the full required dependency chain (a lifecycle
+  environment needs a published content view; a content view needs at
+  least one repository) purely through the web UI's own screens, mirroring
+  `docs/quickstart.md`'s `curl` walkthrough for anyone clicking through
+  instead of scripting. Includes a field-by-field table for
+  `LifecycleEnvironmentCreate` (path name/position/content view/distro/
+  release/publish prefix/GPG signing) and covers both self-enrollment
+  (activation key + generated script) and manual server creation for
+  adding a server, cross-linking `docs/quickstart.md`'s activation-key
+  field reference rather than duplicating it.
+- Cross-linked from `README.md`, `docs/quickstart.md`, and `docs/web-ui.md`.
+
+### Fixed: `groundctl-maintain upgrade` couldn't repair a stale systemd unit when the checkout had no new commits to redeploy
+
+- Found live immediately after the `0.13.1` fix: a host's checkout was
+  already at the latest commit (the `tls.sh`-sourcing fix from `0.13.1`
+  itself), but `groundctl.service` was still the *old* unit
+  (`--port 8000`) written before the port-443 change existed — `upgrade`
+  correctly reported "already up to date" (nothing changed since the
+  `0.13.1` pull) and, because `install_groundctl_service` was still
+  gated behind that same "did the commit move" check, never re-rendered
+  the unit to repair it. Only a full `install.sh` re-run (which
+  unconditionally rewrites the unit) fixed it, on the same host used to
+  verify `0.13.0`'s port-443 rollout.
+- Same shape as `0.10.4`'s `install_maintain_script` fix, applied to the
+  systemd units too: `install_groundctl_service`/`install_groundctl_worker_service`/
+  `install_groundctl_beat_service` now run unconditionally, before the
+  commit-diff gate — cheap and self-limiting, since `_install_app_service`
+  already does its own content-diff internally (render to a temp file,
+  `cmp` against what's installed, only restart if it actually differs or
+  the service isn't running). The expensive part of an upgrade (apt,
+  `npm ci`, venv rebuild, migrations) still only runs when `main` actually
+  moved; the now-redundant second call to the three `install_*_service`
+  functions after that block was removed in favor of a direct
+  `systemctl restart` (the units themselves don't change between the
+  pre-gate render and the end of a real upgrade — only the app code they
+  point at does).
+- Verified against three live disposable-checkout scenarios: a stale unit
+  with no new commits is now repaired and reports "already up to date"
+  for everything else; re-running immediately with the unit already
+  correct and the service already active correctly no-ops (no restart);
+  a genuine version bump still performs the full redeploy and restarts
+  all three services exactly once, not twice.
+
 ## [0.13.1] - 2026-08-05
 
 ### Fixed: `groundctl-maintain upgrade` crashed with "TLS_CERT_PATH: unbound variable" — `cmd_upgrade` never sourced `scripts/lib/tls.sh`
@@ -847,7 +895,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.13.2...HEAD
+[0.13.2]: https://github.com/OWNER/groundctl/releases/tag/v0.13.2
 [0.13.1]: https://github.com/OWNER/groundctl/releases/tag/v0.13.1
 [0.13.0]: https://github.com/OWNER/groundctl/releases/tag/v0.13.0
 [0.12.1]: https://github.com/OWNER/groundctl/releases/tag/v0.12.1
