@@ -22,16 +22,16 @@ Use a dedicated key for this purpose, not a personal key — it needs to
 live wherever the groundctl app runs and will sign every publish for any
 environment configured to use it. Copy the key's fingerprint (long-form
 hex, e.g. `sudo -u groundctl gpg --list-secret-keys --with-colons`) — this
-is the `gpg_key_id` passed to `POST /lifecycle-environments`.
+is the `gpg_key_id` passed to `POST /api/lifecycle-environments`.
 
 ## How it flows through to clients
 
-1. `POST /lifecycle-environments` with `gpg_key_id` set persists it on the
+1. `POST /api/lifecycle-environments` with `gpg_key_id` set persists it on the
    `LifecycleEnvironment` row.
 2. `promote`/`rollback` pass `environment.gpg_key_id` into
    `publish_snapshot`/`switch_publish` — aptly signs the Release file with
    that key on every publish/switch.
-3. `GET /lifecycle-environments/{id}/gpg-key` exports the public half
+3. `GET /api/lifecycle-environments/{id}/gpg-key` exports the public half
    (`gpg --export --armor`), ASCII-armored — viewer-role readable, since
    the public key isn't sensitive.
 4. `bootstrap_client.yml` fetches the key directly from the **primary's**
@@ -50,7 +50,7 @@ is the `gpg_key_id` passed to `POST /lifecycle-environments`.
 
 ## Opting out
 
-Pass `"allow_unsigned": true` in `POST /lifecycle-environments` when
+Pass `"allow_unsigned": true` in `POST /api/lifecycle-environments` when
 `gpg_key_id` is omitted. This is a deliberate per-environment choice, not a
 global setting — some environments (e.g. a scratch/dev content view) may
 reasonably stay unsigned while production-facing ones require it.

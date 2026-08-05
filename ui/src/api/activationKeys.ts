@@ -56,11 +56,14 @@ export function revokeActivationKey(id: string): Promise<ActivationKeyRead> {
 
 // Same-origin URL (see CLAUDE.md's Frontend section — the SPA is served by
 // the same FastAPI app as the API, no separate origin to configure) to the
-// generated enrollment script — GET /enrollment/script?token=... itself
+// generated enrollment script — GET /api/enrollment/script?token=... itself
 // needs no auth beyond the token (see app/routers/enrollment.py), so this
-// is a plain URL to hand to the operator, not an api.* call.
+// is a plain URL to hand to the operator, not an api.* call. Every resource
+// endpoint is mounted under /api (see client.ts's API_PREFIX) — this must
+// stay in sync with that, since it's built independently (a raw curl
+// command, not routed through apiRequest/buildUrl).
 export function enrollmentScriptCommand(token: string): string {
-  const url = new URL("/enrollment/script", window.location.origin);
+  const url = new URL("/api/enrollment/script", window.location.origin);
   url.searchParams.set("token", token);
   return `curl -sSL ${url.toString()} | sudo bash`;
 }

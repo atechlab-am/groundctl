@@ -96,6 +96,7 @@ main() {
     build_ui
     sync_app_code
     setup_venv
+    grant_bind_low_ports
     ensure_ansible_keypair
     ensure_tls_cert "${FLEET_HOSTNAME}"
     write_groundctl_env "${FLEET_HOSTNAME}" "${NGINX_PORT}"
@@ -111,7 +112,7 @@ main() {
 
     log_info "install complete."
     log_info ""
-    log_info "  groundctl API + web UI: https://<this-host>:8000  (systemctl status groundctl)"
+    log_info "  groundctl API + web UI: https://<this-host>  (systemctl status groundctl)"
     log_info "  published repos: https://${FLEET_HOSTNAME}:${NGINX_PORT}/  (systemctl status nginx)"
     log_info "  TLS: self-signed by default (${TLS_CERT_PATH}) — see docs/https.md" \
              "for swapping in a CA-issued cert"
@@ -134,7 +135,7 @@ main() {
             log_info "  generated password: ${ADMIN_PASSWORD}"
             log_info "  (shown once — save it now; it is not stored anywhere and cannot be recovered)"
         fi
-        log_info "  log in at https://<this-host>:8000"
+        log_info "  log in at https://<this-host>"
         log_info ""
     fi
     if [[ "${FLEET_HOSTNAME}" == "groundctl.local" ]]; then

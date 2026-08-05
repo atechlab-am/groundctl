@@ -20,11 +20,16 @@ from app.schemas import RefreshRequest, TokenPair, UIAccessToken, UserCreate, Us
 
 router = APIRouter()
 
-# Cookie name/path shared by the ui-* endpoints below. Scoped to /auth so the
-# browser only ever sends it back to the refresh/logout endpoints that need
-# it, not on every request to the resource API.
+# Cookie name/path shared by the ui-* endpoints below. Scoped to /api/auth
+# (this router's real mounted path — see app/main.py's api_router, prefix
+# /api applied on top of this router's own /auth) so the browser only ever
+# sends it back to the refresh/logout endpoints that need it, not on every
+# request to the resource API. Must track the router's actual mount path
+# exactly — a mismatch here means the browser silently never sends the
+# cookie back at all, breaking silent refresh with no visible error until
+# the access token expires.
 UI_REFRESH_COOKIE = "refresh_token"
-UI_REFRESH_COOKIE_PATH = "/auth"
+UI_REFRESH_COOKIE_PATH = "/api/auth"
 
 
 def _set_ui_refresh_cookie(response: Response, refresh_token: str) -> None:

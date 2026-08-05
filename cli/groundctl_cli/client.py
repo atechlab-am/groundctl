@@ -33,7 +33,14 @@ class GroundctlClient:
         if not self.config.api_url:
             raise GroundctlError(NOT_LOGGED_IN_MESSAGE)
 
-        self._http = httpx.Client(base_url=self.config.api_url, timeout=30.0)
+        # Every resource endpoint is mounted under /api server-side (see
+        # app/main.py — keeps API paths from colliding with the web UI's
+        # own client-side page routes, e.g. /servers is both a page and a
+        # resource name). config.api_url stores exactly what the user
+        # typed at `groundctl auth login` (e.g. "https://host") — /api is
+        # appended here, once, so every relative path used throughout this
+        # module and every commands/*.py file stays unprefixed and correct.
+        self._http = httpx.Client(base_url=f"{self.config.api_url.rstrip('/')}/api", timeout=30.0)
         self._access_token: str | None = None
 
     # -- auth bootstrap ----------------------------------------------------

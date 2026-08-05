@@ -25,6 +25,75 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-05
+
+### Fixed: web UI pages returned raw `{"detail":"Not authenticated"}` on hard refresh — every resource API endpoint now lives under `/api`
+
+- Root cause: several SPA page paths (`/servers`, `/jobs`, `/errata`,
+  `/sites`, `/activation-keys`) were identical to real API router
+  prefixes, and `app.include_router(...)` mounted those endpoints at the
+  bare path — matched by FastAPI *before* the SPA's catch-all
+  `StaticFiles` fallback ever saw the request (see `SPAStaticFiles`).
+  Refreshing the browser on, say, `/servers` sent a real `GET /servers`
+  straight to the API (no `Authorization` header, since the browser is
+  navigating, not the SPA's fetch wrapper), which correctly 401'd —
+  but that raw JSON is what rendered instead of the app ever loading.
+- Fixed by mounting every resource router under a new `/api` prefix
+  (`app/main.py`'s `api_router`) — `/health`/`/metrics`/`/docs` stay
+  unprefixed (infra/tooling endpoints, no collision risk). Updated in
+  lockstep: the web UI's fetch client (`ui/src/api/client.ts`'s
+  `API_PREFIX`), the standalone CLI (`cli/groundctl_cli/client.py`
+  appends `/api` to the configured `api_url`), the generated enrollment
+  script (`GET /api/enrollment/register`, `/api/enrollment/ssh-public-key`),
+  `vite.config.ts`'s dev-server proxy (collapsed from 12 individually
+  listed prefixes to one `/api` rule — which also fixed a pre-existing
+  gap where `/enrollment` was missing from that list entirely), and every
+  `curl`/URL example across `docs/*.md`.
+- Caught and fixed a second bug this same change would otherwise have
+  introduced: the web UI's httpOnly refresh-token cookie was scoped to
+  path `/auth`, which no longer matches where those endpoints actually
+  live (`/api/auth/ui-refresh`, etc.) — a mismatch here means the browser
+  silently never sends the cookie back at all. Moved
+  `UI_REFRESH_COOKIE_PATH` to `/api/auth` (`app/routers/auth.py`).
+- Test suite fix: ~400 existing `client.get/post/put/delete("/...")` calls
+  across `tests/*.py` predate the `/api` prefix and use bare resource
+  paths. Rather than rewrite every call site, `tests/conftest.py` now
+  defines a `TestClient` subclass overriding `_merge_url` to transparently
+  prepend `/api` (matching what the real frontend/CLI clients now do)
+  unless the path already targets `/api/...` or one of the genuinely
+  unprefixed routes. Every test file constructing `TestClient` directly
+  now imports it from `tests.conftest` instead of `fastapi.testclient`.
+  Verified: full suite passes unchanged (224 passed, 24 skipped).
+
+### Added: the API + web UI now listen on port 443 — no port needed to browse to the fleet hostname
+
+- `groundctl.service` moves from `:8000` to `:443` (`GROUNDCTL_PORT` in
+  `scripts/lib/app.sh`, templated into `systemd/groundctl.service.template`
+  as `__GROUNDCTL_PORT__`). nginx's own port for published apt repos is
+  unchanged (still configurable, default `8080`) — this only affects the
+  API/UI.
+- Binding a privileged port from the unprivileged `groundctl` user (no
+  service here runs as root) uses `CAP_NET_BIND_SERVICE` via `setcap` on
+  the venv's own `python3` binary (`grant_bind_low_ports`), called after
+  `setup_venv` in both `install.sh` and `groundctl-maintain upgrade`.
+  Requires `libcap2-bin` (added to `install_app_prereqs`).
+- Caught a real problem before shipping it: `python3 -m venv` normally
+  makes `bin/python3` a **symlink** to the system interpreter, not its
+  own binary. `setcap` on a symlink either fails outright or — if
+  followed — grants the capability to the *system-wide* `python3`,
+  meaning every other script on the host invoked via that same
+  interpreter could also bind privileged ports. Fixed by creating the
+  venv with `--copies` (a real, independent ~30MB binary), with
+  `setup_venv` detecting and one-time-recreating any existing venv still
+  in symlink form (from before this change) so `setcap` never targets
+  the system interpreter.
+- `write_groundctl_env`'s `GROUNDCTL_API_BASE_URL` (used by
+  `bootstrap_client.yml` to fetch the GPG key / TLS CA cert over the
+  bootstrap SSH connection) drops its hardcoded `:8000` — `https://` with
+  no port already means 443.
+- `install.sh`'s final summary and every `docs/*.md` walkthrough updated
+  from `https://<host>:8000` to `https://<host>`.
+
 ## [0.12.1] - 2026-08-04
 
 ### Fixed: `groundctl-maintain upgrade` silently skipped redeploying app code and restarting services when `main` moved but `VERSION` didn't
@@ -733,7 +802,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/OWNER/groundctl/releases/tag/v0.13.0
 [0.12.1]: https://github.com/OWNER/groundctl/releases/tag/v0.12.1
 [0.12.0]: https://github.com/OWNER/groundctl/releases/tag/v0.12.0
 [0.11.0]: https://github.com/OWNER/groundctl/releases/tag/v0.11.0

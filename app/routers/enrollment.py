@@ -167,14 +167,14 @@ fi
 # the only bytes that would need escaping in a JSON string. Don't repurpose
 # this pattern for a field without that same guarantee.
 echo "[groundctl-register] registering ${{hostname}} (${{ip_address}}) with groundctl..."
-response="$(curl -sSf -X POST "${{GROUNDCTL_API_BASE_URL}}/enrollment/register" \\
+response="$(curl -sSf -X POST "${{GROUNDCTL_API_BASE_URL}}/api/enrollment/register" \\
     -H 'Content-Type: application/json' \\
     -d "$(printf '{{"token": "%s", "hostname": "%s", "ip_address": "%s", "ssh_user": "root"}}' \\
         "${{GROUNDCTL_TOKEN}}" "${{hostname}}" "${{ip_address}}")")"
 echo "[groundctl-register] registered: ${{response}}"
 
 echo "[groundctl-register] installing groundctl's SSH key for future management..."
-fleet_pubkey="$(curl -sSf "${{GROUNDCTL_API_BASE_URL}}/enrollment/ssh-public-key")"
+fleet_pubkey="$(curl -sSf "${{GROUNDCTL_API_BASE_URL}}/api/enrollment/ssh-public-key")"
 install -d -m 0700 /root/.ssh
 touch /root/.ssh/authorized_keys
 chmod 0600 /root/.ssh/authorized_keys

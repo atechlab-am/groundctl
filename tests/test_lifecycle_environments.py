@@ -236,7 +236,7 @@ def test_promote_environment_path_order_enforced(client, operator_token, mock_ap
 
 
 def test_promote_environment_aptly_unreachable_returns_502(db_session, mock_aptly, mock_aptly_unreachable):
-    from fastapi.testclient import TestClient
+    from tests.conftest import TestClient
 
     from app.aptly_client import get_aptly_client
     from app.main import app

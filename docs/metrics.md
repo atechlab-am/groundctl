@@ -17,7 +17,7 @@ token, an unusual scrape-config burden).
 | `groundctl_aptly_disk_usage_bytes` | Gauge | — | Bytes used on `/var/lib/groundctl/aptly`, updated by the weekly `scheduled_aptly_maintenance` task (not live at scrape time — see below) |
 | `groundctl_aptly_disk_usage_percent` | Gauge | — | Same, as a percentage |
 
-`path` labels use the route template (`/servers/{server_id}`), not the
+`path` labels use the route template (`/api/servers/{server_id}`), not the
 resolved URL — so per-server request volume doesn't fragment into one
 label series per UUID.
 

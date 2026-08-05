@@ -30,7 +30,11 @@ def modules(tmp_path, monkeypatch):
 
 def _install_transport(client_module, handler) -> None:
     """Monkeypatch GroundctlClient to build its httpx.Client with a
-    MockTransport instead of hitting the network."""
+    MockTransport instead of hitting the network. Mirrors the real
+    __init__'s base_url = f"{api_url}/api" (see client.py) rather than just
+    api_url — otherwise these tests would keep passing even if that /api
+    prefixing broke, since the handler assertions below check
+    request.url.path against un-prefixed paths like "/auth/refresh"."""
     original_init = client_module.GroundctlClient.__init__
 
     def patched_init(self, config=None):
@@ -38,7 +42,9 @@ def _install_transport(client_module, handler) -> None:
         if not self.config.api_url:
             raise client_module.GroundctlError(client_module.NOT_LOGGED_IN_MESSAGE)
         self._http = httpx.Client(
-            base_url=self.config.api_url, transport=httpx.MockTransport(handler), timeout=30.0
+            base_url=f"{self.config.api_url.rstrip('/')}/api",
+            transport=httpx.MockTransport(handler),
+            timeout=30.0,
         )
         self._access_token = None
 
@@ -52,7 +58,7 @@ def test_ensure_authenticated_persists_rotated_refresh_token(modules, tmp_path):
     calls = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/refresh":
+        if request.url.path == "/api/auth/refresh":
             calls.append(request)
             body = request.read()
             import json
@@ -95,7 +101,7 @@ def test_three_commands_in_a_row_never_reuse_a_revoked_token(modules):
     def handler(request: httpx.Request) -> httpx.Response:
         import json
 
-        assert request.url.path == "/auth/refresh"
+        assert request.url.path == "/api/auth/refresh"
         presented = json.loads(request.read())["refresh_token"]
         if presented in revoked or presented != server_valid_token["value"]:
             return httpx.Response(401, json={"detail": "refresh token invalid or already used"})
@@ -171,7 +177,7 @@ def test_login_stores_only_refresh_token_not_access_token(modules):
     client_module, config_module, _ = modules
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/auth/login"
+        assert request.url.path == "/api/auth/login"
         return httpx.Response(
             200, json={"access_token": "super-secret-access", "refresh_token": "refresh-abc", "token_type": "bearer"}
         )
@@ -195,7 +201,7 @@ def test_request_attaches_bearer_token(modules):
     seen_auth_header = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/repositories":
+        if request.url.path == "/api/repositories":
             seen_auth_header["value"] = request.headers.get("authorization")
             return httpx.Response(200, json=[])
         raise AssertionError(f"unexpected path {request.url.path}")

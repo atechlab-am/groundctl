@@ -239,7 +239,7 @@ def test_enrollment_script_end_to_end(tmp_path, db_session, mock_aptly, monkeypa
     import threading
 
     import uvicorn
-    from fastapi.testclient import TestClient
+    from tests.conftest import TestClient
 
     from app.aptly_client import get_aptly_client
     from app.main import app

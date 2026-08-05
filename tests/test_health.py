@@ -8,7 +8,7 @@ def test_health_ok_when_all_dependencies_reachable(client):
 
 
 def test_health_returns_503_when_aptly_unreachable(db_session, mock_aptly_unreachable):
-    from fastapi.testclient import TestClient
+    from tests.conftest import TestClient
 
     from app.aptly_client import get_aptly_client
     from app.main import app

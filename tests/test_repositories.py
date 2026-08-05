@@ -1,13 +1,12 @@
 from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app.aptly_client import get_aptly_client
 from app.archive_probe import ArchiveProbeError
 from app.main import app
 from tests._rate_limit_helper import reset_login_rate_limit
-from tests.conftest import Role, _token_for, auth_headers
+from tests.conftest import Role, TestClient, _token_for, auth_headers
 
 
 @pytest.fixture(autouse=True)

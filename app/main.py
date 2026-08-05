@@ -8,7 +8,7 @@ from pathlib import Path
 import redis
 from alembic import command
 from alembic.config import Config as AlembicConfig
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from slowapi import _rate_limit_exceeded_handler
@@ -138,24 +138,43 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(MetricsMiddleware)
 
+# Every resource router lives under /api — NOT cosmetic. The web UI (below)
+# is a client-side-routed SPA whose own page paths are the *same* strings as
+# several of these resource names (/servers, /jobs, /errata, /sites,
+# /activation-keys — a page and a "list X" endpoint are naturally named
+# alike). Before this prefix, app.include_router mounted those endpoints at
+# the bare path, which FastAPI matches BEFORE the SPA catch-all StaticFiles
+# mount ever sees the request (see SPAStaticFiles below) — so a hard
+# refresh/deep link on e.g. /servers hit the real `GET /servers` API
+# endpoint (401 JSON with no Authorization header) instead of ever reaching
+# the SPA. Namespacing every resource router under /api removes the
+# collision entirely: no SPA route will ever again share a path with an API
+# route by coincidence. /health and /metrics stay unprefixed (infra
+# endpoints — monitoring/orchestration tooling conventionally expects them
+# at the root, and neither collides with an SPA page anyway).
+#
 # Every aptly interaction in this codebase goes through a named AptlyClient
 # method with a fixed, specific purpose (see app/aptly_client.py). No router
 # or endpoint here proxies or forwards arbitrary aptly calls — do not add one.
-app.include_router(auth.router, prefix="/auth", tags=["auth"])
-app.include_router(repositories.router, prefix="/repositories", tags=["repositories"])
-app.include_router(content_views.router, prefix="/content-views", tags=["content-views"])
-app.include_router(lifecycle_environments.router, prefix="/lifecycle-environments", tags=["lifecycle-environments"])
-app.include_router(servers.router, prefix="/servers", tags=["servers"])
-app.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
-app.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
-app.include_router(errata.router, prefix="/errata", tags=["errata"])
-app.include_router(host_groups.router, prefix="/host-groups", tags=["host-groups"])
-app.include_router(activation_keys.router, prefix="/activation-keys", tags=["activation-keys"])
+api_router = APIRouter(prefix="/api")
+api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
+api_router.include_router(repositories.router, prefix="/repositories", tags=["repositories"])
+api_router.include_router(content_views.router, prefix="/content-views", tags=["content-views"])
+api_router.include_router(
+    lifecycle_environments.router, prefix="/lifecycle-environments", tags=["lifecycle-environments"]
+)
+api_router.include_router(servers.router, prefix="/servers", tags=["servers"])
+api_router.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
+api_router.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
+api_router.include_router(errata.router, prefix="/errata", tags=["errata"])
+api_router.include_router(host_groups.router, prefix="/host-groups", tags=["host-groups"])
+api_router.include_router(activation_keys.router, prefix="/activation-keys", tags=["activation-keys"])
 # The one router in the app with no Depends(get_current_user) anywhere in
 # it — the activation-key token IS the authentication. See enrollment.py.
-app.include_router(enrollment.router, prefix="/enrollment", tags=["enrollment"])
-app.include_router(sites.router, prefix="/sites", tags=["sites"])
-app.include_router(audit_logs.router, prefix="/audit-logs", tags=["audit-logs"])
+api_router.include_router(enrollment.router, prefix="/enrollment", tags=["enrollment"])
+api_router.include_router(sites.router, prefix="/sites", tags=["sites"])
+api_router.include_router(audit_logs.router, prefix="/audit-logs", tags=["audit-logs"])
+app.include_router(api_router)
 
 
 @app.get("/health", tags=["health"])

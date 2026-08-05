@@ -98,8 +98,18 @@ interface RequestOptions {
   skipAuth?: boolean;
 }
 
+// Every resource endpoint is mounted under /api server-side (see
+// app/main.py) specifically so no API path can ever collide with an SPA
+// page path of the same name (/servers, /jobs, /errata, /sites,
+// /activation-keys are both real pages AND real resource names — before
+// this prefix existed, a hard refresh on one of those pages hit the API
+// route directly instead of the SPA). Callers pass the bare resource path
+// ("/servers"); this is the one place that adds /api, so every api.*
+// call site stays unaware of the prefix.
+const API_PREFIX = "/api";
+
 function buildUrl(path: string, query?: object): string {
-  const url = new URL(path, window.location.origin);
+  const url = new URL(API_PREFIX + path, window.location.origin);
   if (query) {
     for (const [key, value] of Object.entries(query as Record<string, unknown>)) {
       if (value !== null && value !== undefined && value !== "") {

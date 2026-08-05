@@ -119,6 +119,7 @@ cmd_upgrade() {
     build_ui
     sync_app_code
     setup_venv
+    grant_bind_low_ports
     run_migrations
     install_groundctl_service
     install_groundctl_worker_service

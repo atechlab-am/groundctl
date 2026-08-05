@@ -9,7 +9,7 @@ User=groundctl
 Group=groundctl
 WorkingDirectory=/opt/groundctl
 EnvironmentFile=/etc/groundctl/groundctl.env
-ExecStart=/opt/groundctl/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --ssl-certfile __TLS_CERT_PATH__ --ssl-keyfile __TLS_KEY_PATH__ --log-config app/uvicorn_log_config.json
+ExecStart=/opt/groundctl/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port __GROUNDCTL_PORT__ --ssl-certfile __TLS_CERT_PATH__ --ssl-keyfile __TLS_KEY_PATH__ --log-config app/uvicorn_log_config.json
 Restart=on-failure
 RestartSec=3
 

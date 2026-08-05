@@ -1,10 +1,21 @@
 #!/usr/bin/env bash
 # groundctl app provisioning: code copy, venv, env file, SSH keypair.
 
+# groundctl.service (API + web UI) listens here — 443 so browsing to the
+# fleet hostname needs no port, matching how nginx already defaults to
+# HTTPS-everywhere for published repos. Not user-configurable (unlike
+# nginx's own port, which shares the host with a fleet's existing web
+# services more often): a control-plane UI/API claiming 443 for itself is
+# the whole point of this constant, and there's no scenario where an
+# operator would want it to silently fall back to a random port instead.
+GROUNDCTL_PORT=443
+
 install_app_prereqs() {
     log_info "installing app prerequisites..."
+    # libcap2-bin: provides setcap, used by grant_bind_low_ports below to
+    # let groundctl.service bind port 443 without running as root.
     apt-get install -y --no-install-recommends \
-        python3-venv python3-pip openssh-client >/dev/null
+        python3-venv python3-pip openssh-client libcap2-bin >/dev/null
 }
 
 # Node/npm are a BUILD-TIME dependency only (ROADMAP Phase 8's web UI) — the
@@ -57,13 +68,47 @@ sync_app_code() {
 }
 
 setup_venv() {
+    # --copies: a plain `python3 -m venv` makes bin/python3 a SYMLINK to the
+    # system interpreter, not its own binary. grant_bind_low_ports (below)
+    # needs a real, independent copy to setcap — capabilities set on a
+    # symlink either fail outright or (if the tool follows the link) land
+    # on the SYSTEM python3 itself, granting CAP_NET_BIND_SERVICE to every
+    # other script on the host that happens to run via that same
+    # interpreter. A real copy (~30MB, not meaningfully more disk than the
+    # symlink form once site-packages are installed) keeps the capability
+    # scoped to groundctl's own venv.
     if [[ ! -x /opt/groundctl/venv/bin/python ]]; then
         log_info "creating python venv"
-        sudo -u groundctl python3 -m venv /opt/groundctl/venv
+        sudo -u groundctl python3 -m venv --copies /opt/groundctl/venv
+    elif [[ -L /opt/groundctl/venv/bin/python3 ]]; then
+        # A venv from before --copies was added above (or from before
+        # grant_bind_low_ports existed at all) still has the symlink form.
+        # Recreate it rather than leaving a stale venv that would make
+        # grant_bind_low_ports setcap the SYSTEM python3 — see above.
+        # site-packages get reinstalled immediately below regardless, so
+        # nothing here is lost by discarding the old venv.
+        log_info "existing venv's python3 is a symlink (pre-dates --copies) — recreating so setcap can target a real binary, not the system interpreter"
+        rm -rf /opt/groundctl/venv
+        sudo -u groundctl python3 -m venv --copies /opt/groundctl/venv
     fi
     log_info "installing python dependencies..."
     sudo -u groundctl /opt/groundctl/venv/bin/pip install --quiet --upgrade pip
     sudo -u groundctl /opt/groundctl/venv/bin/pip install --quiet -r /opt/groundctl/requirements.txt
+}
+
+# groundctl.service runs uvicorn as the unprivileged groundctl user (see
+# CLAUDE.md — no service here runs as root) but binds __GROUNDCTL_PORT__
+# (443) directly, a privileged port an unprivileged process normally can't
+# open. CAP_NET_BIND_SERVICE on the venv's own python3 binary is the
+# standard fix for exactly this (same mechanism container runtimes/systemd
+# AmbientCapabilities use) — narrower than running the whole process as
+# root, and scoped to this one binary, not systemd-wide, so it must be
+# re-applied every time setup_venv recreates the venv (a fresh venv has a
+# fresh, uncapped binary). Idempotent: setcap unconditionally re-applies,
+# cheap either way.
+grant_bind_low_ports() {
+    log_info "granting CAP_NET_BIND_SERVICE to the venv's python3 (so uvicorn can bind port ${GROUNDCTL_PORT} as user groundctl)"
+    setcap 'cap_net_bind_service=+ep' /opt/groundctl/venv/bin/python3
 }
 
 # Applies pending Alembic migrations (ROADMAP Phase 7) — run explicitly at
@@ -239,7 +284,7 @@ POSTGRES_PASSWORD=${pg_password}
 DATABASE_URL=postgresql+psycopg://groundctl:${pg_password}@127.0.0.1:5432/groundctl
 APTLY_API_URL=http://127.0.0.1:8090
 PUBLISHED_REPO_BASE_URL=https://${fleet_hostname}:${nginx_port}
-GROUNDCTL_API_BASE_URL=https://${fleet_hostname}:8000
+GROUNDCTL_API_BASE_URL=https://${fleet_hostname}
 JWT_SECRET=${jwt_secret}
 ANSIBLE_PRIVATE_KEY_PATH=/etc/groundctl/ansible-keys/id_ed25519
 ANSIBLE_HOST_KEYS_DIR=/etc/groundctl/ansible-keys/hosts
@@ -290,15 +335,17 @@ EOF
 # Shared by groundctl.service, groundctl-worker.service, groundctl-beat.service
 # — same install/restart-if-changed pattern for all three app-code units.
 # Renders the template into a temp file first (sed substitution, currently
-# only meaningful for groundctl.service's TLS paths — a no-op passthrough
-# for units with no __PLACEHOLDER__ tokens) so change-detection compares
-# actual rendered content, not the raw template against a substituted file.
+# only meaningful for groundctl.service's TLS paths and port — a no-op
+# passthrough for units with no __PLACEHOLDER__ tokens) so change-detection
+# compares actual rendered content, not the raw template against a
+# substituted file.
 _install_app_service() {
     local unit_name="$1"
     local rendered
     rendered="$(mktemp)"
     sed -e "s#__TLS_CERT_PATH__#${TLS_CERT_PATH}#" \
         -e "s#__TLS_KEY_PATH__#${TLS_KEY_PATH}#" \
+        -e "s#__GROUNDCTL_PORT__#${GROUNDCTL_PORT}#" \
         "${REPO_ROOT}/systemd/${unit_name}.service.template" > "${rendered}"
 
     local unit_changed=1

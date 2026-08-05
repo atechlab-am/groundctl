@@ -229,7 +229,7 @@ def test_publish_content_view_no_repositories_422(client, operator_token, db_ses
 
 
 def test_publish_content_view_aptly_unreachable_returns_502(db_session, mock_aptly, mock_aptly_unreachable):
-    from fastapi.testclient import TestClient
+    from tests.conftest import TestClient
 
     from app.aptly_client import get_aptly_client
     from app.main import app

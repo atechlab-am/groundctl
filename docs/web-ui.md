@@ -46,17 +46,17 @@ direct API call still gets a 403 regardless of what the UI shows.
   serve HTML. Verified live: `/login`, `/servers/<id>`, and other deep
   links return the SPA shell; `/assets/<missing>.js` still 404s.
 - **Auth**: a second, additive auth flow alongside the existing Bearer-only
-  API. `POST /auth/ui-login` sets the refresh token as an httpOnly,
-  `Secure`, `SameSite=lax` cookie scoped to `/auth` instead of returning it
+  API. `POST /api/auth/ui-login` sets the refresh token as an httpOnly,
+  `Secure`, `SameSite=lax` cookie scoped to `/api/auth` instead of returning it
   in the JSON body; the 15-minute access token is held in memory only
   (`AuthContext`, `ui/src/auth/`) — never `localStorage`/`sessionStorage`.
-  `POST /auth/ui-refresh` reads the cookie and rotates it. The SPA calls
+  `POST /api/auth/ui-refresh` reads the cookie and rotates it. The SPA calls
   `ui-refresh` once on load (silently restoring a session from the cookie)
   and again every 12 minutes to stay ahead of the 15-minute expiry.
   `ui/src/api/client.ts`'s fetch wrapper attaches `Authorization: Bearer`
   on every call and retries exactly once through a fresh refresh on a 401
   before giving up and redirecting to `/login`. Verified live end-to-end:
-  login sets the cookie with the correct flags, `/auth/me` returns the
+  login sets the cookie with the correct flags, `/api/auth/me` returns the
   right user, refresh rotates the cookie, logout revokes it, and a second
   refresh after logout correctly 401s.
 - **Data fetching**: TanStack Query for caching/mutations. **Routing**:
@@ -65,7 +65,7 @@ direct API call still gets a 403 regardless of what the UI shows.
 
 ## Known gaps
 
-- **No `GET /content-views` list or `GET /content-views/{id}` detail
+- **No `GET /api/content-views` list or `GET /api/content-views/{id}` detail
   endpoint exists on the backend.** Content views can only be created
   (which returns the full object) and then referenced by ID elsewhere
   (e.g. `LifecycleEnvironmentRead.content_view_id`). The Content Views
@@ -73,9 +73,9 @@ direct API call still gets a 403 regardless of what the UI shows.
   remembering every content view this browser has created/viewed in
   `localStorage` — a real, visible limitation (a fresh browser profile
   won't see content views created elsewhere), not a substitute for the
-  missing backend endpoint. Add `GET /content-views` if this becomes a
+  missing backend endpoint. Add `GET /api/content-views` if this becomes a
   real pain point; it's a small, additive router change.
-- Audit-log CSV export (`GET /audit-logs/export`, admin-only, Bearer-auth)
+- Audit-log CSV export (`GET /api/audit-logs/export`, admin-only, Bearer-auth)
   is fetched as a blob and downloaded via a temporary object URL rather
   than a plain `<a href>` — a Bearer-authenticated endpoint can't be a
   plain link.
@@ -92,12 +92,12 @@ direct API call still gets a 403 regardless of what the UI shows.
 ```bash
 cd ui
 npm install        # first time only
-npm run dev        # :5173, proxies /auth, /repositories, etc. to http://127.0.0.1:8000
+npm run dev        # :5173, proxies /api/* to http://127.0.0.1:8000
 npm run build       # tsc -b && vite build -> ui/dist/
 ```
 
 `npm run dev`'s cookie-based auth will not persist in a real browser
-unless the backend it's proxying to serves over HTTPS — `/auth/ui-login`
+unless the backend it's proxying to serves over HTTPS — `/api/auth/ui-login`
 sets `Secure` on the refresh cookie by design (see `docs/https.md`), and
 browsers refuse to store `Secure` cookies over plain HTTP. Point the dev
 server at a real HTTPS-enabled local instance (`install.sh` sets this up

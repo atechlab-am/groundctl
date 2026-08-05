@@ -13,7 +13,7 @@ Installs and configures, as native systemd services:
 - **nginx** — serves aptly's published repo tree over HTTPS (self-signed cert by default, see `docs/https.md`; plain HTTP on port 80 only exists as a redirect to HTTPS).
 - **groundctl** — the FastAPI app (`groundctl.service`, also HTTPS by default), plus a Celery job worker (`groundctl-worker.service`) and scheduler (`groundctl-beat.service`), installed into one Python venv under `/opt/groundctl`. The web UI (`ui/`) is built with `npm` and its static output copied into `app/static/`, served by this same service — see `docs/web-ui.md`.
 
-All services run as a dedicated, non-root `groundctl` system user.
+All services run as a dedicated, non-root `groundctl` system user. `groundctl.service` listens on port **443** (the standard HTTPS port, so `https://<fleet-hostname>` reaches it with no port needed) despite running unprivileged — `install.sh` grants its venv's `python3` binary `CAP_NET_BIND_SERVICE` (via `setcap`) rather than running the service as root; see `scripts/lib/app.sh`'s `grant_bind_low_ports`.
 
 ## Prerequisites
 
@@ -114,7 +114,7 @@ Regenerates the self-signed TLS cert (fleet hostname read back from `/etc/ground
 ## After install
 
 1. Authorize `/etc/groundctl/ansible-keys/id_ed25519.pub` on every host you plan to manage (append to that host's `~/.ssh/authorized_keys` for the user groundctl will SSH in as) — this is the shared fleet key used for initial bootstrap; Phase 6 per-host keys take over from there (see `docs/limitations.md`).
-2. Log in at `https://<this-host>:8000` with the admin user `install.sh` just created (or via the API — see `docs/quickstart.md`'s walkthrough for `curl` examples), then create a mirror, sync, create an environment, and promote.
+2. Log in at `https://<this-host>` with the admin user `install.sh` just created (or via the API — see `docs/quickstart.md`'s walkthrough for `curl` examples), then create a mirror, sync, create an environment, and promote.
 
 ## Known limitation
 

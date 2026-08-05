@@ -40,12 +40,12 @@ is sufficient.
 ### 2. Register the relay on the primary
 
 ```bash
-curl -X POST https://<PRIMARY_HOST>:8000/sites \
+curl -X POST https://<PRIMARY_HOST>/api/sites \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"name": "na2", "description": "NA2 site"}'
 # save the returned "id" as $SITE_ID
 
-curl -X POST https://<PRIMARY_HOST>:8000/sites/$SITE_ID/relay \
+curl -X POST https://<PRIMARY_HOST>/api/sites/$SITE_ID/relay \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"hostname": "relay-na2.example.net", "ssh_user": "groundctl-sync"}'
 ```
@@ -58,7 +58,7 @@ A relay only carries the `LifecycleEnvironment`s explicitly allowlisted for
 its site — not the whole content library:
 
 ```bash
-curl -X PUT https://<PRIMARY_HOST>:8000/sites/$SITE_ID/environments \
+curl -X PUT https://<PRIMARY_HOST>/api/sites/$SITE_ID/environments \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"environment_ids": ["'$ENV_ID'"]}'
 ```
@@ -71,11 +71,11 @@ actually registered there.
 ### 4. Assign servers to the site
 
 ```bash
-curl -X POST https://<PRIMARY_HOST>:8000/servers/{id}/assign-site?site_id=$SITE_ID \
+curl -X POST https://<PRIMARY_HOST>/api/servers/{id}/assign-site?site_id=$SITE_ID \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Or pass `site_id` directly in `POST /servers` at creation time. Once
+Or pass `site_id` directly in `POST /api/servers` at creation time. Once
 assigned, bootstrap and Ansible job execution against that server
 automatically route through the relay (see below) — no other changes
 needed.

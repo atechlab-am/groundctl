@@ -27,14 +27,14 @@ groundctl auth logout
 
 `auth login` always prompts for the password interactively (never accept
 it as a plain argument — shell history would leak it) and calls the
-existing `POST /auth/login` — the same JSON-body flow used by any
-non-browser client, unrelated to the web UI's cookie-based `/auth/ui-*`
+existing `POST /api/auth/login` — the same JSON-body flow used by any
+non-browser client, unrelated to the web UI's cookie-based `/api/auth/ui-*`
 endpoints. Only the **refresh token** is persisted, to
 `~/.config/groundctl/config.toml` (directory `0700`, file `0600`); the
 15-minute access token lives in memory for the duration of one command and
 is never written to disk.
 
-Every command other than `auth login` calls `POST /auth/refresh` once at
+Every command other than `auth login` calls `POST /api/auth/refresh` once at
 the start of the invocation and **immediately persists the rotated
 refresh token** it gets back, before making the actual API call — refresh
 tokens are single-use/rotating server-side (`app/auth.py`'s
@@ -45,7 +45,7 @@ unit test (`cli/tests/test_client.py`, using `httpx.MockTransport`, no
 real network) and live verification (five-plus real commands run back to
 back against a real backend with zero 401s).
 
-If `/auth/refresh` itself is rate-limited (the server allows 5/minute,
+If `/api/auth/refresh` itself is rate-limited (the server allows 5/minute,
 same limit as login), the CLI reports that distinctly from "not logged
 in" rather than prompting a spurious re-login — a real bug found and
 fixed during live verification (the two failure modes look identical at
