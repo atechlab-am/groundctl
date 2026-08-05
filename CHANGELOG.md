@@ -25,6 +25,34 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-08-05
+
+### Fixed: `groundctl-maintain upgrade` crashed with "TLS_CERT_PATH: unbound variable" — `cmd_upgrade` never sourced `scripts/lib/tls.sh`
+
+- Found live on a real host running `sudo groundctl-maintain upgrade`:
+  `install_groundctl_service` (via `_install_app_service`) has always
+  referenced `TLS_CERT_PATH`/`TLS_KEY_PATH` to render
+  `groundctl.service.template` — those are only ever defined in
+  `scripts/lib/tls.sh`, which `cmd_upgrade` never sourced (unlike
+  `cmd_regen_cert`, which already did). Pre-existing since the very first
+  commit, but silently never triggered: `upgrade` used to only reach
+  `install_groundctl_service` on a genuine `VERSION` bump, and until now
+  that only ever happened either right after `install.sh` itself (which
+  *does* source `tls.sh`, in the same process) or never at all in
+  practice. The `0.12.1` fix that made `upgrade` redeploy on any new
+  commit — not just a version bump — is what finally made a bare
+  `groundctl-maintain upgrade` (no prior `install.sh` in that process)
+  exercise this path for the first time on a real host, under
+  `set -euo pipefail`, aborting mid-upgrade.
+- Fixed by sourcing `scripts/lib/tls.sh` in `cmd_upgrade` alongside
+  `os.sh`/`app.sh`, matching what `cmd_regen_cert` already does. Verified
+  by isolating `_install_app_service` in a minimal harness: reproduced
+  the exact `TLS_CERT_PATH: unbound variable` failure with the old
+  sourcing, then confirmed a clean run with the fix, including the
+  rendered `groundctl.service` unit correctly showing
+  `--ssl-certfile /etc/groundctl/tls/cert.pem --ssl-keyfile
+  /etc/groundctl/tls/key.pem`.
+
 ## [0.13.0] - 2026-08-05
 
 ### Fixed: web UI pages returned raw `{"detail":"Not authenticated"}` on hard refresh — every resource API endpoint now lives under `/api`
@@ -819,7 +847,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/OWNER/groundctl/releases/tag/v0.13.1
 [0.13.0]: https://github.com/OWNER/groundctl/releases/tag/v0.13.0
 [0.12.1]: https://github.com/OWNER/groundctl/releases/tag/v0.12.1
 [0.12.0]: https://github.com/OWNER/groundctl/releases/tag/v0.12.0

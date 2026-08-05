@@ -72,12 +72,25 @@ cmd_upgrade() {
 
     # Source the SAME shared library functions install.sh uses — direct
     # reuse of already-idempotent provisioning logic, not a shell-out to
-    # install.sh and not a second implementation of it.
+    # install.sh and not a second implementation of it. tls.sh is required
+    # here too: a real bug found live — install_groundctl_service (below,
+    # via _install_app_service) has always referenced TLS_CERT_PATH/
+    # TLS_KEY_PATH (only ever defined in tls.sh, never sourced here before)
+    # to render groundctl.service.template. This silently never mattered
+    # while `upgrade` only ever reached that code path on a genuine VERSION
+    # bump immediately after a fresh install.sh run (which had already
+    # sourced tls.sh in the same process) — the 0.12.1 fix that made
+    # `upgrade` redeploy on any new commit, not just a version bump, is
+    # what finally made a bare `groundctl-maintain upgrade` (no prior
+    # install.sh in that process) hit this path for the first time and
+    # fail with "TLS_CERT_PATH: unbound variable" under set -u.
     REPO_ROOT="${repo_root}"
     # shellcheck source=scripts/lib/os.sh
     . "${REPO_ROOT}/scripts/lib/os.sh"
     # shellcheck source=scripts/lib/app.sh
     . "${REPO_ROOT}/scripts/lib/app.sh"
+    # shellcheck source=scripts/lib/tls.sh
+    . "${REPO_ROOT}/scripts/lib/tls.sh"
 
     # Always reinstall groundctl-maintain itself, even when nothing else
     # changed — a real bug found live: this used to run only inside the
