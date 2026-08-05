@@ -21,3 +21,4 @@ cli/*.egg-info/
 CLAUDE.MD
 ROADMAP.MD
 .claude/settings.local.json
+.claude/*

@@ -239,11 +239,10 @@ def test_enrollment_script_end_to_end(tmp_path, db_session, mock_aptly, monkeypa
     import threading
 
     import uvicorn
-    from tests.conftest import TestClient
 
     from app.aptly_client import get_aptly_client
     from app.main import app
-    from tests.conftest import Role, _token_for
+    from tests.conftest import Role, TestClient, _token_for
 
     key_path = tmp_path / "id_ed25519"
     key_path.with_suffix(".pub").write_text("ssh-ed25519 AAAAendtoend fleet-key\n")

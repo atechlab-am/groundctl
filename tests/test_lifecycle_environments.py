@@ -236,11 +236,9 @@ def test_promote_environment_path_order_enforced(client, operator_token, mock_ap
 
 
 def test_promote_environment_aptly_unreachable_returns_502(db_session, mock_aptly, mock_aptly_unreachable):
-    from tests.conftest import TestClient
-
     from app.aptly_client import get_aptly_client
     from app.main import app
-    from tests.conftest import Role, _token_for
+    from tests.conftest import Role, TestClient, _token_for
 
     app.dependency_overrides[get_aptly_client] = lambda: mock_aptly
     try:

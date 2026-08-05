@@ -8,10 +8,9 @@ def test_health_ok_when_all_dependencies_reachable(client):
 
 
 def test_health_returns_503_when_aptly_unreachable(db_session, mock_aptly_unreachable):
-    from tests.conftest import TestClient
-
     from app.aptly_client import get_aptly_client
     from app.main import app
+    from tests.conftest import TestClient
 
     app.dependency_overrides[get_aptly_client] = lambda: mock_aptly_unreachable
     try:

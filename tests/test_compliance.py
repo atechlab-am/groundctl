@@ -203,11 +203,9 @@ def test_check_compliance_as_viewer_forbidden(client, operator_token, viewer_tok
 
 
 def test_check_compliance_aptly_unreachable_returns_502(db_session, mock_aptly, mock_aptly_unreachable):
-    from tests.conftest import TestClient
-
     from app.aptly_client import get_aptly_client
     from app.main import app
-    from tests.conftest import Role, _token_for
+    from tests.conftest import Role, TestClient, _token_for
 
     app.dependency_overrides[get_aptly_client] = lambda: mock_aptly
     try:

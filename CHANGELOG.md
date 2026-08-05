@@ -94,6 +94,23 @@ history, even though the phases were built sequentially.
 - `install.sh`'s final summary and every `docs/*.md` walkthrough updated
   from `https://<host>:8000` to `https://<host>`.
 
+### Added: `.claude/context/` scaffold, mirroring the sibling suite apps' Claude working-rules layout
+
+- New `.claude/context/MEMORY.md` + `feedback_*.md`/`project_*.md`/
+  `security-standards.md` files — the same structure used by the ATech
+  suite's other 8 projects (see `GitHub/CLAUDE.md`), adapted rather than
+  copied verbatim: points at `/CLAUDE.md`/`docs/*.md`/`ROADMAP.md` instead
+  of duplicating their content (which would just drift), and
+  `security-standards.md` reflects groundctl's actual security surface
+  (aptly name validation, sources.list injection, RBAC tiers, the new
+  `/api` routing rule above) rather than dispatch's XSS/PDF-template
+  concerns, which don't apply here.
+- Includes the same `feedback_docs_update.md`/`feedback_todo_sync.md`/
+  `feedback_memory_sync.md`/`feedback_caveman_mode.md`/
+  `feedback_edit_permission.md` working-rules the other suite apps use —
+  `ROADMAP.md` fills the `todo.md` role (already existed, already
+  live-updated per phase) rather than a new duplicate file.
+
 ## [0.12.1] - 2026-08-04
 
 ### Fixed: `groundctl-maintain upgrade` silently skipped redeploying app code and restarting services when `main` moved but `VERSION` didn't
