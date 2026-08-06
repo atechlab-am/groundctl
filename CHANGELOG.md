@@ -78,6 +78,40 @@ history, even though the phases were built sequentially.
   VALUE`, and the values are inert if the app code that writes them is
   also reverted).
 
+### Fixed: `sync_app_code` left stale compiled `.pyc` bytecode in place across every redeploy, silently serving old code even after a full upgrade
+
+- Found live on a real host, after this version's own docs-viewer feature
+  landed: `GET /api/docs` returned the SPA's `index.html` instead of real
+  JSON, matching `SPAStaticFiles`'s deep-link fallback — but every file
+  on disk (`/opt/groundctl/app/main.py`, the systemd unit, the checkout)
+  was confirmed current and correct. `sudo ss -tlnp` confirmed only one
+  process was bound to port 443, and it matched `groundctl.service`'s own
+  reported PID. The actual cause: `sync_app_code`'s `rsync -a --delete`
+  only removes destination files/directories that are genuinely absent
+  from the *source* tree it's mirroring — `__pycache__/*.pyc` is never
+  present in the source checkout at all (gitignored, generated at
+  runtime only in `/opt/groundctl`), so rsync has nothing to compare it
+  against and silently leaves old compiled bytecode in place forever,
+  even across a full `--delete` sync of every real `.py` file. A host
+  that had been running long enough to compile `app/main.py` before the
+  `/api` prefix change (`0.13.0`) landed was still *executing* that
+  stale compiled version after multiple subsequent real upgrades — the
+  `.py` source was current, the running code wasn't, and nothing about
+  inspecting the checkout, the unit file, or even the exact file on disk
+  could reveal it without actually clearing the cache and retesting.
+- Fixed by having `sync_app_code` explicitly clear every `__pycache__`
+  directory under `/opt/groundctl/app` after every sync
+  (`find /opt/groundctl/app -depth -name "__pycache__" -exec rm -rf {} +`),
+  forcing Python to recompile from the just-synced source on next start.
+  Runs on both `install.sh` and `groundctl-maintain upgrade` (both call
+  `sync_app_code`), so this is fixed going forward for every future
+  redeploy, not just as a one-time manual workaround. Verified live: a
+  disposable directory tree with simulated stale `.pyc` files at two
+  nesting depths had both `__pycache__` directories removed while real
+  `.py` files were left untouched, and the same command exits cleanly
+  (code 0) when no `__pycache__` exists at all (the normal fresh-install
+  case).
+
 ## [0.13.2] - 2026-08-05
 
 ### Added: documentation is now readable from the web UI itself, not just the repo

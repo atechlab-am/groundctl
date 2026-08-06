@@ -72,6 +72,23 @@ sync_app_code() {
     fi
     cp "${REPO_ROOT}/requirements.txt" /opt/groundctl/requirements.txt
     cp "${REPO_ROOT}/alembic.ini" /opt/groundctl/alembic.ini
+
+    # Real bug found live: rsync -a --delete only removes destination
+    # files/dirs that are genuinely absent from the SOURCE tree it's
+    # mirroring. __pycache__/*.pyc is never present in the source
+    # checkout at all (gitignored, generated at runtime in the
+    # destination only) — rsync has nothing to compare it against, so it
+    # silently leaves old compiled bytecode in place forever, even across
+    # a full --delete sync of everything else. A host that had been
+    # running long enough to compile app/main.py before this version's
+    # /api-prefix change was still SERVING the stale compiled version
+    # after a full upgrade — every .py file on disk was current, but the
+    # actually-running code wasn't, and nothing about inspecting the
+    # checkout or the unit file could reveal it. Clear it explicitly on
+    # every sync so Python is always forced to recompile from the
+    # .py files that were just written above.
+    find /opt/groundctl/app -depth -name "__pycache__" -exec rm -rf {} +
+
     chown -R groundctl:groundctl /opt/groundctl
 }
 
