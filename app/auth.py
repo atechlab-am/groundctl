@@ -58,7 +58,14 @@ def get_current_user(
         raise credentials_exception
 
     user = db.execute(select(User).where(User.username == username)).scalar_one_or_none()
-    if user is None:
+    if user is None or not user.active:
+        # Same 401 as any other invalid credential — doesn't distinguish
+        # "deactivated" from "doesn't exist" to a caller, matching login's
+        # existing no-enumeration posture. A deactivated user's still-live
+        # access token (up to 15 min, jwt_expire_minutes) is rejected here
+        # immediately rather than waiting for natural expiry; refresh is
+        # already a dead end since issue_refresh_token only ever gets
+        # called from a login path this same check now blocks.
         raise credentials_exception
     return user
 

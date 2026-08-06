@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -127,6 +128,11 @@ class AuditAction(str, enum.Enum):
     login = "login"
     login_failed = "login_failed"
     export_audit_log = "export_audit_log"
+    update_user = "update_user"
+    deactivate_user = "deactivate_user"
+    reactivate_user = "reactivate_user"
+    change_own_password = "change_own_password"
+    update_branding = "update_branding"
 
 
 class User(Base):
@@ -137,6 +143,13 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     hashed_password: Mapped[str] = mapped_column(String, nullable=False)
     role: Mapped[Role] = mapped_column(Enum(Role, name="role"), nullable=False, default=Role.viewer)
+    # Deactivation, not deletion — matches Server's decommission /
+    # ActivationKey's revoked posture elsewhere in this app: the row (and
+    # everything it's a foreign key target for — AuditLog.user_id,
+    # ActivationKey.created_by_user_id, etc.) stays intact. A deactivated
+    # user can no longer log in (checked at /auth/login and /auth/ui-login)
+    # but their historical actions remain attributable.
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
 
@@ -595,3 +608,29 @@ class SiteEnvironment(Base):
         UUID(as_uuid=True), ForeignKey("lifecycle_environments.id"), primary_key=True
     )
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class Branding(Base):
+    """Instance-wide UI branding — single shared row (id fixed to a
+    well-known constant, enforced by the router never inserting a second
+    row), not per-user. Matches how the sidebar/theme looks the same for
+    every user today; this just makes it admin-editable instead of
+    hardcoded. Logo/favicon bytes live here rather than on disk — the only
+    stateful store this app otherwise has is Postgres (see
+    docs/backup.md — the existing pg_dump-based backup covers this with
+    no changes), and a filesystem path would need install.sh/
+    groundctl-maintain/backup.sh to all learn about a new directory.
+    """
+
+    __tablename__ = "branding"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    primary_color: Mapped[str | None] = mapped_column(String, nullable=True)
+    accent_color: Mapped[str | None] = mapped_column(String, nullable=True)
+    logo_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    logo_content_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    favicon_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    favicon_content_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )

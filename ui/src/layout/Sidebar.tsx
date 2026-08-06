@@ -1,5 +1,6 @@
 import type * as React from "react";
 import { NavLink } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import {
   LayoutDashboard,
   Package,
@@ -14,8 +15,10 @@ import {
   MapPin,
   ScrollText,
   BookOpen,
+  Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getBranding, logoUrl } from "@/api/branding";
 import { RoleGate } from "./RoleGate";
 
 interface NavItem {
@@ -37,6 +40,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/activation-keys", label: "Activation Keys", icon: KeyRound },
   { to: "/sites", label: "Sites", icon: MapPin },
   { to: "/documentation", label: "Documentation", icon: BookOpen },
+  { to: "/settings", label: "Settings", icon: Settings },
 ];
 
 // Fluent 2's left-rail active state (Teams/Outlook/Admin Center): a
@@ -53,12 +57,26 @@ function navLinkClass(isActive: boolean): string {
 }
 
 export function Sidebar() {
+  // Same-shape query as useApplyBranding (App.tsx) — TanStack Query
+  // dedupes identical ["branding"] queries across components, so this
+  // doesn't cause a second network fetch, just a second subscriber to
+  // the same cached result.
+  const brandingQuery = useQuery({ queryKey: ["branding"], queryFn: getBranding });
+
   return (
     <nav className="flex h-full w-60 shrink-0 flex-col border-r bg-secondary/50">
       <div className="flex h-14 items-center gap-2 border-b px-5">
-        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground text-sm font-bold">
-          G
-        </div>
+        {brandingQuery.data?.has_logo ? (
+          <img
+            src={logoUrl(brandingQuery.data.updated_at)}
+            alt="Groundctl"
+            className="h-7 w-7 rounded-md object-contain"
+          />
+        ) : (
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground text-sm font-bold">
+            G
+          </div>
+        )}
         <span className="text-sm font-semibold tracking-tight">Groundctl</span>
       </div>
       <div className="flex-1 overflow-y-auto px-2 py-3">

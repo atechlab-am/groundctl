@@ -12,6 +12,7 @@ export interface UserRead {
   username: string;
   email: string;
   role: Role;
+  active: boolean;
   created_at: string;
 }
 
@@ -41,4 +42,24 @@ export async function uiLogout(): Promise<void> {
 
 export async function getMe(): Promise<UserRead> {
   return apiRequest<UserRead>("/auth/me", { method: "GET" });
+}
+
+export interface UserCreate {
+  username: string;
+  email: string;
+  password: string;
+  role: Role;
+}
+
+export async function registerUser(payload: UserCreate): Promise<UserRead> {
+  return apiRequest<UserRead>("/auth/register", { method: "POST", body: payload });
+}
+
+export interface PasswordChangeRequest {
+  current_password: string;
+  new_password: string;
+}
+
+export async function changeOwnPassword(payload: PasswordChangeRequest): Promise<void> {
+  return apiRequest<void>("/auth/me/password", { method: "PUT", body: payload });
 }

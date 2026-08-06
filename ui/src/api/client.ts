@@ -93,6 +93,10 @@ interface RequestOptions {
   query?: object;
   // Set when the caller sends form-encoded data (only ui-login today).
   form?: URLSearchParams;
+  // Set for file uploads (branding logo/favicon) — left without an
+  // explicit Content-Type below so the browser sets the multipart
+  // boundary itself; setting it manually breaks the boundary parameter.
+  formData?: FormData;
   // Skip attaching a bearer token (unused today — every non-auth endpoint
   // requires auth — but kept for completeness/symmetry).
   skipAuth?: boolean;
@@ -130,6 +134,12 @@ async function rawRequest(path: string, options: RequestOptions, token: string |
   if (options.form) {
     headers["Content-Type"] = "application/x-www-form-urlencoded";
     body = options.form;
+  } else if (options.formData) {
+    // No Content-Type set here — the browser fills in
+    // "multipart/form-data; boundary=..." itself, which is only correct
+    // when it computes the boundary; setting the header manually here
+    // would omit the boundary parameter and break parsing server-side.
+    body = options.formData;
   } else if (options.body !== undefined) {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(options.body);
@@ -237,5 +247,8 @@ export const api = {
     apiRequest<T>(path, { method: "POST", body, query }),
   put: <T, Q extends object = object>(path: string, body?: unknown, query?: Q) =>
     apiRequest<T>(path, { method: "PUT", body, query }),
+  patch: <T, Q extends object = object>(path: string, body?: unknown, query?: Q) =>
+    apiRequest<T>(path, { method: "PATCH", body, query }),
   delete: <T, Q extends object = object>(path: string, query?: Q) => apiRequest<T>(path, { method: "DELETE", query }),
+  postForm: <T>(path: string, formData: FormData) => apiRequest<T>(path, { method: "POST", formData }),
 };

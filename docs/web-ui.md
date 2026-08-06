@@ -25,6 +25,9 @@ server end to end via these screens.
 | Sites | List, detail, register/view relay, manage synced environments |
 | Audit Logs | Filterable table, CSV export (admin-only) |
 | Documentation | Renders `docs/*.md` in-app (list + per-doc markdown view) — see `GET /api/docs` below |
+| Settings — My Account | Every user: view identity, change own password |
+| Settings — Users (admin) | List, create, edit role/email, deactivate/reactivate — see `docs/limitations.md` for the branding-upload/user-management gaps |
+| Settings — Appearance (admin) | Instance-wide primary/accent color, logo, favicon — applied for every user, including pre-login |
 
 RBAC-gated actions match the API exactly: viewer sees read-only screens,
 operator gets create/action forms, admin additionally sees `run-command`

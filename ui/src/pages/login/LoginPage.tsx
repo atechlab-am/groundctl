@@ -1,15 +1,21 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useLocation } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/auth/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { getBranding, logoUrl } from "@/api/branding";
 import { errorMessage } from "@/lib/errors";
 
 export function LoginPage() {
   const { user, isLoading, login } = useAuth();
+  // Same ["branding"] query key as Sidebar/useApplyBranding — deduped by
+  // TanStack Query, and this page renders before any session exists,
+  // exactly the case GET /branding being unauthenticated exists for.
+  const brandingQuery = useQuery({ queryKey: ["branding"], queryFn: getBranding });
   const location = useLocation();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -38,9 +44,17 @@ export function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <div className="mb-2 flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground text-sm font-bold">
-            G
-          </div>
+          {brandingQuery.data?.has_logo ? (
+            <img
+              src={logoUrl(brandingQuery.data.updated_at)}
+              alt="Groundctl"
+              className="mb-2 h-9 w-9 rounded-md object-contain"
+            />
+          ) : (
+            <div className="mb-2 flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground text-sm font-bold">
+              G
+            </div>
+          )}
           <CardTitle>Sign in to Groundctl</CardTitle>
           <CardDescription>Content-lifecycle and patch-management control plane</CardDescription>
         </CardHeader>

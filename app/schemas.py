@@ -36,6 +36,17 @@ HOSTNAME_RE = re.compile(
 # --export --armor <key_id>` subprocess call, so this is an injection
 # boundary, not just a shape check.
 GPG_KEY_ID_RE = re.compile(r"^[A-F0-9]{16,40}$")
+# #RGB or #RRGGBB — CSS custom properties (see ui/'s index.css tokens) get
+# these values injected directly; strict validation here means the
+# frontend never needs to defend against a malformed value reaching the
+# DOM as an inline style.
+HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def validate_hex_color(v: str) -> str:
+    if not HEX_COLOR_RE.fullmatch(v):
+        raise ValueError("must be a hex color, e.g. #0F6CBD or #0F6")
+    return v
 
 
 def validate_gpg_key_id(v: str) -> str:
@@ -92,9 +103,24 @@ class UserRead(BaseModel):
     username: str
     email: EmailStr
     role: Role
+    active: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class UserUpdate(BaseModel):
+    # username is intentionally not editable here — it's the JWT subject
+    # (create_access_token's "sub" claim) and the login identifier; renaming
+    # it would invalidate every outstanding token for that user with no
+    # graceful transition. Email/role changes don't have that problem.
+    email: EmailStr | None = None
+    role: Role | None = None
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
 
 
 class TokenPair(BaseModel):
@@ -703,3 +729,40 @@ class DocRead(BaseModel):
     filename: str
     title: str
     content: str
+
+
+# ---------------------------------------------------------------------------
+# branding
+# ---------------------------------------------------------------------------
+
+
+class BrandingRead(BaseModel):
+    primary_color: str | None
+    accent_color: str | None
+    # Booleans, not the bytes themselves — GET /branding is read by every
+    # authenticated user on every page load to decide what colors to apply;
+    # the actual logo/favicon bytes are fetched separately (GET
+    # /branding/logo, /branding/favicon), each cacheable independently by
+    # the browser instead of re-downloading on every branding poll.
+    has_logo: bool
+    has_favicon: bool
+    # None means no admin has configured anything yet (no row exists at
+    # all) — genuinely distinct from "configured, most recently at time X".
+    updated_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class BrandingColorsUpdate(BaseModel):
+    # None explicitly clears back to the built-in default — distinguished
+    # from "field omitted" via exclude_unset in the router, same pattern
+    # PATCH-style partial updates use elsewhere in this file.
+    primary_color: str | None = None
+    accent_color: str | None = None
+
+    _validate_primary = field_validator("primary_color")(
+        lambda v: validate_hex_color(v) if v is not None else v
+    )
+    _validate_accent = field_validator("accent_color")(
+        lambda v: validate_hex_color(v) if v is not None else v
+    )

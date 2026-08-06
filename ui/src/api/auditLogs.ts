@@ -32,7 +32,12 @@ export type AuditAction =
   | "assign_server_site"
   | "login"
   | "login_failed"
-  | "export_audit_log";
+  | "export_audit_log"
+  | "update_user"
+  | "deactivate_user"
+  | "reactivate_user"
+  | "change_own_password"
+  | "update_branding";
 
 export interface AuditLogRead {
   id: string;

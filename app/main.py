@@ -30,6 +30,7 @@ from app.routers import (
     activation_keys,
     audit_logs,
     auth,
+    branding,
     compliance,
     content_views,
     docs_content,
@@ -41,6 +42,7 @@ from app.routers import (
     repositories,
     servers,
     sites,
+    users,
 )
 
 configure_logging()
@@ -179,6 +181,12 @@ api_router.include_router(audit_logs.router, prefix="/audit-logs", tags=["audit-
 # unaffected (see the /api-prefixing note above). Serves docs/*.md, synced
 # alongside app/ into /opt/groundctl/docs by sync_app_code.
 api_router.include_router(docs_content.router, prefix="/docs", tags=["docs"])
+api_router.include_router(users.router, prefix="/users", tags=["users"])
+# GET /api/branding/logo and /favicon are the two unauthenticated
+# endpoints in this router (see branding.py) — a <link rel="icon">/<img>
+# tag has no way to attach a Bearer token, same reasoning as
+# enrollment.py's ssh-public-key endpoint.
+api_router.include_router(branding.router, prefix="/branding", tags=["branding"])
 app.include_router(api_router)
 
 

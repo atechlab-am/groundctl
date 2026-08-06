@@ -25,6 +25,59 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-08-06
+
+### Added: instance settings — admin-managed branding (logo/favicon/colors) and full user management, plus self-service password change
+
+- New **Settings** sidebar item, every user: **My Account** tab shows
+  identity (username/email/role, read-only) and lets any user change
+  their own password (`PUT /api/auth/me/password`, requires the current
+  password — no admin-driven reset path exists, see `docs/limitations.md`).
+- New **Settings > Users** tab (admin-only): list every user, create new
+  ones (wires up the existing `POST /api/auth/register`, which had no UI
+  before now), edit email/role inline, deactivate/reactivate. New `User.active`
+  column (migration `bf3d347ed1d3`) — deactivation, not deletion, matching
+  `Server`'s decommission/`ActivationKey`'s revoked posture elsewhere in
+  this app: the row and everything it's a foreign-key target for
+  (`AuditLog.user_id`, etc.) stays intact, but a deactivated user can no
+  longer log in (`get_current_user` now rejects `active=False` even on an
+  otherwise-still-valid access token, not just at login) and their
+  audit-log history remains attributable.
+- New **Settings > Appearance** tab (admin-only): primary/accent color
+  pickers and logo/favicon upload. Applied instantly for every user via
+  CSS custom-property overrides (`ui/src/lib/branding.ts` — converts an
+  admin-entered hex color into the `H S% L%` triplet `index.css`'s Fluent
+  tokens expect) and a live favicon swap. New `Branding` table (single
+  shared row, image bytes stored in Postgres — not on disk, so the
+  existing `pg_dump`-based backup (`docs/backup.md`) covers this with no
+  changes needed anywhere).
+- `GET /api/branding` (+ `/logo`, `/favicon`) are deliberately
+  unauthenticated — the login screen and browser tab need to render
+  custom branding before any session exists, same reasoning already
+  established for `GET /api/enrollment/ssh-public-key`. Every *write*
+  endpoint (`PUT /branding/colors`, `POST /branding/logo`,
+  `POST /branding/favicon`) stays admin-only. Uploads are capped at 2 MB
+  and restricted to a small raster-format allowlist — SVG deliberately
+  excluded (script/event-handler injection risk, since uploaded content
+  isn't sanitized before being served back via `<img>`).
+- Last-admin-lockout guards on both user-management mutations: `PATCH
+  /api/users/{id}` refuses to demote the only active admin out of the
+  admin role, and `POST /api/users/{id}/deactivate` refuses to deactivate
+  them (or to deactivate your own account at all, regardless of admin
+  count) — verified live via two disposable-admin test scenarios, since
+  getting this wrong means an install with no way back into its own admin
+  role.
+- 5 new `AuditAction` values (`update_user`, `deactivate_user`,
+  `reactivate_user`, `change_own_password`, `update_branding`) — added via
+  `ALTER TYPE audit_action ADD VALUE` inside an `autocommit_block()`
+  (Postgres can't add and use a new enum value in the same transaction a
+  normal Alembic migration runs in). Verified both directions: applied
+  cleanly against the test database and the corresponding `downgrade()`
+  correctly drops the new table/column (enum values are intentionally
+  left in place on downgrade — Postgres has no `ALTER TYPE ... DROP
+  VALUE`, and the values are inert if the app code that writes them is
+  also reverted).
+
 ## [0.13.2] - 2026-08-05
 
 ### Added: documentation is now readable from the web UI itself, not just the repo
@@ -940,7 +993,8 @@ else).
 - Multiple repositories per content view deferred to (and properly
   solved by) Phase 1's `Repository`/`ContentView` model.
 
-[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/OWNER/groundctl/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/OWNER/groundctl/releases/tag/v0.14.0
 [0.13.2]: https://github.com/OWNER/groundctl/releases/tag/v0.13.2
 [0.13.1]: https://github.com/OWNER/groundctl/releases/tag/v0.13.1
 [0.13.0]: https://github.com/OWNER/groundctl/releases/tag/v0.13.0

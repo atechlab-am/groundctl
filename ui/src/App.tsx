@@ -25,7 +25,9 @@ import { SitesPage } from "@/pages/sites/SitesPage";
 import { SiteDetailPage } from "@/pages/sites/SiteDetailPage";
 import { AuditLogsPage } from "@/pages/audit-logs/AuditLogsPage";
 import { DocumentationPage } from "@/pages/documentation/DocumentationPage";
+import { SettingsPage } from "@/pages/settings/SettingsPage";
 import { RoleGate } from "@/layout/RoleGate";
+import { useApplyBranding } from "@/lib/useApplyBranding";
 
 function Shell({ children }: { children: ReactNode }) {
   return (
@@ -35,9 +37,18 @@ function Shell({ children }: { children: ReactNode }) {
   );
 }
 
+// Runs on every load, logged in or not (see useApplyBranding) — needs to
+// be inside QueryClientProvider (uses useQuery) but doesn't need to be
+// inside AuthProvider, since branding has no dependency on auth state.
+function BrandingEffect() {
+  useApplyBranding();
+  return null;
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <BrandingEffect />
       <AuthProvider>
         <BrowserRouter>
           <Routes>
@@ -60,6 +71,7 @@ export default function App() {
             <Route path="/sites/:siteId" element={<Shell><SiteDetailPage /></Shell>} />
             <Route path="/documentation" element={<Shell><DocumentationPage /></Shell>} />
             <Route path="/documentation/:slug" element={<Shell><DocumentationPage /></Shell>} />
+            <Route path="/settings" element={<Shell><SettingsPage /></Shell>} />
             <Route
               path="/audit-logs"
               element={

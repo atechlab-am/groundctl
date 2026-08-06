@@ -16,7 +16,7 @@ from app.config import settings
 from app.database import get_db
 from app.limiter import limiter
 from app.models import AuditAction, AuditLog, Role, User
-from app.schemas import RefreshRequest, TokenPair, UIAccessToken, UserCreate, UserRead
+from app.schemas import PasswordChangeRequest, RefreshRequest, TokenPair, UIAccessToken, UserCreate, UserRead
 
 router = APIRouter()
 
@@ -83,7 +83,7 @@ def register(
 @limiter.limit("5/minute")
 def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.execute(select(User).where(User.username == form_data.username)).scalar_one_or_none()
-    if user is None or not verify_password(form_data.password, user.hashed_password):
+    if user is None or not user.active or not verify_password(form_data.password, user.hashed_password):
         db.add(
             AuditLog(
                 user_id=user.id if user is not None else None,
@@ -161,7 +161,7 @@ def ui_login(
     db: Session = Depends(get_db),
 ):
     user = db.execute(select(User).where(User.username == form_data.username)).scalar_one_or_none()
-    if user is None or not verify_password(form_data.password, user.hashed_password):
+    if user is None or not user.active or not verify_password(form_data.password, user.hashed_password):
         db.add(
             AuditLog(
                 user_id=user.id if user is not None else None,
@@ -229,3 +229,29 @@ def ui_logout(
 @router.get("/me", response_model=UserRead)
 def me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+@router.put("/me/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_own_password(
+    payload: PasswordChangeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Self-service only — requires proving the CURRENT password, not just
+    # a valid session, so a hijacked-but-still-live access token alone
+    # can't be used to lock the real owner out. Admin-driven password
+    # resets aren't in scope here (no such endpoint exists) — an admin
+    # can only deactivate/reactivate a user, not set their password.
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="current password is incorrect")
+
+    current_user.hashed_password = hash_password(payload.new_password)
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.change_own_password,
+            resource_type="user",
+            resource_id=str(current_user.id),
+        )
+    )
+    db.commit()

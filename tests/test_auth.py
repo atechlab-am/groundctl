@@ -174,3 +174,76 @@ def test_logout_revokes_refresh_token(client, db_session):
 def test_logout_unknown_token_is_a_noop(client):
     r = client.post("/auth/logout", json={"refresh_token": "never-issued-token"})
     assert r.status_code == 204, r.text
+
+
+def test_change_own_password_succeeds_and_new_password_works(client, db_session):
+    from app.auth import hash_password
+    from app.models import Role, User
+
+    user = User(
+        username="pwchange-user",
+        email="pwchange-user@example.com",
+        hashed_password=hash_password("OldPassw0rd!"),
+        role=Role.viewer,
+    )
+    db_session.add(user)
+    db_session.commit()
+
+    login = client.post("/auth/login", data={"username": "pwchange-user", "password": "OldPassw0rd!"})
+    assert login.status_code == 200, login.text
+    token = login.json()["access_token"]
+
+    r = client.put(
+        "/auth/me/password",
+        json={"current_password": "OldPassw0rd!", "new_password": "NewPassw0rd!"},
+        headers=auth_headers(token),
+    )
+    assert r.status_code == 204, r.text
+
+    # Old password no longer works; new one does.
+    old_login = client.post("/auth/login", data={"username": "pwchange-user", "password": "OldPassw0rd!"})
+    assert old_login.status_code == 401, old_login.text
+    new_login = client.post("/auth/login", data={"username": "pwchange-user", "password": "NewPassw0rd!"})
+    assert new_login.status_code == 200, new_login.text
+
+
+def test_change_own_password_wrong_current_password_401(client, db_session):
+    from app.auth import hash_password
+    from app.models import Role, User
+
+    user = User(
+        username="pwchange-wrong",
+        email="pwchange-wrong@example.com",
+        hashed_password=hash_password("Passw0rd!"),
+        role=Role.viewer,
+    )
+    db_session.add(user)
+    db_session.commit()
+
+    login = client.post("/auth/login", data={"username": "pwchange-wrong", "password": "Passw0rd!"})
+    token = login.json()["access_token"]
+
+    r = client.put(
+        "/auth/me/password",
+        json={"current_password": "wrong-password", "new_password": "NewPassw0rd!"},
+        headers=auth_headers(token),
+    )
+    assert r.status_code == 401, r.text
+
+
+def test_deactivated_user_cannot_login(client, db_session):
+    from app.auth import hash_password
+    from app.models import Role, User
+
+    user = User(
+        username="deactivated-user",
+        email="deactivated-user@example.com",
+        hashed_password=hash_password("Passw0rd!"),
+        role=Role.viewer,
+        active=False,
+    )
+    db_session.add(user)
+    db_session.commit()
+
+    r = client.post("/auth/login", data={"username": "deactivated-user", "password": "Passw0rd!"})
+    assert r.status_code == 401, r.text
