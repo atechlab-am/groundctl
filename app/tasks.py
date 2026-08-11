@@ -634,6 +634,13 @@ def sync_repository_task(self, job_id: str) -> str:
             )
             return "lock contention"
 
+        # aptly's sync_mirror is a single blocking PUT with no progress
+        # stream (docs/limitations.md) — this line is the only signal the
+        # job page has that something is happening, for however long the
+        # sync takes, until it either succeeds or fails below.
+        job.log_output = f"syncing {repository.name} from {repository.archive_url}…"
+        db.commit()
+
         aptly = get_aptly_client()
         try:
             do_sync_repository(repository, db, aptly, user_id=job.created_by_user_id)

@@ -25,6 +25,24 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-08-11
+
+### Added: repository detail page with live sync status
+
+- New `/repositories/:name` page — repository name in the list is now a
+  link there instead of only reachable via the actions menu. Shows every
+  field the list truncates, plus the current/most recent sync job's live
+  status (polls every 3s while `pending`/`running`, same as the Jobs
+  detail page) and a full sync history list, each entry linking to its
+  `Job`. Sync/Edit/Delete actions live here too, not just in the list row's
+  menu.
+- `sync_repository_task` (`app/tasks.py`) now writes a `log_output` line
+  ("syncing `<name>` from `<archive_url>`…") the moment it starts, not only
+  at completion — previously the job's log stayed blank for the entire
+  sync (aptly's mirror sync is a single blocking call with no progress
+  stream to report against, so this is honestly what's knowable: that it's
+  running, since when, and against what — not a fake percentage).
+
 ## [0.16.0] - 2026-08-11
 
 ### Added: repository detail view, edit, and delete

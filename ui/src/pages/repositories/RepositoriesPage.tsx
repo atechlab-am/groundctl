@@ -386,7 +386,11 @@ export function RepositoriesPage() {
           <TableBody>
             {repositoriesQuery.data?.map((repo) => (
               <TableRow key={repo.id}>
-                <TableCell className="font-medium">{repo.name}</TableCell>
+                <TableCell className="font-medium">
+                  <Link to={`/repositories/${encodeURIComponent(repo.name)}`} className="hover:underline">
+                    {repo.name}
+                  </Link>
+                </TableCell>
                 <TableCell className="max-w-64 truncate text-muted-foreground" title={repo.archive_url}>
                   {repo.archive_url}
                 </TableCell>

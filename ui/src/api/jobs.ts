@@ -51,6 +51,7 @@ export interface ListJobsParams {
   status?: JobStatus;
   environment_id?: string;
   server_id?: string;
+  repository_id?: string;
   limit?: number;
   offset?: number;
 }
