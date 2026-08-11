@@ -37,6 +37,7 @@ from app.routers import (
     enrollment,
     errata,
     host_groups,
+    instance_settings,
     jobs,
     lifecycle_environments,
     repositories,
@@ -187,6 +188,7 @@ api_router.include_router(users.router, prefix="/users", tags=["users"])
 # tag has no way to attach a Bearer token, same reasoning as
 # enrollment.py's ssh-public-key endpoint.
 api_router.include_router(branding.router, prefix="/branding", tags=["branding"])
+api_router.include_router(instance_settings.router, prefix="/instance-settings", tags=["instance-settings"])
 app.include_router(api_router)
 
 

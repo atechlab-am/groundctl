@@ -22,6 +22,7 @@ from app.celery_app import celery_app
 from app.config import settings
 from app.database import SessionLocal
 from app.errata_ingest import fetch_and_upsert_dsa, fetch_and_upsert_usn
+from app.instance_settings import get_effective_settings
 from app.metrics import APTLY_DISK_USAGE_BYTES, APTLY_DISK_USAGE_PERCENT, JOBS_TOTAL
 from app.models import (
     AuditAction,
@@ -106,10 +107,10 @@ def _update_checkin_and_reachability(db: Session, servers: list[Server], ansible
     db.commit()
 
 
-def _relay_is_usable(relay: Relay | None) -> TypeGuard[Relay]:
+def _relay_is_usable(db: Session, relay: Relay | None) -> TypeGuard[Relay]:
     if relay is None or relay.sync_status != RelaySyncStatus.healthy or relay.last_sync_time is None:
         return False
-    threshold = datetime.now(timezone.utc) - timedelta(hours=settings.relay_stale_threshold_hours)
+    threshold = datetime.now(timezone.utc) - timedelta(hours=get_effective_settings(db).relay_stale_threshold_hours)
     return relay.last_sync_time >= threshold
 
 
@@ -122,7 +123,7 @@ def _resolve_published_base_url(db: Session, server: Server) -> str:
     """
     if server.site_id is not None:
         relay = db.execute(select(Relay).where(Relay.site_id == server.site_id)).scalar_one_or_none()
-        if _relay_is_usable(relay):
+        if _relay_is_usable(db, relay):
             # Relay.hostname has no separate port field (see
             # docs/limitations.md) — assumes the relay's nginx is on the
             # default HTTPS port 443-equivalent for its own NGINX_PORT
@@ -150,7 +151,7 @@ def _relay_proxy_for_servers(db: Session, servers: list[Server]) -> dict[str, st
     proxy_by_hostname: dict[str, str] = {}
     for server in servers:
         relay = relays_by_site.get(server.site_id) if server.site_id else None
-        if _relay_is_usable(relay):
+        if _relay_is_usable(db, relay):
             proxy_by_hostname[server.hostname] = f"{relay.ssh_user}@{relay.hostname}"
     return proxy_by_hostname
 
@@ -210,6 +211,7 @@ def _mark_servers_unreachable(db: Session, job_id: str) -> None:
                 )
             )
             send_webhook(
+                db,
                 "server.unreachable",
                 {"server_id": str(server.id), "hostname": server.hostname, "job_id": job_id},
             )
@@ -733,7 +735,8 @@ def scheduled_flag_stale_servers() -> str:
     """
     db = SessionLocal()
     try:
-        threshold = datetime.now(timezone.utc) - timedelta(hours=settings.stale_checkin_hours)
+        stale_checkin_hours = get_effective_settings(db).stale_checkin_hours
+        threshold = datetime.now(timezone.utc) - timedelta(hours=stale_checkin_hours)
         stale = list(
             db.execute(
                 select(Server).where(
@@ -753,6 +756,7 @@ def scheduled_flag_stale_servers() -> str:
                 )
             )
             send_webhook(
+                db,
                 "server.stale",
                 {
                     "server_id": str(server.id),
@@ -761,7 +765,7 @@ def scheduled_flag_stale_servers() -> str:
                 },
             )
         db.commit()
-        return f"flagged {len(stale)} stale servers (threshold {settings.stale_checkin_hours}h)"
+        return f"flagged {len(stale)} stale servers (threshold {stale_checkin_hours}h)"
     finally:
         db.close()
 
@@ -822,6 +826,7 @@ def scheduled_sync_relays() -> str:
                     "relay sync failed for %s: %s", relay.hostname, exc, extra={"relay_id": str(relay.id)}
                 )
                 send_webhook(
+                    db,
                     "relay.sync_failed",
                     {"relay_id": str(relay.id), "hostname": relay.hostname, "error": str(exc)},
                 )
@@ -841,7 +846,8 @@ def scheduled_flag_stale_relays() -> str:
     """
     db = SessionLocal()
     try:
-        threshold = datetime.now(timezone.utc) - timedelta(hours=settings.relay_stale_threshold_hours)
+        relay_stale_threshold_hours = get_effective_settings(db).relay_stale_threshold_hours
+        threshold = datetime.now(timezone.utc) - timedelta(hours=relay_stale_threshold_hours)
         stale = list(
             db.execute(
                 select(Relay).where(
@@ -853,6 +859,7 @@ def scheduled_flag_stale_relays() -> str:
         for relay in stale:
             relay.sync_status = RelaySyncStatus.stale
             send_webhook(
+                db,
                 "relay.stale",
                 {
                     "relay_id": str(relay.id),
@@ -861,7 +868,7 @@ def scheduled_flag_stale_relays() -> str:
                 },
             )
         db.commit()
-        return f"flagged {len(stale)} stale relays (threshold {settings.relay_stale_threshold_hours}h)"
+        return f"flagged {len(stale)} stale relays (threshold {relay_stale_threshold_hours}h)"
     finally:
         db.close()
 
@@ -878,14 +885,15 @@ def scheduled_purge_audit_logs() -> str:
     """
     db = SessionLocal()
     try:
-        threshold = datetime.now(timezone.utc) - timedelta(days=settings.audit_log_retention_days)
+        audit_log_retention_days = get_effective_settings(db).audit_log_retention_days
+        threshold = datetime.now(timezone.utc) - timedelta(days=audit_log_retention_days)
         result = db.execute(delete(AuditLog).where(AuditLog.created_at < threshold))
         db.commit()
         # Session.execute()'s return type is the generic Result[Any] in
         # SQLAlchemy's stubs; .rowcount is real on the CursorResult a DELETE
         # actually returns at runtime, mypy just can't see that from here.
         rowcount = result.rowcount  # type: ignore[attr-defined]
-        return f"purged {rowcount} audit log rows older than {settings.audit_log_retention_days}d"
+        return f"purged {rowcount} audit log rows older than {audit_log_retention_days}d"
     finally:
         db.close()
 
@@ -914,26 +922,32 @@ def scheduled_aptly_maintenance() -> str:
         cleanup_result = f"failed: {exc}"
         logger.warning("aptly db cleanup failed: %s", exc)
 
+    db = SessionLocal()
     try:
-        usage = shutil.disk_usage(APTLY_DATA_ROOT)
-        percent_used = (usage.used / usage.total) * 100 if usage.total else 0.0
-        APTLY_DISK_USAGE_BYTES.set(usage.used)
-        APTLY_DISK_USAGE_PERCENT.set(percent_used)
-        if percent_used >= settings.disk_usage_warn_percent:
-            logger.warning("aptly disk usage at %.1f%% (threshold %.1f%%)", percent_used, settings.disk_usage_warn_percent)
-            send_webhook(
-                "disk.usage_high",
-                {
-                    "path": APTLY_DATA_ROOT,
-                    "used_bytes": usage.used,
-                    "total_bytes": usage.total,
-                    "percent_used": round(percent_used, 1),
-                    "threshold_percent": settings.disk_usage_warn_percent,
-                },
-            )
-        disk_result = f"{percent_used:.1f}% used"
-    except OSError as exc:
-        disk_result = f"disk check failed: {exc}"
-        logger.warning("aptly disk usage check failed: %s", exc)
+        disk_usage_warn_percent = get_effective_settings(db).disk_usage_warn_percent
+        try:
+            usage = shutil.disk_usage(APTLY_DATA_ROOT)
+            percent_used = (usage.used / usage.total) * 100 if usage.total else 0.0
+            APTLY_DISK_USAGE_BYTES.set(usage.used)
+            APTLY_DISK_USAGE_PERCENT.set(percent_used)
+            if percent_used >= disk_usage_warn_percent:
+                logger.warning("aptly disk usage at %.1f%% (threshold %.1f%%)", percent_used, disk_usage_warn_percent)
+                send_webhook(
+                    db,
+                    "disk.usage_high",
+                    {
+                        "path": APTLY_DATA_ROOT,
+                        "used_bytes": usage.used,
+                        "total_bytes": usage.total,
+                        "percent_used": round(percent_used, 1),
+                        "threshold_percent": disk_usage_warn_percent,
+                    },
+                )
+            disk_result = f"{percent_used:.1f}% used"
+        except OSError as exc:
+            disk_result = f"disk check failed: {exc}"
+            logger.warning("aptly disk usage check failed: %s", exc)
+    finally:
+        db.close()
 
     return f"cleanup: {cleanup_result}; disk: {disk_result}"

@@ -4,6 +4,7 @@ import { useHasRole } from "@/auth/useHasRole";
 import { MyAccountTab } from "./MyAccountTab";
 import { UsersTab } from "./UsersTab";
 import { AppearanceTab } from "./AppearanceTab";
+import { SystemTab } from "./SystemTab";
 
 export function SettingsPage() {
   const isAdmin = useHasRole("admin");
@@ -16,6 +17,7 @@ export function SettingsPage() {
           <TabsTrigger value="account">My Account</TabsTrigger>
           {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
           {isAdmin && <TabsTrigger value="appearance">Appearance</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="system">System</TabsTrigger>}
         </TabsList>
         <TabsContent value="account">
           <MyAccountTab />
@@ -28,6 +30,11 @@ export function SettingsPage() {
         {isAdmin && (
           <TabsContent value="appearance">
             <AppearanceTab />
+          </TabsContent>
+        )}
+        {isAdmin && (
+          <TabsContent value="system">
+            <SystemTab />
           </TabsContent>
         )}
       </Tabs>

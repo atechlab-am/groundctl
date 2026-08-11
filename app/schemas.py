@@ -823,3 +823,65 @@ class BrandingColorsUpdate(BaseModel):
     _validate_accent = field_validator("accent_color")(
         lambda v: validate_hex_color(v) if v is not None else v
     )
+
+
+# ---------------------------------------------------------------------------
+# instance settings
+# ---------------------------------------------------------------------------
+
+
+class InstanceSettingsRead(BaseModel):
+    audit_log_retention_days: int
+    activation_key_default_ttl_hours: int
+    stale_checkin_hours: int
+    relay_stale_threshold_hours: int
+    disk_usage_warn_percent: float
+    webhook_url: str | None
+    # Deliberately excluded: webhook_secret is write-only, same posture as
+    # a password hash or JWT (see CLAUDE.md's AuthN/AuthZ rules) — once
+    # set, the API never echoes it back. has_webhook_secret tells the UI
+    # whether one is currently configured without exposing its value.
+    has_webhook_secret: bool
+    # Per field, whether the value shown is a DB override or the
+    # config.py/env-var default — lets the UI show "(default)" next to
+    # unconfigured fields instead of a bare number.
+    overridden: dict[str, bool]
+    updated_at: datetime | None
+
+
+class InstanceSettingsUpdate(BaseModel):
+    # None means "clear the override, revert to config.py default" —
+    # distinguished from "field omitted" via exclude_unset in the router,
+    # same pattern as BrandingColorsUpdate above.
+    audit_log_retention_days: int | None = None
+    activation_key_default_ttl_hours: int | None = None
+    stale_checkin_hours: int | None = None
+    relay_stale_threshold_hours: int | None = None
+    disk_usage_warn_percent: float | None = None
+    webhook_url: str | None = None
+    # Same None-clears/omitted-leaves-unchanged semantics — but note
+    # "clear" here also has to erase the DB value outright, not just fall
+    # back to config.py's own webhook_secret env var, since a
+    # previously-set secret must actually become unset, not fall through
+    # to a possibly-stale env-var secret. The router enforces this
+    # distinction explicitly (see update_instance_settings).
+    webhook_secret: str | None = None
+
+    @field_validator(
+        "audit_log_retention_days",
+        "activation_key_default_ttl_hours",
+        "stale_checkin_hours",
+        "relay_stale_threshold_hours",
+    )
+    @classmethod
+    def _validate_positive_int(cls, v: int | None) -> int | None:
+        if v is not None and v <= 0:
+            raise ValueError("must be a positive number of hours/days")
+        return v
+
+    @field_validator("disk_usage_warn_percent")
+    @classmethod
+    def _validate_percent(cls, v: float | None) -> float | None:
+        if v is not None and not (0 < v <= 100):
+            raise ValueError("must be between 0 and 100")
+        return v

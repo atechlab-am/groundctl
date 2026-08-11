@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -139,6 +140,7 @@ class AuditAction(str, enum.Enum):
     reactivate_user = "reactivate_user"
     change_own_password = "change_own_password"
     update_branding = "update_branding"
+    update_instance_settings = "update_instance_settings"
 
 
 class User(Base):
@@ -198,6 +200,36 @@ class Repository(Base):
         UUID(as_uuid=True), ForeignKey("jobs.id", use_alter=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+
+class InstanceSetting(Base):
+    """Runtime-editable operational tunables — single shared row, same
+    fixed-id singleton pattern as Branding above. Every column is nullable:
+    NULL means "not overridden, use the config.py/env-var default" (see
+    app/instance_settings.py's get_effective_settings, the only place these
+    columns and their config.py fallbacks are resolved together). Only
+    tunables that are safe to change without a restart and carry no secret/
+    connection-string shape belong here — database_url, jwt_secret,
+    aptly_api_url, TLS/SSH key paths etc. stay env-only by design (see
+    CLAUDE.md's Secrets section); webhook_secret is the one exception,
+    included because rotating it is a legitimate runtime admin operation,
+    handled write-only (see BrandingRead-style read schema in schemas.py —
+    InstanceSettingsRead never echoes it back).
+    """
+
+    __tablename__ = "instance_settings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    audit_log_retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    activation_key_default_ttl_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stale_checkin_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    relay_stale_threshold_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    disk_usage_warn_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    webhook_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    webhook_secret: Mapped[str | None] = mapped_column(String, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )

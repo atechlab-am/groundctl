@@ -25,6 +25,34 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-08-11
+
+### Added: Settings > System — runtime-editable operational tunables
+
+- Satellite-inspired "Administer" surface, scoped to what's actually
+  applicable here (no LDAP/subscriptions/licensing — this isn't RHEL): a
+  new **System** tab under Settings (admin-only) for 7 operational
+  tunables that previously required an env-var change and a restart —
+  `audit_log_retention_days`, `activation_key_default_ttl_hours`,
+  `stale_checkin_hours`, `relay_stale_threshold_hours`,
+  `disk_usage_warn_percent`, `webhook_url`, `webhook_secret`. New
+  `InstanceSetting` singleton table (migration `f2b8d64a1c93`, same
+  fixed-id-row pattern as `Branding`) — every column nullable, `NULL`
+  means "use the config.py/env-var default." Every call site that used to
+  read `settings.X` for these 7 fields now goes through
+  `app/instance_settings.py`'s `get_effective_settings(db)`, so a change
+  takes effect on the next scheduled task run, no restart needed.
+- **Deliberately excluded**: connection/secret-shaped config —
+  `database_url`, `jwt_secret`, `aptly_api_url`, TLS/SSH key paths — stays
+  env-only. `webhook_secret` is the one secret-shaped exception, handled
+  write-only (never echoed back by `GET /instance-settings`, same posture
+  as a password hash) since rotating it is a legitimate runtime admin
+  operation.
+- New `GET`/`PUT /instance-settings`, admin-only (`require_role(admin)`) —
+  stricter than `GET /branding`'s no-auth, since these are operational
+  internals, not something every page load needs. New
+  `AuditAction.update_instance_settings`.
+
 ## [0.18.0] - 2026-08-11
 
 ### Added: edit a site's name/description

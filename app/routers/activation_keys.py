@@ -8,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import require_role
-from app.config import settings
 from app.database import get_db
+from app.instance_settings import get_effective_settings
 from app.models import ActivationKey, AuditAction, AuditLog, HostGroup, LifecycleEnvironment, Role, User
 from app.schemas import ActivationKeyCreate, ActivationKeyCreateResponse, ActivationKeyRead
 
@@ -40,7 +40,7 @@ def create_activation_key(
     expires_at = payload.expires_at
     if expires_at is None:
         expires_at = datetime.now(timezone.utc) + timedelta(
-            hours=settings.activation_key_default_ttl_hours
+            hours=get_effective_settings(db).activation_key_default_ttl_hours
         )
 
     token = secrets.token_urlsafe(32)
