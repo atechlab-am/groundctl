@@ -2,12 +2,13 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, Plus, Save } from "lucide-react";
+import { ArrowLeft, Pencil, Plus, Save } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryState } from "@/components/QueryState";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -21,7 +22,15 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { RoleGate } from "@/layout/RoleGate";
-import { getSite, getRelay, createRelay, listSiteEnvironments, replaceSiteEnvironments, type RelayCreate } from "@/api/sites";
+import {
+  getSite,
+  updateSite,
+  getRelay,
+  createRelay,
+  listSiteEnvironments,
+  replaceSiteEnvironments,
+  type RelayCreate,
+} from "@/api/sites";
 import { listLifecycleEnvironments } from "@/api/environments";
 import { errorMessage } from "@/lib/errors";
 import { formatDateTime, formatBytes } from "@/lib/format";
@@ -34,6 +43,10 @@ export function SiteDetailPage() {
   const [relayForm, setRelayForm] = useState<RelayCreate>({ hostname: "", ssh_user: "" });
   const [relayError, setRelayError] = useState<string | null>(null);
   const [selectedEnvIds, setSelectedEnvIds] = useState<Set<string>>(new Set());
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
 
   if (!siteId) return null;
 
@@ -57,6 +70,25 @@ export function SiteDetailPage() {
       setSelectedEnvIds(new Set(siteEnvironmentsQuery.data.map((e) => e.id)));
     }
   }, [siteEnvironmentsQuery.data]);
+
+  function openEdit() {
+    if (!siteQuery.data) return;
+    setEditName(siteQuery.data.name);
+    setEditDescription(siteQuery.data.description ?? "");
+    setEditError(null);
+    setEditDialogOpen(true);
+  }
+
+  const updateSiteMutation = useMutation({
+    mutationFn: () => updateSite(siteId, { name: editName, description: editDescription || null }),
+    onSuccess: () => {
+      toast.success("Site updated");
+      void queryClient.invalidateQueries({ queryKey: ["site", siteId] });
+      void queryClient.invalidateQueries({ queryKey: ["sites"] });
+      setEditDialogOpen(false);
+    },
+    onError: (err) => setEditError(errorMessage(err)),
+  });
 
   const createRelayMutation = useMutation({
     mutationFn: (payload: RelayCreate) => createRelay(siteId, payload),
@@ -104,7 +136,56 @@ export function SiteDetailPage() {
       <QueryState isLoading={siteQuery.isLoading} isError={siteQuery.isError} error={siteQuery.error}>
         {siteQuery.data && (
           <>
-            <PageHeader title={siteQuery.data.name} description={siteQuery.data.description ?? undefined} />
+            <PageHeader
+              title={siteQuery.data.name}
+              description={siteQuery.data.description ?? undefined}
+              actions={
+                <RoleGate minRole="operator">
+                  <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+                    <DialogTrigger asChild>
+                      <Button size="sm" variant="outline" onClick={openEdit}>
+                        <Pencil className="h-4 w-4" />
+                        Edit
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          setEditError(null);
+                          updateSiteMutation.mutate();
+                        }}
+                      >
+                        <DialogHeader>
+                          <DialogTitle>Edit site</DialogTitle>
+                        </DialogHeader>
+                        <div className="mt-4 flex flex-col gap-4">
+                          {editError && <p className="text-sm text-destructive">{editError}</p>}
+                          <div className="flex flex-col gap-1.5">
+                            <Label htmlFor="site-name">Name</Label>
+                            <Input id="site-name" value={editName} onChange={(e) => setEditName(e.target.value)} required />
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <Label htmlFor="site-description">Description</Label>
+                            <Textarea
+                              id="site-description"
+                              value={editDescription}
+                              onChange={(e) => setEditDescription(e.target.value)}
+                              placeholder="Optional"
+                            />
+                          </div>
+                        </div>
+                        <DialogFooter className="mt-6">
+                          <Button type="submit" disabled={updateSiteMutation.isPending}>
+                            {updateSiteMutation.isPending ? "Saving…" : "Save"}
+                          </Button>
+                        </DialogFooter>
+                      </form>
+                    </DialogContent>
+                  </Dialog>
+                </RoleGate>
+              }
+            />
 
             <div className="mb-6">
               <Card>

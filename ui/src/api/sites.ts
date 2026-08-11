@@ -47,6 +47,15 @@ export function getSite(siteId: string): Promise<SiteRead> {
   return api.get<SiteRead>(`/sites/${siteId}`);
 }
 
+export interface SiteUpdate {
+  name: string;
+  description?: string | null;
+}
+
+export function updateSite(siteId: string, payload: SiteUpdate): Promise<SiteRead> {
+  return api.put<SiteRead>(`/sites/${siteId}`, payload);
+}
+
 export function createRelay(siteId: string, payload: RelayCreate): Promise<RelayRead> {
   return api.post<RelayRead>(`/sites/${siteId}/relay`, payload);
 }

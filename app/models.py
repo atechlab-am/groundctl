@@ -127,6 +127,7 @@ class AuditAction(str, enum.Enum):
     mark_server_unreachable = "mark_server_unreachable"
     flag_stale_server = "flag_stale_server"
     create_site = "create_site"
+    update_site = "update_site"
     create_relay = "create_relay"
     update_site_environments = "update_site_environments"
     assign_server_site = "assign_server_site"

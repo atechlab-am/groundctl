@@ -122,6 +122,75 @@ def test_get_site_not_found(client, viewer_token):
     assert r.status_code == 404, r.text
 
 
+def test_update_site_as_operator(client, operator_token):
+    created = client.post(
+        "/sites", json=_site_payload("update-site"), headers=auth_headers(operator_token)
+    ).json()
+
+    r = client.put(
+        f"/sites/{created['id']}",
+        json={"name": "update-site", "description": "added later"},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["description"] == "added later"
+
+    r2 = client.get(f"/sites/{created['id']}", headers=auth_headers(operator_token))
+    assert r2.json()["description"] == "added later"
+
+
+def test_update_site_rename(client, operator_token):
+    created = client.post(
+        "/sites", json=_site_payload("rename-site"), headers=auth_headers(operator_token)
+    ).json()
+
+    r = client.put(
+        f"/sites/{created['id']}",
+        json={"name": "renamed-site", "description": None},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "renamed-site"
+    assert r.json()["description"] is None
+
+
+def test_update_site_as_viewer_forbidden(client, operator_token, viewer_token):
+    created = client.post(
+        "/sites", json=_site_payload("update-site-viewer"), headers=auth_headers(operator_token)
+    ).json()
+
+    r = client.put(
+        f"/sites/{created['id']}",
+        json={"name": "update-site-viewer", "description": "nope"},
+        headers=auth_headers(viewer_token),
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_update_site_not_found(client, operator_token):
+    r = client.put(
+        "/sites/00000000-0000-0000-0000-000000000000",
+        json={"name": "does-not-exist", "description": None},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_update_site_rename_conflicts_with_existing_name(client, operator_token):
+    client.post("/sites", json=_site_payload("taken-name"), headers=auth_headers(operator_token))
+    created = client.post(
+        "/sites", json=_site_payload("to-be-renamed"), headers=auth_headers(operator_token)
+    ).json()
+
+    r = client.put(
+        f"/sites/{created['id']}",
+        json={"name": "taken-name", "description": None},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 409, r.text
+
+
 def test_create_relay_as_operator(client, operator_token):
     site = client.post("/sites", json=_site_payload("relay-site1"), headers=auth_headers(operator_token)).json()
 

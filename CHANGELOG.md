@@ -25,6 +25,17 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-08-11
+
+### Added: edit a site's name/description
+
+- New `PUT /sites/{site_id}` — sites could be created and viewed but never
+  edited; `Site.description` has existed on the model since sites shipped
+  with no way to set it after creation. New `SiteUpdate` schema (name +
+  description, same shape as `SiteCreate`), 409 on rename into an
+  already-used name, new `AuditAction.update_site` (migration
+  `e7a3c15f9b2d`). Site detail page gained an Edit button/dialog.
+
 ## [0.17.0] - 2026-08-11
 
 ### Added: repository detail page with live sync status

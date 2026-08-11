@@ -14,6 +14,7 @@ from app.schemas import (
     SiteCreate,
     SiteEnvironmentsUpdate,
     SiteRead,
+    SiteUpdate,
 )
 
 router = APIRouter()
@@ -65,6 +66,37 @@ def get_site(
     site = db.get(Site, site_id)
     if site is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="site not found")
+    return site
+
+
+@router.put("/{site_id}", response_model=SiteRead)
+def update_site(
+    site_id: uuid.UUID,
+    payload: SiteUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    site = db.get(Site, site_id)
+    if site is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="site not found")
+
+    if payload.name != site.name:
+        existing = db.execute(select(Site).where(Site.name == payload.name)).scalar_one_or_none()
+        if existing is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="site name already in use")
+
+    site.name = payload.name
+    site.description = payload.description
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.update_site,
+            resource_type="site",
+            resource_id=str(site.id),
+        )
+    )
+    db.commit()
+    db.refresh(site)
     return site
 
 

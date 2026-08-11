@@ -497,6 +497,13 @@ class SiteCreate(BaseModel):
     _validate_name = field_validator("name")(validate_aptly_name)
 
 
+class SiteUpdate(BaseModel):
+    name: str
+    description: str | None = None
+
+    _validate_name = field_validator("name")(validate_aptly_name)
+
+
 class SiteRead(BaseModel):
     id: uuid.UUID
     name: str
