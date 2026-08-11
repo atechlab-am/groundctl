@@ -192,6 +192,32 @@ class RepositoryRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RepositoryUpdate(BaseModel):
+    """Aptly mirrors can't change ArchiveURL/Distribution/Components in
+    place — there is no PUT-equivalent in aptly's own API. "Editing" a
+    repository here means delete-then-recreate the underlying aptly mirror
+    under the same Repository row (same id, same name), so every foreign
+    key pointing at this repository (ContentViewRepository, Job.repository_id)
+    stays valid. Guarded the same way delete is: refused with 409 if any
+    ContentView currently references this repository, since swapping the
+    mirror's source data out from under a referenced repository is exactly
+    the kind of instability CLAUDE.md's snapshot-immutability invariant
+    warns against.
+    """
+
+    archive_url: HttpUrl
+    distribution: str
+    components: list[str]
+    architectures: list[str]
+
+    _validate_distribution = field_validator("distribution")(validate_aptly_name)
+
+    @field_validator("components")
+    @classmethod
+    def _validate_components(cls, v: list[str]) -> list[str]:
+        return [validate_aptly_name(item) for item in v]
+
+
 class RepositoryProbeRequest(BaseModel):
     archive_url: HttpUrl
 

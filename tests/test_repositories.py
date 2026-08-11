@@ -134,6 +134,140 @@ def test_sync_repository_invalid_name_rejected(client, operator_token):
         mock_delay.assert_not_called()
 
 
+def test_get_repository_as_viewer(client, operator_token, viewer_token):
+    client.post("/repositories", json=_repo_payload("get-repo"), headers=auth_headers(operator_token))
+    r = client.get("/repositories/get-repo", headers=auth_headers(viewer_token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"] == "get-repo"
+    assert body["archive_url"].rstrip("/") == "http://archive.ubuntu.com/ubuntu"
+
+
+def test_get_repository_not_found(client, viewer_token):
+    r = client.get("/repositories/does-not-exist", headers=auth_headers(viewer_token))
+    assert r.status_code == 404, r.text
+
+
+def test_delete_repository_as_operator(client, operator_token, mock_aptly):
+    client.post("/repositories", json=_repo_payload("delete-repo"), headers=auth_headers(operator_token))
+    r = client.delete("/repositories/delete-repo", headers=auth_headers(operator_token))
+    assert r.status_code == 204, r.text
+    mock_aptly.delete_mirror.assert_called_once_with("delete-repo")
+
+    r2 = client.get("/repositories/delete-repo", headers=auth_headers(operator_token))
+    assert r2.status_code == 404, r2.text
+
+
+def test_delete_repository_as_viewer_forbidden(client, operator_token, viewer_token):
+    client.post("/repositories", json=_repo_payload("delete-repo2"), headers=auth_headers(operator_token))
+    r = client.delete("/repositories/delete-repo2", headers=auth_headers(viewer_token))
+    assert r.status_code == 403, r.text
+
+
+def test_delete_repository_not_found(client, operator_token):
+    r = client.delete("/repositories/does-not-exist", headers=auth_headers(operator_token))
+    assert r.status_code == 404, r.text
+
+
+def test_delete_repository_referenced_by_content_view_conflicts(client, operator_token):
+    repo = client.post(
+        "/repositories", json=_repo_payload("cv-repo"), headers=auth_headers(operator_token)
+    ).json()
+    cv = client.post(
+        "/content-views",
+        json={"name": "guards-delete-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    )
+    assert cv.status_code == 201, cv.text
+
+    r = client.delete("/repositories/cv-repo", headers=auth_headers(operator_token))
+    assert r.status_code == 409, r.text
+    assert "guards-delete-cv" in r.json()["detail"]
+
+
+def test_update_repository_as_operator(client, operator_token, mock_aptly):
+    client.post("/repositories", json=_repo_payload("update-repo"), headers=auth_headers(operator_token))
+    r = client.put(
+        "/repositories/update-repo",
+        json={
+            "archive_url": "http://archive.ubuntu.com/ubuntu",
+            "distribution": "jammy-updates",
+            "components": ["main", "universe"],
+            "architectures": ["amd64", "arm64"],
+        },
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["distribution"] == "jammy-updates"
+    assert body["components"] == ["main", "universe"]
+    assert body["architectures"] == ["amd64", "arm64"]
+    assert body["last_synced_at"] is None
+    assert body["size_bytes"] is None
+    mock_aptly.delete_mirror.assert_called_once_with("update-repo")
+    mock_aptly.create_mirror.assert_called_with(
+        name="update-repo",
+        archive_url="http://archive.ubuntu.com/ubuntu",
+        distribution="jammy-updates",
+        components=["main", "universe"],
+        architectures=["amd64", "arm64"],
+    )
+
+
+def test_update_repository_as_viewer_forbidden(client, operator_token, viewer_token):
+    client.post("/repositories", json=_repo_payload("update-repo2"), headers=auth_headers(operator_token))
+    r = client.put(
+        "/repositories/update-repo2",
+        json={
+            "archive_url": "http://archive.ubuntu.com/ubuntu",
+            "distribution": "jammy",
+            "components": ["main"],
+            "architectures": ["amd64"],
+        },
+        headers=auth_headers(viewer_token),
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_update_repository_not_found(client, operator_token):
+    r = client.put(
+        "/repositories/does-not-exist",
+        json={
+            "archive_url": "http://archive.ubuntu.com/ubuntu",
+            "distribution": "jammy",
+            "components": ["main"],
+            "architectures": ["amd64"],
+        },
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_update_repository_referenced_by_content_view_conflicts(client, operator_token):
+    repo = client.post(
+        "/repositories", json=_repo_payload("cv-repo2"), headers=auth_headers(operator_token)
+    ).json()
+    cv = client.post(
+        "/content-views",
+        json={"name": "guards-update-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    )
+    assert cv.status_code == 201, cv.text
+
+    r = client.put(
+        "/repositories/cv-repo2",
+        json={
+            "archive_url": "http://archive.ubuntu.com/ubuntu",
+            "distribution": "jammy",
+            "components": ["main"],
+            "architectures": ["amd64"],
+        },
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 409, r.text
+    assert "guards-update-cv" in r.json()["detail"]
+
+
 def test_probe_repository_archive_as_operator(client, operator_token):
     with patch("app.routers.repositories.probe_distributions", return_value=["jammy", "jammy-updates"]) as m:
         r = client.post(

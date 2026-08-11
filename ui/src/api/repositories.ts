@@ -38,6 +38,30 @@ export function createRepository(payload: RepositoryCreate): Promise<RepositoryR
   return api.post<RepositoryRead>("/repositories", payload);
 }
 
+export function getRepository(name: string): Promise<RepositoryRead> {
+  return api.get<RepositoryRead>(`/repositories/${encodeURIComponent(name)}`);
+}
+
+export interface RepositoryUpdate {
+  archive_url: string;
+  distribution: string;
+  components: string[];
+  architectures: string[];
+}
+
+// Aptly has no in-place edit for a mirror's ArchiveURL/Distribution/
+// Components — server-side this deletes and recreates the aptly mirror
+// under the same Repository row. Resets last_synced_at/size_bytes: the new
+// mirror hasn't synced anything yet.
+export function updateRepository(name: string, payload: RepositoryUpdate): Promise<RepositoryRead> {
+  return api.put<RepositoryRead>(`/repositories/${encodeURIComponent(name)}`, payload);
+}
+
+// 409s if any content view still references this repository.
+export function deleteRepository(name: string): Promise<void> {
+  return api.delete<void>(`/repositories/${encodeURIComponent(name)}`);
+}
+
 export interface RepositoryProbeResult {
   distributions: string[];
 }

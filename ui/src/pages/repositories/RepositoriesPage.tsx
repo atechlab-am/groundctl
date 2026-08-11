@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { Plus, RefreshCw, Search } from "lucide-react";
+import { Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryState } from "@/components/QueryState";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,9 @@ import {
   createRepositoriesBatch,
   syncRepository,
   estimateRepositorySize,
+  updateRepository,
+  deleteRepository,
+  type RepositoryRead,
 } from "@/api/repositories";
 import { formatDateTime, formatBytes } from "@/lib/format";
 import { errorMessage } from "@/lib/errors";
@@ -128,6 +131,60 @@ export function RepositoriesPage() {
     },
     onError: (err) => toast.error(errorMessage(err)),
   });
+
+  const [editing, setEditing] = useState<RepositoryRead | null>(null);
+  const [editArchiveUrl, setEditArchiveUrl] = useState("");
+  const [editDistribution, setEditDistribution] = useState("");
+  const [editComponents, setEditComponents] = useState("");
+  const [editArchitectures, setEditArchitectures] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
+
+  function openEdit(repo: RepositoryRead) {
+    setEditing(repo);
+    setEditArchiveUrl(repo.archive_url);
+    setEditDistribution(repo.distribution);
+    setEditComponents(repo.components.join(","));
+    setEditArchitectures(repo.architectures.join(","));
+    setEditError(null);
+  }
+
+  const updateMutation = useMutation({
+    mutationFn: (payload: { name: string; archive_url: string; distribution: string; components: string[]; architectures: string[] }) =>
+      updateRepository(payload.name, payload),
+    onSuccess: () => {
+      toast.success("Repository updated — sync again to pull from the new source");
+      void queryClient.invalidateQueries({ queryKey: ["repositories"] });
+      setEditing(null);
+    },
+    onError: (err) => setEditError(errorMessage(err)),
+  });
+
+  function handleUpdate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editing) return;
+    setEditError(null);
+    updateMutation.mutate({
+      name: editing.name,
+      archive_url: editArchiveUrl,
+      distribution: editDistribution,
+      components: editComponents.split(",").map((s) => s.trim()).filter(Boolean),
+      architectures: editArchitectures.split(",").map((s) => s.trim()).filter(Boolean),
+    });
+  }
+
+  const deleteMutation = useMutation({
+    mutationFn: (name: string) => deleteRepository(name),
+    onSuccess: () => {
+      toast.success("Repository deleted");
+      void queryClient.invalidateQueries({ queryKey: ["repositories"] });
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+
+  function handleDelete(repo: RepositoryRead) {
+    if (!confirm(`Delete repository "${repo.name}"? This removes the aptly mirror and cannot be undone.`)) return;
+    deleteMutation.mutate(repo.name);
+  }
 
   function handleProbe(e: React.FormEvent) {
     e.preventDefault();
@@ -311,6 +368,7 @@ export function RepositoriesPage() {
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
+              <TableHead>Archive URL</TableHead>
               <TableHead>Distribution</TableHead>
               <TableHead>Components</TableHead>
               <TableHead>Architectures</TableHead>
@@ -323,6 +381,9 @@ export function RepositoriesPage() {
             {repositoriesQuery.data?.map((repo) => (
               <TableRow key={repo.id}>
                 <TableCell className="font-medium">{repo.name}</TableCell>
+                <TableCell className="max-w-64 truncate text-muted-foreground" title={repo.archive_url}>
+                  {repo.archive_url}
+                </TableCell>
                 <TableCell>{repo.distribution}</TableCell>
                 <TableCell>
                   <div className="flex flex-wrap gap-1">
@@ -347,15 +408,30 @@ export function RepositoriesPage() {
                 </TableCell>
                 <TableCell className="text-right">
                   <RoleGate minRole="operator">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={syncMutation.isPending && syncMutation.variables === repo.name}
-                      onClick={() => syncMutation.mutate(repo.name)}
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                      Sync
-                    </Button>
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={syncMutation.isPending && syncMutation.variables === repo.name}
+                        onClick={() => syncMutation.mutate(repo.name)}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Sync
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => openEdit(repo)}>
+                        <Pencil className="h-3.5 w-3.5" />
+                        Edit
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={deleteMutation.isPending && deleteMutation.variables === repo.name}
+                        onClick={() => handleDelete(repo)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Delete
+                      </Button>
+                    </div>
                   </RoleGate>
                 </TableCell>
               </TableRow>
@@ -363,6 +439,68 @@ export function RepositoriesPage() {
           </TableBody>
         </Table>
       </QueryState>
+
+      <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
+        <DialogContent>
+          <form onSubmit={handleUpdate}>
+            <DialogHeader>
+              <DialogTitle>Edit {editing?.name}</DialogTitle>
+              <DialogDescription>
+                Aptly can't change a mirror's source in place — saving deletes the old mirror and creates a new one
+                with these settings. Size and last-synced reset; sync again afterward to pull from the new source.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-4 flex flex-col gap-4">
+              {editError && <p className="text-sm text-destructive">{editError}</p>}
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="edit-archive-url">Archive URL</Label>
+                <Input
+                  id="edit-archive-url"
+                  type="url"
+                  value={editArchiveUrl}
+                  onChange={(e) => setEditArchiveUrl(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="edit-distribution">Distribution</Label>
+                <Input
+                  id="edit-distribution"
+                  value={editDistribution}
+                  onChange={(e) => setEditDistribution(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="edit-components">Components (comma-separated)</Label>
+                <Input
+                  id="edit-components"
+                  value={editComponents}
+                  onChange={(e) => setEditComponents(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="edit-architectures">Architectures (comma-separated)</Label>
+                <Input
+                  id="edit-architectures"
+                  value={editArchitectures}
+                  onChange={(e) => setEditArchitectures(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+            <DialogFooter className="mt-6">
+              <Button type="button" variant="outline" onClick={() => setEditing(null)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={updateMutation.isPending}>
+                {updateMutation.isPending ? "Saving…" : "Save"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

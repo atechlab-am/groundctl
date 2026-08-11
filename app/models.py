@@ -102,6 +102,8 @@ class AuditAction(str, enum.Enum):
     create_user = "create_user"
     create_repository = "create_repository"
     sync_repository = "sync_repository"
+    update_repository = "update_repository"
+    delete_repository = "delete_repository"
     cut_snapshot = "cut_snapshot"
     publish_content_view = "publish_content_view"
     switch_publish = "switch_publish"
@@ -365,8 +367,13 @@ class Job(Base):
     host_group_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("host_groups.id"), nullable=True
     )
+    # SET NULL (unlike the other target FKs above, which have no delete path
+    # to worry about — servers/environments/host_groups are never hard
+    # deleted): repositories now can be (delete_repository below), and a
+    # past sync job's history should survive that, not get blocked by or
+    # cascade into deleting it.
     repository_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("repositories.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("repositories.id", ondelete="SET NULL"), nullable=True
     )
     log_output: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)

@@ -9,7 +9,18 @@ from app.aptly_client import AptlyClient, AptlyError, get_aptly_client
 from app.archive_probe import ArchiveProbeError, estimate_repository_size_bytes, probe_distributions
 from app.auth import require_role
 from app.database import get_db
-from app.models import AuditAction, AuditLog, Job, JobTargetType, JobType, Repository, Role, User
+from app.models import (
+    AuditAction,
+    AuditLog,
+    ContentView,
+    ContentViewRepository,
+    Job,
+    JobTargetType,
+    JobType,
+    Repository,
+    Role,
+    User,
+)
 from app.schemas import (
     APTLY_NAME_RE,
     JobRead,
@@ -22,6 +33,7 @@ from app.schemas import (
     RepositoryProbeRequest,
     RepositoryProbeResult,
     RepositoryRead,
+    RepositoryUpdate,
 )
 
 router = APIRouter()
@@ -224,6 +236,136 @@ def list_repositories(
     return list(db.execute(query).scalars())
 
 
+def _get_repository_or_404(db: Session, name: str) -> Repository:
+    if not APTLY_NAME_RE.fullmatch(name):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid repository name")
+    repository = db.execute(select(Repository).where(Repository.name == name)).scalar_one_or_none()
+    if repository is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="repository not found")
+    return repository
+
+
+def _referencing_content_view_names(db: Session, repository: Repository) -> list[str]:
+    return list(
+        db.execute(
+            select(ContentView.name)
+            .join(ContentViewRepository, ContentViewRepository.content_view_id == ContentView.id)
+            .where(ContentViewRepository.repository_id == repository.id)
+            .order_by(ContentView.name)
+        ).scalars()
+    )
+
+
+@router.get("/{name}", response_model=RepositoryRead)
+def get_repository(
+    name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.viewer)),
+):
+    """Single-repository detail — the archive_url/distribution/components/
+    architectures a list row truncates aren't otherwise inspectable without
+    going through the CLI or the database directly.
+    """
+    return _get_repository_or_404(db, name)
+
+
+@router.delete("/{name}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_repository(
+    name: str,
+    db: Session = Depends(get_db),
+    aptly: AptlyClient = Depends(get_aptly_client),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """Deletes both the aptly mirror and the Repository row. Blocked (409)
+    if any ContentView still references this repository — deleting the
+    mirror out from under a ContentView whose snapshot was cut from it would
+    leave that ContentView pointing at nothing, and aptly's own snapshot
+    reference check doesn't know about groundctl's ContentView concept, so
+    this check must happen here rather than relying on aptly to refuse.
+    """
+    repository = _get_repository_or_404(db, name)
+
+    referencing = _referencing_content_view_names(db, repository)
+    if referencing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"repository is used by content view(s): {', '.join(referencing)}",
+        )
+
+    try:
+        aptly.delete_mirror(repository.name)
+    except AptlyError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.delete_repository,
+            resource_type="repository",
+            resource_id=repository.name,
+        )
+    )
+    db.delete(repository)
+    db.commit()
+
+
+@router.put("/{name}", response_model=RepositoryRead)
+def update_repository(
+    name: str,
+    payload: RepositoryUpdate,
+    db: Session = Depends(get_db),
+    aptly: AptlyClient = Depends(get_aptly_client),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """"Edits" a repository by deleting the old aptly mirror and creating a
+    new one with the given settings under the same Repository row (same id
+    and name) — aptly has no in-place way to change a mirror's ArchiveURL/
+    Distribution/Components (see RepositoryUpdate's docstring). Same 409
+    ContentView guard as delete, for the same reason: this is a delete
+    under the hood. last_synced_at/size_bytes/last_sync_job_id are reset —
+    the new mirror has synced nothing yet.
+    """
+    repository = _get_repository_or_404(db, name)
+
+    referencing = _referencing_content_view_names(db, repository)
+    if referencing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"repository is used by content view(s): {', '.join(referencing)}",
+        )
+
+    try:
+        aptly.delete_mirror(repository.name)
+        aptly.create_mirror(
+            name=repository.name,
+            archive_url=str(payload.archive_url),
+            distribution=payload.distribution,
+            components=payload.components,
+            architectures=payload.architectures,
+        )
+    except AptlyError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    repository.archive_url = str(payload.archive_url)
+    repository.distribution = payload.distribution
+    repository.components = payload.components
+    repository.architectures = payload.architectures
+    repository.last_synced_at = None
+    repository.size_bytes = None
+    repository.last_sync_job_id = None
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.update_repository,
+            resource_type="repository",
+            resource_id=repository.name,
+        )
+    )
+    db.commit()
+    db.refresh(repository)
+    return repository
+
+
 @router.post("/{name}/sync", response_model=JobRead, status_code=status.HTTP_201_CREATED)
 def sync_repository(
     name: str,
@@ -241,12 +383,7 @@ def sync_repository(
     # so importing app.tasks at module load time here would be circular.
     from app.tasks import sync_repository_task
 
-    if not APTLY_NAME_RE.fullmatch(name):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid repository name")
-
-    repository = db.execute(select(Repository).where(Repository.name == name)).scalar_one_or_none()
-    if repository is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="repository not found")
+    repository = _get_repository_or_404(db, name)
 
     job = Job(
         job_type=JobType.sync_repository,

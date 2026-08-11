@@ -119,6 +119,18 @@ class AptlyClient:
         )
         return self._json_object_or_empty(response)
 
+    def delete_mirror(self, name: str) -> None:
+        """Deletes an aptly mirror outright. aptly itself refuses this
+        (returns 409) if any snapshot still references the mirror's package
+        pool — callers should still check for a ContentView reference first
+        (routers/repositories.py's delete_repository) since aptly's own
+        snapshot-level check doesn't know about groundctl's ContentView
+        concept, and a mirror can exist with zero snapshots yet still be
+        wrong to delete out from under a caller mid-sync.
+        """
+        _validate_name(name)
+        self._request("DELETE", f"/api/mirrors/{name}")
+
     def sync_mirror(self, name: str) -> dict:
         _validate_name(name)
         # First-run syncs download real package files and can take many

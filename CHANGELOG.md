@@ -25,6 +25,32 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-11
+
+### Added: repository detail view, edit, and delete
+
+- New `GET /repositories/{name}` — single-repository detail (archive_url,
+  distribution, components, architectures, size, sync history), previously
+  only inspectable via the list endpoint's truncated table or the DB
+  directly. Repositories page now shows the archive URL column so it's
+  visible without opening anything.
+- New `DELETE /repositories/{name}` — deletes both the aptly mirror
+  (`AptlyClient.delete_mirror`) and the `Repository` row. Blocked with
+  `409` if any content view still references the repository, since the
+  content view's cut snapshot would otherwise be left pointing at deleted
+  mirror data. `Job.repository_id` now `ON DELETE SET NULL` (migration
+  `c4a1f9b2e7d5`, extended from 0.15.0) so past sync job history survives a
+  repository's deletion instead of blocking it.
+- New `PUT /repositories/{name}` — "edits" a repository's archive_url/
+  distribution/components/architectures. Aptly has no in-place way to
+  change a mirror's source, so under the hood this deletes the old aptly
+  mirror and creates a new one with the given settings under the same
+  `Repository` row (same id/name, so `ContentViewRepository`/`Job`
+  references stay valid). Resets `last_synced_at`/`size_bytes` — the new
+  mirror hasn't synced anything yet. Same `409` content-view guard as
+  delete, for the same reason. Repositories page gained Edit/Delete row
+  actions alongside the existing Sync button.
+
 ## [0.15.0] - 2026-08-11
 
 ### Added: repository size estimate/actual, and async-tracked sync jobs

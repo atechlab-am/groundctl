@@ -107,8 +107,10 @@ def _mock_aptly() -> MagicMock:
 
     mock = MagicMock(spec=AptlyClient)
     mock.create_mirror.return_value = {}
+    mock.delete_mirror.return_value = None
     mock.sync_mirror.return_value = {}
     mock.get_mirror_packages.return_value = []
+    mock.get_mirror_size_bytes.return_value = 0
     mock.create_snapshot_from_mirror.return_value = {}
     mock.get_snapshot_packages.return_value = []
     mock.publish_exists.return_value = False
@@ -130,8 +132,10 @@ def mock_aptly_unreachable():
     mock = _mock_aptly()
     for method_name in (
         "create_mirror",
+        "delete_mirror",
         "sync_mirror",
         "get_mirror_packages",
+        "get_mirror_size_bytes",
         "create_snapshot_from_mirror",
         "get_snapshot_packages",
         "publish_exists",

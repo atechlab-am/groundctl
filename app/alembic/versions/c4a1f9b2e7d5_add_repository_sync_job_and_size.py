@@ -21,7 +21,8 @@ def upgrade() -> None:
     """Upgrade schema."""
     op.add_column('jobs', sa.Column('repository_id', sa.UUID(), nullable=True))
     op.create_foreign_key(
-        'jobs_repository_id_fkey', 'jobs', 'repositories', ['repository_id'], ['id']
+        'jobs_repository_id_fkey', 'jobs', 'repositories', ['repository_id'], ['id'],
+        ondelete='SET NULL',
     )
 
     op.add_column('repositories', sa.Column('size_bytes', sa.BigInteger(), nullable=True))
@@ -40,6 +41,8 @@ def upgrade() -> None:
     with op.get_context().autocommit_block():
         op.execute("ALTER TYPE job_type ADD VALUE IF NOT EXISTS 'sync_repository'")
         op.execute("ALTER TYPE job_target_type ADD VALUE IF NOT EXISTS 'repository'")
+        op.execute("ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'update_repository'")
+        op.execute("ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'delete_repository'")
 
 
 def downgrade() -> None:
