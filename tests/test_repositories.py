@@ -102,25 +102,36 @@ def test_list_repositories_limit_offset(client, operator_token, viewer_token):
 
 def test_sync_repository_as_operator(client, operator_token):
     client.post("/repositories", json=_repo_payload("sync-repo"), headers=auth_headers(operator_token))
-    r = client.post("/repositories/sync-repo/sync", headers=auth_headers(operator_token))
-    assert r.status_code == 200, r.text
-    assert r.json()["last_synced_at"] is not None
+    with patch("app.tasks.sync_repository_task.delay") as mock_delay:
+        r = client.post("/repositories/sync-repo/sync", headers=auth_headers(operator_token))
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["job_type"] == "sync_repository"
+        assert body["status"] == "pending"
+        assert body["target_type"] == "repository"
+        mock_delay.assert_called_once_with(str(body["id"]))
 
 
 def test_sync_repository_as_viewer_forbidden(client, operator_token, viewer_token):
     client.post("/repositories", json=_repo_payload("sync-repo2"), headers=auth_headers(operator_token))
-    r = client.post("/repositories/sync-repo2/sync", headers=auth_headers(viewer_token))
-    assert r.status_code == 403, r.text
+    with patch("app.tasks.sync_repository_task.delay") as mock_delay:
+        r = client.post("/repositories/sync-repo2/sync", headers=auth_headers(viewer_token))
+        assert r.status_code == 403, r.text
+        mock_delay.assert_not_called()
 
 
 def test_sync_repository_not_found(client, operator_token):
-    r = client.post("/repositories/does-not-exist/sync", headers=auth_headers(operator_token))
-    assert r.status_code == 404, r.text
+    with patch("app.tasks.sync_repository_task.delay") as mock_delay:
+        r = client.post("/repositories/does-not-exist/sync", headers=auth_headers(operator_token))
+        assert r.status_code == 404, r.text
+        mock_delay.assert_not_called()
 
 
 def test_sync_repository_invalid_name_rejected(client, operator_token):
-    r = client.post("/repositories/../etc/sync", headers=auth_headers(operator_token))
-    assert r.status_code in (404, 422), r.text
+    with patch("app.tasks.sync_repository_task.delay") as mock_delay:
+        r = client.post("/repositories/../etc/sync", headers=auth_headers(operator_token))
+        assert r.status_code in (404, 422), r.text
+        mock_delay.assert_not_called()
 
 
 def test_probe_repository_archive_as_operator(client, operator_token):
@@ -241,9 +252,16 @@ def test_create_repositories_batch_aptly_error_reported_per_item(db_session, moc
     assert "aptly rejected mirror" in body["errors"][0]["detail"]
 
 
-def test_sync_repository_aptly_unreachable_returns_502(db_session, mock_aptly, mock_aptly_unreachable):
-    # First create the repo with a reachable aptly mock, then switch to
-    # unreachable for the sync call itself.
+def test_sync_repository_task_marks_job_failed_on_aptly_error(db_session, mock_aptly, mock_aptly_unreachable):
+    """Sync now runs async (sync_repository_task, app/tasks.py) instead of
+    inline, so an unreachable aptly no longer surfaces as a synchronous 502
+    from the /sync endpoint (see test_sync_repository_as_operator) — it
+    surfaces as the Job ending up JobStatus.failed. Exercises the task
+    function directly, same layer other job tests stop short of (they only
+    assert the trigger endpoint enqueues correctly, since the task itself
+    talks to ansible/aptly) — worth it here because do_sync_repository's
+    AptlyError handling is new in this task and not covered elsewhere.
+    """
     app.dependency_overrides[get_aptly_client] = lambda: mock_aptly
     try:
         with TestClient(app) as c:
@@ -254,16 +272,30 @@ def test_sync_repository_aptly_unreachable_returns_502(db_session, mock_aptly, m
                 headers=auth_headers(token),
             )
             assert r.status_code == 201, r.text
+            repo_id = r.json()["id"]
+
+            with patch("app.tasks.sync_repository_task.delay"):
+                sync_r = c.post("/repositories/sync-unreachable/sync", headers=auth_headers(token))
+                assert sync_r.status_code == 201, sync_r.text
+                job_id = sync_r.json()["id"]
     finally:
         app.dependency_overrides.clear()
 
-    app.dependency_overrides[get_aptly_client] = lambda: mock_aptly_unreachable
+    from app.aptly_client import get_aptly_client as _get_aptly_client_dep
+    from app.tasks import sync_repository_task
+
+    app.dependency_overrides[_get_aptly_client_dep] = lambda: mock_aptly_unreachable
     try:
-        with TestClient(app) as c:
-            r = c.post(
-                "/repositories/sync-unreachable/sync",
-                headers=auth_headers(token),
-            )
-            assert r.status_code == 502, r.text
+        with patch("app.tasks.get_aptly_client", return_value=mock_aptly_unreachable):
+            sync_repository_task(job_id)
     finally:
         app.dependency_overrides.clear()
+
+    with TestClient(app) as c:
+        job_r = c.get(f"/jobs/{job_id}", headers=auth_headers(token))
+        assert job_r.status_code == 200, job_r.text
+        assert job_r.json()["status"] == "failed"
+
+        repo_r = c.get("/repositories", params={"distribution": "jammy"}, headers=auth_headers(token))
+        repo = next(r for r in repo_r.json() if r["id"] == repo_id)
+        assert repo["last_synced_at"] is None

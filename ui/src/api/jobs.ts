@@ -6,10 +6,11 @@ export type JobType =
   | "gather_facts"
   | "bulk_apply_updates"
   | "run_command"
-  | "manage_package";
+  | "manage_package"
+  | "sync_repository";
 
 export type JobStatus = "pending" | "running" | "success" | "failed";
-export type JobTargetType = "server" | "environment" | "host_group" | "adhoc";
+export type JobTargetType = "server" | "environment" | "host_group" | "adhoc" | "repository";
 export type PackageAction = "install" | "remove";
 
 export interface JobRead {
@@ -20,6 +21,7 @@ export interface JobRead {
   server_id: string | null;
   environment_id: string | null;
   host_group_id: string | null;
+  repository_id: string | null;
   server_ids: string[];
   log_output: string | null;
   created_at: string;

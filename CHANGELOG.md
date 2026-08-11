@@ -25,6 +25,39 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-11
+
+### Added: repository size estimate/actual, and async-tracked sync jobs
+
+- New **estimate size before creating** a repository — `POST
+  /repositories/estimate-size` fetches upstream `Packages.gz` for the
+  chosen distribution/components/architectures and sums each package's
+  `Size` field (`app/archive_probe.py`). Best-effort: a missing
+  component/arch combination is skipped rather than failing the whole
+  estimate. Wired into the "New repository" dialog as a per-distribution
+  "Estimate size" button.
+- New **actual mirror size** shown after sync — `Repository.size_bytes`
+  (migration `c4a1f9b2e7d5`), computed from real package data via
+  `AptlyClient.get_mirror_size_bytes`, recorded after every manual and
+  nightly-scheduled sync. New "Size" column on the Repositories page.
+- **Repository sync is now an async, tracked `Job`** instead of a blocking
+  inline aptly call — `POST /repositories/{name}/sync` creates a
+  `sync_repository` job and dispatches it via Celery (`sync_repository_task`,
+  `app/tasks.py`), returning the `Job` immediately instead of waiting for
+  the sync to finish. New `Job.repository_id` / `JobTargetType.repository`
+  and `Repository.last_sync_job_id` (migration `c4a1f9b2e7d5`). The
+  Repositories page's "Last synced" cell links to the job's status page so
+  an in-progress sync can be followed instead of just waiting on a spinner.
+
+### Changed: `POST /repositories/{name}/sync` response shape (breaking)
+
+- Returns `201` + the created `JobRead` (job starts `pending`), not `200` +
+  the `RepositoryRead` with `last_synced_at` already set. Callers polling
+  this endpoint for a synchronously-updated repository must instead poll
+  `GET /jobs/{id}` until `status` is `success`/`failed`. The CLI's
+  `groundctl repository sync` and web UI are both updated for this; any
+  other script calling this endpoint directly needs to change.
+
 ## [0.14.0] - 2026-08-06
 
 ### Added: instance settings — admin-managed branding (logo/favicon/colors) and full user management, plus self-service password change

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     ARRAY,
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Enum,
@@ -53,6 +54,7 @@ class JobType(str, enum.Enum):
     bulk_apply_updates = "bulk_apply_updates"
     run_command = "run_command"
     manage_package = "manage_package"
+    sync_repository = "sync_repository"
 
 
 class JobTargetType(str, enum.Enum):
@@ -60,6 +62,7 @@ class JobTargetType(str, enum.Enum):
     environment = "environment"
     host_group = "host_group"
     adhoc = "adhoc"
+    repository = "repository"
 
 
 class PackageAction(str, enum.Enum):
@@ -181,6 +184,16 @@ class Repository(Base):
     components: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False)
     architectures: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Sum of Size across every package aptly reports for this mirror as of
+    # last_synced_at — populated after a successful sync_repository job
+    # (app/tasks.py's sync_repository_task), null until the first sync
+    # completes. Not maintained incrementally; each sync recomputes it fresh
+    # from GET /api/mirrors/{name}/packages so it can never drift from what
+    # aptly actually holds.
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_sync_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jobs.id", use_alter=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
@@ -351,6 +364,9 @@ class Job(Base):
     )
     host_group_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("host_groups.id"), nullable=True
+    )
+    repository_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("repositories.id"), nullable=True
     )
     log_output: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { Plus, RefreshCw, Search } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -25,8 +26,9 @@ import {
   probeRepositoryArchive,
   createRepositoriesBatch,
   syncRepository,
+  estimateRepositorySize,
 } from "@/api/repositories";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatBytes } from "@/lib/format";
 import { errorMessage } from "@/lib/errors";
 
 const DEFAULT_ARCHIVE_URL = "http://archive.ubuntu.com/ubuntu";
@@ -50,6 +52,7 @@ export function RepositoriesPage() {
     setComponentsInput("main,universe");
     setArchitecturesInput("amd64");
     setFormError(null);
+    estimateMutation.reset();
   }
 
   const probeMutation = useMutation({
@@ -61,6 +64,29 @@ export function RepositoriesPage() {
     },
     onError: (err) => setFormError(errorMessage(err)),
   });
+
+  // Best-effort — a failed estimate (e.g. one distribution's Packages files
+  // 404 for the chosen components/architectures) shouldn't block the
+  // operator from creating the repository, so errors are shown inline next
+  // to the estimate rather than through formError/toast.
+  const estimateMutation = useMutation({
+    mutationFn: estimateRepositorySize,
+  });
+
+  function handleEstimate(distribution: string) {
+    estimateMutation.mutate({
+      archive_url: archiveUrl,
+      distribution,
+      components: componentsInput
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      architectures: architecturesInput
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    });
+  }
 
   const createMutation = useMutation({
     mutationFn: createRepositoriesBatch,
@@ -95,9 +121,10 @@ export function RepositoriesPage() {
 
   const syncMutation = useMutation({
     mutationFn: (name: string) => syncRepository(name),
-    onSuccess: (repo) => {
-      toast.success(`Sync triggered for ${repo.name}`);
+    onSuccess: () => {
+      toast.success("Sync triggered — click the repository's status to follow progress");
       void queryClient.invalidateQueries({ queryKey: ["repositories"] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
     onError: (err) => toast.error(errorMessage(err)),
   });
@@ -208,12 +235,32 @@ export function RepositoriesPage() {
                               checked={selected.has(name)}
                               onCheckedChange={(checked) => toggleDistribution(name, checked === true)}
                             />
-                            <Label htmlFor={`dist-${name}`} className="cursor-pointer font-normal">
+                            <Label htmlFor={`dist-${name}`} className="flex-1 cursor-pointer font-normal">
                               {name}
                             </Label>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-2 text-xs text-muted-foreground"
+                              disabled={estimateMutation.isPending && estimateMutation.variables?.distribution === name}
+                              onClick={() => handleEstimate(name)}
+                            >
+                              {estimateMutation.isPending && estimateMutation.variables?.distribution === name
+                                ? "Estimating…"
+                                : estimateMutation.isSuccess && estimateMutation.variables?.distribution === name
+                                  ? formatBytes(estimateMutation.data.size_bytes)
+                                  : estimateMutation.isError && estimateMutation.variables?.distribution === name
+                                    ? "Estimate failed"
+                                    : "Estimate size"}
+                            </Button>
                           </div>
                         ))}
                       </div>
+                      <p className="text-xs text-muted-foreground">
+                        Estimate reads upstream Packages metadata for the current components/architectures below —
+                        it isn't exact and some distributions may not support it.
+                      </p>
                       <div className="flex flex-col gap-1.5">
                         <Label htmlFor="repo-components">Components (comma-separated)</Label>
                         <Input
@@ -267,6 +314,7 @@ export function RepositoriesPage() {
               <TableHead>Distribution</TableHead>
               <TableHead>Components</TableHead>
               <TableHead>Architectures</TableHead>
+              <TableHead>Size</TableHead>
               <TableHead>Last synced</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
@@ -286,7 +334,17 @@ export function RepositoriesPage() {
                   </div>
                 </TableCell>
                 <TableCell className="text-muted-foreground">{repo.architectures.join(", ")}</TableCell>
-                <TableCell className="text-muted-foreground">{formatDateTime(repo.last_synced_at)}</TableCell>
+                <TableCell className="text-muted-foreground">{formatBytes(repo.size_bytes)}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {repo.last_sync_job_id ? (
+                    <Link to={`/jobs/${repo.last_sync_job_id}`} className="hover:underline">
+                      {formatDateTime(repo.last_synced_at)}
+                      {repo.last_synced_at === null && " (view job)"}
+                    </Link>
+                  ) : (
+                    formatDateTime(repo.last_synced_at)
+                  )}
+                </TableCell>
                 <TableCell className="text-right">
                   <RoleGate minRole="operator">
                     <Button

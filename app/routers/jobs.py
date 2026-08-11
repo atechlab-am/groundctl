@@ -130,6 +130,7 @@ def list_jobs(
     status_: JobStatus | None = Query(default=None, alias="status"),
     environment_id: uuid.UUID | None = None,
     server_id: uuid.UUID | None = None,
+    repository_id: uuid.UUID | None = None,
     limit: int = 100,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -144,6 +145,8 @@ def list_jobs(
         query = query.where(Job.environment_id == environment_id)
     if server_id is not None:
         query = query.where(Job.server_id == server_id)
+    if repository_id is not None:
+        query = query.where(Job.repository_id == repository_id)
     query = query.order_by(Job.created_at.desc()).limit(limit).offset(offset)
     jobs_ = list(db.execute(query).scalars())
     return [_job_with_server_ids(db, job) for job in jobs_]

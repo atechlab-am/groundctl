@@ -23,6 +23,7 @@ const JOB_TYPES: JobType[] = [
   "bulk_apply_updates",
   "run_command",
   "manage_package",
+  "sync_repository",
 ];
 const JOB_STATUSES: JobStatus[] = ["pending", "running", "success", "failed"];
 

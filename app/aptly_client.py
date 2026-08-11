@@ -135,6 +135,22 @@ class AptlyClient:
         response = self._request("GET", f"/api/mirrors/{name}/packages", params={"format": "details"})
         return response.json() if response.content else []
 
+    def get_mirror_size_bytes(self, name: str) -> int:
+        """Sum of each package's Size field (bytes, from the .deb's control
+        data) across a mirror's current package set — the actual on-disk
+        footprint of the .deb files aptly has downloaded, not counting
+        Packages/Release metadata. Used after sync to record
+        Repository.size_bytes. Missing/non-numeric Size on an individual
+        package is treated as 0 rather than failing the whole sum — better
+        an undercount than a 502 on an otherwise-successful sync.
+        """
+        total = 0
+        for package in self.get_mirror_packages(name):
+            size = package.get("Size")
+            if isinstance(size, int):
+                total += size
+        return total
+
     # -- snapshots ------------------------------------------------------------
 
     def create_snapshot_from_mirror(self, mirror_name: str, snapshot_name: str) -> dict:

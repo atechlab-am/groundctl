@@ -57,7 +57,11 @@ def sync(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Repository name to sync from upstream."),
 ) -> None:
-    """Sync a repository's mirror from its upstream archive."""
+    """Trigger an async sync of a repository's mirror from its upstream
+    archive. Returns the tracked Job immediately (status starts "pending") —
+    use `groundctl job show <id>` to follow progress, sync no longer blocks
+    until completion.
+    """
     output = get_output(ctx)
     with authed_client() as client:
         response = client.post(f"/repositories/{name}/sync")

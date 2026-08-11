@@ -6,16 +6,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.aptly_client import AptlyClient, AptlyError, get_aptly_client
-from app.archive_probe import ArchiveProbeError, probe_distributions
+from app.archive_probe import ArchiveProbeError, estimate_repository_size_bytes, probe_distributions
 from app.auth import require_role
 from app.database import get_db
-from app.models import AuditAction, AuditLog, Repository, Role, User
+from app.models import AuditAction, AuditLog, Job, JobTargetType, JobType, Repository, Role, User
 from app.schemas import (
     APTLY_NAME_RE,
+    JobRead,
     RepositoryBatchCreate,
     RepositoryBatchCreateError,
     RepositoryBatchCreateResult,
     RepositoryCreate,
+    RepositoryEstimateSizeRequest,
+    RepositoryEstimateSizeResult,
     RepositoryProbeRequest,
     RepositoryProbeResult,
     RepositoryRead,
@@ -118,6 +121,29 @@ def create_repository(
     return repository
 
 
+@router.post("/estimate-size", response_model=RepositoryEstimateSizeResult)
+def estimate_repository_size(
+    payload: RepositoryEstimateSizeRequest,
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """Best-effort pre-create size estimate, fetched straight from the
+    upstream archive's Packages files (see archive_probe.py) — nothing is
+    mirrored or persisted. Same require_role(operator) gate as /probe,
+    for the same reason: a metadata fetch no more powerful than the probe
+    endpoint that already sits at this role.
+    """
+    try:
+        size_bytes = estimate_repository_size_bytes(
+            str(payload.archive_url),
+            payload.distribution,
+            payload.components,
+            payload.architectures,
+        )
+    except ArchiveProbeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return RepositoryEstimateSizeResult(size_bytes=size_bytes)
+
+
 @router.post("/probe", response_model=RepositoryProbeResult)
 def probe_repository_archive(
     payload: RepositoryProbeRequest,
@@ -198,13 +224,23 @@ def list_repositories(
     return list(db.execute(query).scalars())
 
 
-@router.post("/{name}/sync", response_model=RepositoryRead)
+@router.post("/{name}/sync", response_model=JobRead, status_code=status.HTTP_201_CREATED)
 def sync_repository(
     name: str,
     db: Session = Depends(get_db),
-    aptly: AptlyClient = Depends(get_aptly_client),
     current_user: User = Depends(require_role(Role.operator)),
 ):
+    """Triggers an async sync_repository_task (app/tasks.py) instead of
+    syncing inline — a first-run mirror sync can take many minutes
+    (aptly_client.py's sync_mirror), too long for a request/response cycle,
+    and the old inline call left the operator with no way to check progress
+    or know the request was still alive. Returns the Job so the UI can link
+    straight to its status (GET /jobs/{id}).
+    """
+    # Deferred import: app.tasks imports do_sync_repository from this module,
+    # so importing app.tasks at module load time here would be circular.
+    from app.tasks import sync_repository_task
+
     if not APTLY_NAME_RE.fullmatch(name):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid repository name")
 
@@ -212,11 +248,25 @@ def sync_repository(
     if repository is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="repository not found")
 
-    try:
-        do_sync_repository(repository, db, aptly, current_user.id)
-    except AptlyError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-
+    job = Job(
+        job_type=JobType.sync_repository,
+        target_type=JobTargetType.repository,
+        repository_id=repository.id,
+        created_by_user_id=current_user.id,
+    )
+    db.add(job)
+    db.flush()
+    repository.last_sync_job_id = job.id
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.sync_repository,
+            resource_type="repository",
+            resource_id=repository.name,
+        )
+    )
     db.commit()
-    db.refresh(repository)
-    return repository
+    db.refresh(job)
+
+    sync_repository_task.delay(str(job.id))
+    return job

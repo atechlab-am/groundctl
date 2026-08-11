@@ -182,6 +182,11 @@ class RepositoryRead(BaseModel):
     components: list[str]
     architectures: list[str]
     last_synced_at: datetime | None
+    # Actual on-disk package size aptly reports as of last_synced_at (see
+    # AptlyClient.get_mirror_size_bytes) — null until the first successful
+    # sync_repository job completes.
+    size_bytes: int | None
+    last_sync_job_id: uuid.UUID | None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -193,6 +198,24 @@ class RepositoryProbeRequest(BaseModel):
 
 class RepositoryProbeResult(BaseModel):
     distributions: list[str]
+
+
+class RepositoryEstimateSizeRequest(BaseModel):
+    archive_url: HttpUrl
+    distribution: str
+    components: list[str]
+    architectures: list[str]
+
+    _validate_distribution = field_validator("distribution")(validate_aptly_name)
+
+    @field_validator("components")
+    @classmethod
+    def _validate_components(cls, v: list[str]) -> list[str]:
+        return [validate_aptly_name(item) for item in v]
+
+
+class RepositoryEstimateSizeResult(BaseModel):
+    size_bytes: int
 
 
 class RepositoryBatchCreate(BaseModel):
@@ -580,6 +603,7 @@ class JobRead(BaseModel):
     server_id: uuid.UUID | None
     environment_id: uuid.UUID | None
     host_group_id: uuid.UUID | None
+    repository_id: uuid.UUID | None
     # Resolved target-server set — assembled by the router from JobServer
     # rows before returning, not an ORM relationship auto-load.
     server_ids: list[uuid.UUID] = Field(default_factory=list)

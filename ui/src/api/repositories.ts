@@ -1,4 +1,5 @@
 import { api } from "./client";
+import type { JobRead } from "./jobs";
 
 export interface RepositoryCreate {
   name: string;
@@ -16,6 +17,10 @@ export interface RepositoryRead {
   components: string[];
   architectures: string[];
   last_synced_at: string | null;
+  // Actual on-disk size aptly reports as of last_synced_at; null until the
+  // first successful sync completes.
+  size_bytes: number | null;
+  last_sync_job_id: string | null;
   created_at: string;
 }
 
@@ -62,7 +67,26 @@ export function createRepositoriesBatch(payload: RepositoryBatchCreate): Promise
   return api.post<RepositoryBatchCreateResult>("/repositories/batch", payload);
 }
 
-// name, not id — aptly object names are the primary key here.
-export function syncRepository(name: string): Promise<RepositoryRead> {
-  return api.post<RepositoryRead>(`/repositories/${encodeURIComponent(name)}/sync`);
+export interface RepositoryEstimateSizeRequest {
+  archive_url: string;
+  distribution: string;
+  components: string[];
+  architectures: string[];
+}
+
+export interface RepositoryEstimateSizeResult {
+  size_bytes: number;
+}
+
+export function estimateRepositorySize(
+  payload: RepositoryEstimateSizeRequest,
+): Promise<RepositoryEstimateSizeResult> {
+  return api.post<RepositoryEstimateSizeResult>("/repositories/estimate-size", payload);
+}
+
+// name, not id — aptly object names are the primary key here. Now returns
+// the sync Job (async, tracked) rather than the Repository — sync runs as a
+// Celery task so the caller can link straight to /jobs/{id} for status.
+export function syncRepository(name: string): Promise<JobRead> {
+  return api.post<JobRead>(`/repositories/${encodeURIComponent(name)}/sync`);
 }

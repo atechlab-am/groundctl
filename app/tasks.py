@@ -599,6 +599,59 @@ def manage_package_task(self, job_id: str) -> str:
     return _run_locked_job(self, job_id, f"groundctl:lock:server:{server_id}", work)
 
 
+@celery_app.task(bind=True)
+def sync_repository_task(self, job_id: str) -> str:
+    """Backs the operator-triggered POST /repositories/{name}/sync endpoint
+    (app/routers/repositories.py) — runs the same do_sync_repository the
+    nightly scheduled_sync_all_repositories below uses, but as a tracked Job
+    so the UI can show live status and the operator can click through to it,
+    instead of the old inline blocking call. Locked per-repository (not
+    _run_locked_job — that helper's `work` contract expects an ansible
+    (status, log_output) tuple; a mirror sync is a single aptly call with no
+    ansible run involved).
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(Job, uuid.UUID(job_id))
+        if job is None:
+            return "job not found"
+
+        job.celery_task_id = self.request.id
+        job.status = JobStatus.running
+        job.started_at = datetime.now(timezone.utc)
+        db.commit()
+
+        repository = db.get(Repository, job.repository_id)
+        if repository is None:
+            _mark_job(db, job, JobStatus.failed, f"repository {job.repository_id} no longer exists")
+            return "repository not found"
+
+        lock = _acquire_lock(f"groundctl:lock:repository:{repository.id}")
+        if lock is None:
+            _mark_job(
+                db, job, JobStatus.failed,
+                "another sync is already running against this repository — retry once it completes",
+            )
+            return "lock contention"
+
+        aptly = get_aptly_client()
+        try:
+            do_sync_repository(repository, db, aptly, user_id=job.created_by_user_id)
+            repository.size_bytes = aptly.get_mirror_size_bytes(repository.name)
+            db.commit()
+            _mark_job(db, job, JobStatus.success, f"synced {repository.name}")
+            return "successful"
+        except AptlyError as exc:
+            db.rollback()
+            job = _get_job_or_raise(db, job_id)
+            _mark_job(db, job, JobStatus.failed, str(exc))
+            return "failed"
+        finally:
+            lock.release()
+    finally:
+        db.close()
+
+
 @celery_app.task
 def scheduled_sync_all_repositories() -> str:
     db = SessionLocal()
@@ -609,6 +662,7 @@ def scheduled_sync_all_repositories() -> str:
         for repository in repositories:
             try:
                 do_sync_repository(repository, db, aptly, user_id=None)
+                repository.size_bytes = aptly.get_mirror_size_bytes(repository.name)
                 db.commit()
             except AptlyError as exc:
                 db.rollback()
