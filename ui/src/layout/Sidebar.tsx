@@ -14,6 +14,7 @@ import {
   KeyRound,
   MapPin,
   ScrollText,
+  TrendingUp,
   BookOpen,
   Settings,
 } from "lucide-react";
@@ -27,14 +28,23 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
 }
 
-const NAV_ITEMS: NavItem[] = [
+// Monitor groups everything that's about observing fleet/job/compliance
+// state over time rather than managing content or inventory — Dashboard,
+// Jobs, Compliance, Trends, Audit Logs. Audit Logs stays admin-only (its
+// own RoleGate below), the rest of this group is visible to every role,
+// same as before the grouping.
+const MONITOR_ITEMS: NavItem[] = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/jobs", label: "Jobs", icon: ListChecks },
+  { to: "/compliance", label: "Compliance", icon: ShieldCheck },
+  { to: "/trends", label: "Trends", icon: TrendingUp },
+];
+
+const NAV_ITEMS: NavItem[] = [
   { to: "/repositories", label: "Repositories", icon: Package },
   { to: "/content-views", label: "Content Views", icon: Layers },
   { to: "/environments", label: "Lifecycle Environments", icon: GitBranch },
   { to: "/servers", label: "Servers", icon: Server },
-  { to: "/jobs", label: "Jobs", icon: ListChecks },
-  { to: "/compliance", label: "Compliance", icon: ShieldCheck },
   { to: "/errata", label: "Errata", icon: Newspaper },
   { to: "/host-groups", label: "Host Groups", icon: Users },
   { to: "/activation-keys", label: "Activation Keys", icon: KeyRound },
@@ -80,8 +90,9 @@ export function Sidebar() {
         <span className="text-sm font-semibold tracking-tight">Groundctl</span>
       </div>
       <div className="flex-1 overflow-y-auto px-2 py-3">
-        <ul className="flex flex-col gap-0.5">
-          {NAV_ITEMS.map((item) => (
+        <p className="px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Monitor</p>
+        <ul className="mb-4 flex flex-col gap-0.5">
+          {MONITOR_ITEMS.map((item) => (
             <li key={item.to}>
               <NavLink to={item.to} end={item.to === "/"} className={({ isActive }) => navLinkClass(isActive)}>
                 <item.icon className="h-4 w-4 shrink-0" />
@@ -97,6 +108,17 @@ export function Sidebar() {
               </NavLink>
             </li>
           </RoleGate>
+        </ul>
+
+        <ul className="flex flex-col gap-0.5">
+          {NAV_ITEMS.map((item) => (
+            <li key={item.to}>
+              <NavLink to={item.to} end={item.to === "/"} className={({ isActive }) => navLinkClass(isActive)}>
+                <item.icon className="h-4 w-4 shrink-0" />
+                <span className="truncate">{item.label}</span>
+              </NavLink>
+            </li>
+          ))}
         </ul>
       </div>
     </nav>

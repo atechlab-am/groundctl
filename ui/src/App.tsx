@@ -16,6 +16,7 @@ import { ServersPage } from "@/pages/servers/ServersPage";
 import { ServerDetailPage } from "@/pages/servers/ServerDetailPage";
 import { JobsPage } from "@/pages/jobs/JobsPage";
 import { JobDetailPage } from "@/pages/jobs/JobDetailPage";
+import { TrendsPage } from "@/pages/trends/TrendsPage";
 import { CompliancePage } from "@/pages/compliance/CompliancePage";
 import { ErrataPage } from "@/pages/errata/ErrataPage";
 import { ErratumDetailPage } from "@/pages/errata/ErratumDetailPage";
@@ -63,6 +64,7 @@ export default function App() {
             <Route path="/servers/:serverId" element={<Shell><ServerDetailPage /></Shell>} />
             <Route path="/jobs" element={<Shell><JobsPage /></Shell>} />
             <Route path="/jobs/:jobId" element={<Shell><JobDetailPage /></Shell>} />
+            <Route path="/trends" element={<Shell><TrendsPage /></Shell>} />
             <Route path="/compliance" element={<Shell><CompliancePage /></Shell>} />
             <Route path="/errata" element={<Shell><ErrataPage /></Shell>} />
             <Route path="/errata/:advisoryId" element={<Shell><ErratumDetailPage /></Shell>} />

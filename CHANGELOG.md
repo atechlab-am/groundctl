@@ -25,6 +25,37 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-08-11
+
+### Added: Monitor sidebar section and a Trends page
+
+- Satellite-inspired "Monitor" surface, scoped to what's real here (no
+  Statistics/Subscriptions — not applicable to this product): sidebar
+  reorganized into a **Monitor** group (Dashboard, Jobs, Compliance,
+  Trends, Audit Logs) versus the content/inventory items below it —
+  navigation grouping only, no page moved or renamed.
+- New **Trends** page (`/trends`) — daily job-outcome and compliance-drift
+  charts over a selectable 7/14/30/90-day range. New `GET /trends/jobs`
+  and `GET /trends/compliance`, viewer-role read, computed directly from
+  existing `Job`/`ComplianceCheckLog` rows (day-bucketed in Python, no new
+  storage — job/compliance-check history already *is* the time series).
+  Disk-usage-over-time was considered and dropped: it's Prometheus-gauge-only
+  today, nothing in groundctl's own DB holds that history to chart.
+- New hand-built `StackedBarChart` component (no charting library added) —
+  follows the house dataviz rules: ≤24px bars, 2px stacked-segment gaps,
+  legend for multi-series, per-bar hover tooltip, status-token colors.
+- Retuned dark-mode `--success`/`--destructive` (`#5bc25f`/`#e8484a`,
+  `-foreground` switched to the dark-ink token) — the original dark-mode
+  pair measured ΔE 4.1 under deuteranopia simulation (should be ≥8), so a
+  colorblind reader couldn't reliably tell a green success bar from a red
+  failure bar in the new chart. Light mode was evaluated but left
+  unchanged: every candidate that fixed light-mode success-vs-destructive
+  separation broke destructive-vs-warning instead, locked against this
+  app's existing accent/warning hues — status colors rely on their
+  icon+label pairing as the real mitigation here (`StatusBadge` always
+  shows text, never color-alone), the same posture the dataviz skill's own
+  reference status palette takes.
+
 ## [0.19.0] - 2026-08-11
 
 ### Added: Settings > System — runtime-editable operational tunables

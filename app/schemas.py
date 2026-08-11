@@ -734,6 +734,26 @@ class ComplianceCheckResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# trends
+# ---------------------------------------------------------------------------
+
+
+class JobTrendPoint(BaseModel):
+    date: date
+    success: int
+    failed: int
+    running: int
+    pending: int
+
+
+class ComplianceTrendPoint(BaseModel):
+    date: date
+    outdated: int
+    up_to_date: int
+    checks: int
+
+
+# ---------------------------------------------------------------------------
 # errata
 # ---------------------------------------------------------------------------
 

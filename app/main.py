@@ -43,6 +43,7 @@ from app.routers import (
     repositories,
     servers,
     sites,
+    trends,
     users,
 )
 
@@ -170,6 +171,7 @@ api_router.include_router(
 api_router.include_router(servers.router, prefix="/servers", tags=["servers"])
 api_router.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
 api_router.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
+api_router.include_router(trends.router, prefix="/trends", tags=["trends"])
 api_router.include_router(errata.router, prefix="/errata", tags=["errata"])
 api_router.include_router(host_groups.router, prefix="/host-groups", tags=["host-groups"])
 api_router.include_router(activation_keys.router, prefix="/activation-keys", tags=["activation-keys"])
