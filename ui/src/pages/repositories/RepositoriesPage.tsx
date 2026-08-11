@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryState } from "@/components/QueryState";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { RoleGate } from "@/layout/RoleGate";
 import {
@@ -408,30 +414,36 @@ export function RepositoriesPage() {
                 </TableCell>
                 <TableCell className="text-right">
                   <RoleGate minRole="operator">
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={syncMutation.isPending && syncMutation.variables === repo.name}
-                        onClick={() => syncMutation.mutate(repo.name)}
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" />
-                        Sync
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={() => openEdit(repo)}>
-                        <Pencil className="h-3.5 w-3.5" />
-                        Edit
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={deleteMutation.isPending && deleteMutation.variables === repo.name}
-                        onClick={() => handleDelete(repo)}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        Delete
-                      </Button>
-                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          <MoreHorizontal className="h-3.5 w-3.5" />
+                          <span className="sr-only">Actions for {repo.name}</span>
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          className="gap-2"
+                          disabled={syncMutation.isPending && syncMutation.variables === repo.name}
+                          onClick={() => syncMutation.mutate(repo.name)}
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                          Sync
+                        </DropdownMenuItem>
+                        <DropdownMenuItem className="gap-2" onClick={() => openEdit(repo)}>
+                          <Pencil className="h-3.5 w-3.5" />
+                          Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="gap-2 text-destructive focus:text-destructive"
+                          disabled={deleteMutation.isPending && deleteMutation.variables === repo.name}
+                          onClick={() => handleDelete(repo)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </RoleGate>
                 </TableCell>
               </TableRow>
