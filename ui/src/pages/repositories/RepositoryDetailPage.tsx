@@ -88,8 +88,9 @@ export function RepositoryDetailPage() {
         architectures: editArchitectures.split(",").map((s) => s.trim()).filter(Boolean),
       }),
     onSuccess: () => {
-      toast.success("Repository updated — sync again to pull from the new source");
+      toast.success("Update triggered — check the Jobs page for progress");
       void queryClient.invalidateQueries({ queryKey: ["repository", name] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       setEditOpen(false);
     },
     onError: (err) => setEditError(errorMessage(err)),
@@ -98,8 +99,9 @@ export function RepositoryDetailPage() {
   const deleteMutation = useMutation({
     mutationFn: () => deleteRepository(name),
     onSuccess: () => {
-      toast.success("Repository deleted");
+      toast.success("Delete triggered — check the Jobs page for progress");
       void queryClient.invalidateQueries({ queryKey: ["repositories"] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       navigate("/repositories");
     },
     onError: (err) => toast.error(errorMessage(err)),

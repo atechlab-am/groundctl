@@ -158,8 +158,9 @@ export function RepositoriesPage() {
     mutationFn: (payload: { name: string; archive_url: string; distribution: string; components: string[]; architectures: string[] }) =>
       updateRepository(payload.name, payload),
     onSuccess: () => {
-      toast.success("Repository updated — sync again to pull from the new source");
+      toast.success("Update triggered — check the Jobs page for progress");
       void queryClient.invalidateQueries({ queryKey: ["repositories"] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       setEditing(null);
     },
     onError: (err) => setEditError(errorMessage(err)),
@@ -181,8 +182,9 @@ export function RepositoriesPage() {
   const deleteMutation = useMutation({
     mutationFn: (name: string) => deleteRepository(name),
     onSuccess: () => {
-      toast.success("Repository deleted");
+      toast.success("Delete triggered — the repository disappears from this list once it finishes");
       void queryClient.invalidateQueries({ queryKey: ["repositories"] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
     onError: (err) => toast.error(errorMessage(err)),
   });

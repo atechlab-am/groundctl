@@ -28,6 +28,8 @@ from app.models import (
     AuditAction,
     AuditLog,
     ComplianceRecord,
+    ContentView,
+    ContentViewRepository,
     ContentViewVersion,
     Job,
     JobServer,
@@ -657,6 +659,202 @@ def sync_repository_task(self, job_id: str) -> str:
             repository.size_bytes = aptly.get_mirror_size_bytes(repository.name)
             db.commit()
             _mark_job(db, job, JobStatus.success, f"synced {repository.name}")
+            return "successful"
+        except AptlyError as exc:
+            db.rollback()
+            job = _get_job_or_raise(db, job_id)
+            _mark_job(db, job, JobStatus.failed, str(exc))
+            return "failed"
+        finally:
+            lock.release()
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True)
+def delete_repository_task(self, job_id: str) -> str:
+    """Backs the operator-triggered DELETE /repositories/{name} endpoint
+    (app/routers/repositories.py) — the aptly mirror delete confirmed live
+    against a real instance to take long enough that a synchronous request
+    hit both AptlyClient's default timeout AND the reverse proxy's own
+    timeout (502 Bad Gateway before aptly even responded). Same async-Job
+    treatment as sync_repository_task, for the same reason.
+
+    Job.repository_id goes to NULL the moment the Repository row is
+    deleted (ON DELETE SET NULL, migration c4a1f9b2e7d5) — the repository's
+    name is captured into log_output before that happens so the job's own
+    history stays legible afterward, since the FK can no longer be
+    dereferenced.
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(Job, uuid.UUID(job_id))
+        if job is None:
+            return "job not found"
+
+        job.celery_task_id = self.request.id
+        job.status = JobStatus.running
+        job.started_at = datetime.now(timezone.utc)
+        db.commit()
+
+        repository = db.get(Repository, job.repository_id)
+        if repository is None:
+            _mark_job(db, job, JobStatus.failed, f"repository {job.repository_id} no longer exists")
+            return "repository not found"
+
+        repository_name = repository.name
+        repository_id = repository.id
+
+        # Re-check the ContentView guard here, not just at the endpoint
+        # (routers/repositories.py's delete_repository already checked it
+        # before creating this Job) — a content view could have been
+        # created referencing this repository in the window between the
+        # DELETE request returning 201 and this task actually running.
+        referencing = list(
+            db.execute(
+                select(ContentView.name)
+                .join(ContentViewRepository, ContentViewRepository.content_view_id == ContentView.id)
+                .where(ContentViewRepository.repository_id == repository_id)
+                .order_by(ContentView.name)
+            ).scalars()
+        )
+        if referencing:
+            _mark_job(
+                db, job, JobStatus.failed,
+                f"repository is used by content view(s): {', '.join(referencing)}",
+            )
+            return "referenced by content view"
+
+        lock = _acquire_lock(f"groundctl:lock:repository:{repository_id}")
+        if lock is None:
+            _mark_job(
+                db, job, JobStatus.failed,
+                "a sync is already running against this repository — retry once it completes",
+            )
+            return "lock contention"
+
+        job.log_output = f"deleting {repository_name}…"
+        db.commit()
+
+        aptly = get_aptly_client()
+        try:
+            aptly.delete_mirror(repository_name)
+            db.add(
+                AuditLog(
+                    user_id=job.created_by_user_id,
+                    action=AuditAction.delete_repository,
+                    resource_type="repository",
+                    resource_id=repository_name,
+                )
+            )
+            db.delete(repository)
+            db.commit()
+            _mark_job(db, job, JobStatus.success, f"deleted {repository_name}")
+            return "successful"
+        except AptlyError as exc:
+            db.rollback()
+            job = _get_job_or_raise(db, job_id)
+            _mark_job(db, job, JobStatus.failed, str(exc))
+            return "failed"
+        finally:
+            lock.release()
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True)
+def update_repository_task(self, job_id: str) -> str:
+    """Backs the operator-triggered PUT /repositories/{name} endpoint
+    (app/routers/repositories.py) — "editing" a repository is a
+    delete-then-recreate of the underlying aptly mirror (aptly has no
+    in-place way to change ArchiveURL/Distribution/Components, see
+    RepositoryUpdate's docstring), so it carries the exact same slow-delete
+    risk delete_repository_task was built to fix — same async-Job
+    treatment, same reason. The new archive_url/distribution/components/
+    architectures aren't on the Job row itself; they're read back from the
+    AuditLog row the endpoint writes in the same transaction that creates
+    this Job, same pattern run_command_task uses for its command string.
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(Job, uuid.UUID(job_id))
+        if job is None:
+            return "job not found"
+
+        job.celery_task_id = self.request.id
+        job.status = JobStatus.running
+        job.started_at = datetime.now(timezone.utc)
+        db.commit()
+
+        repository = db.get(Repository, job.repository_id)
+        if repository is None:
+            _mark_job(db, job, JobStatus.failed, f"repository {job.repository_id} no longer exists")
+            return "repository not found"
+
+        repository_name = repository.name
+        repository_id = repository.id
+
+        audit = db.execute(
+            select(AuditLog).where(
+                AuditLog.resource_id == str(job.id), AuditLog.action == AuditAction.update_repository
+            )
+        ).scalar_one_or_none()
+        if audit is None or audit.detail is None:
+            _mark_job(db, job, JobStatus.failed, f"audit log for job {job.id} is missing its update detail")
+            return "missing update detail"
+        new_archive_url = audit.detail["archive_url"]
+        new_distribution = audit.detail["distribution"]
+        new_components = audit.detail["components"]
+        new_architectures = audit.detail["architectures"]
+
+        # Same race-window re-check as delete_repository_task — a content
+        # view could have been created referencing this repository between
+        # the PUT request returning 201 and this task actually running.
+        referencing = list(
+            db.execute(
+                select(ContentView.name)
+                .join(ContentViewRepository, ContentViewRepository.content_view_id == ContentView.id)
+                .where(ContentViewRepository.repository_id == repository_id)
+                .order_by(ContentView.name)
+            ).scalars()
+        )
+        if referencing:
+            _mark_job(
+                db, job, JobStatus.failed,
+                f"repository is used by content view(s): {', '.join(referencing)}",
+            )
+            return "referenced by content view"
+
+        lock = _acquire_lock(f"groundctl:lock:repository:{repository_id}")
+        if lock is None:
+            _mark_job(
+                db, job, JobStatus.failed,
+                "a sync is already running against this repository — retry once it completes",
+            )
+            return "lock contention"
+
+        job.log_output = f"recreating {repository_name} mirror with new settings…"
+        db.commit()
+
+        aptly = get_aptly_client()
+        try:
+            aptly.delete_mirror(repository_name)
+            aptly.create_mirror(
+                name=repository_name,
+                archive_url=new_archive_url,
+                distribution=new_distribution,
+                components=new_components,
+                architectures=new_architectures,
+            )
+            repository.archive_url = new_archive_url
+            repository.distribution = new_distribution
+            repository.components = new_components
+            repository.architectures = new_architectures
+            repository.last_synced_at = None
+            repository.size_bytes = None
+            repository.last_sync_job_id = None
+            db.commit()
+            _mark_job(db, job, JobStatus.success, f"updated {repository_name}")
             return "successful"
         except AptlyError as exc:
             db.rollback()

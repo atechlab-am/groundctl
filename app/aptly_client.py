@@ -127,9 +127,18 @@ class AptlyClient:
         snapshot-level check doesn't know about groundctl's ContentView
         concept, and a mirror can exist with zero snapshots yet still be
         wrong to delete out from under a caller mid-sync.
+
+        Extended timeout: confirmed live against a real mirror with a full
+        Ubuntu-scale package set — deleting checks/detaches pool references
+        for every package the mirror holds, the same class of operation as
+        sync_mirror/publish_snapshot below, which already get this same
+        1800s override. The default 30s client timeout genuinely isn't
+        enough; this was surfaced as "aptly unreachable: DELETE
+        /api/mirrors/<name>: timed out" against a live instance — a
+        TransportError timeout, not aptly actually being unreachable.
         """
         _validate_name(name)
-        self._request("DELETE", f"/api/mirrors/{name}")
+        self._request("DELETE", f"/api/mirrors/{name}", timeout=1800.0)
 
     def sync_mirror(self, name: str) -> dict:
         _validate_name(name)

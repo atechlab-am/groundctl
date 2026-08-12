@@ -49,17 +49,23 @@ export interface RepositoryUpdate {
   architectures: string[];
 }
 
-// Aptly has no in-place edit for a mirror's ArchiveURL/Distribution/
-// Components — server-side this deletes and recreates the aptly mirror
-// under the same Repository row. Resets last_synced_at/size_bytes: the new
-// mirror hasn't synced anything yet.
-export function updateRepository(name: string, payload: RepositoryUpdate): Promise<RepositoryRead> {
-  return api.put<RepositoryRead>(`/repositories/${encodeURIComponent(name)}`, payload);
+// Returns the update Job (async, tracked) rather than the Repository —
+// aptly has no in-place edit for a mirror's ArchiveURL/Distribution/
+// Components, so this deletes and recreates the aptly mirror under the
+// same Repository row, same slow-delete risk syncRepository/
+// deleteRepository already run as tracked Jobs for. last_synced_at/
+// size_bytes reset once the job actually runs — the new mirror hasn't
+// synced anything yet.
+export function updateRepository(name: string, payload: RepositoryUpdate): Promise<JobRead> {
+  return api.put<JobRead>(`/repositories/${encodeURIComponent(name)}`, payload);
 }
 
-// 409s if any content view still references this repository.
-export function deleteRepository(name: string): Promise<void> {
-  return api.delete<void>(`/repositories/${encodeURIComponent(name)}`);
+// Now returns the delete Job (async, tracked), same as syncRepository —
+// aptly's mirror delete confirmed live to take long enough to blow a
+// synchronous request/response cycle. 409s (thrown before any Job is
+// created) if any content view still references this repository.
+export function deleteRepository(name: string): Promise<JobRead> {
+  return api.delete<JobRead>(`/repositories/${encodeURIComponent(name)}`);
 }
 
 export interface RepositoryProbeResult {

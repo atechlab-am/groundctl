@@ -56,6 +56,8 @@ class JobType(str, enum.Enum):
     run_command = "run_command"
     manage_package = "manage_package"
     sync_repository = "sync_repository"
+    delete_repository = "delete_repository"
+    update_repository = "update_repository"
 
 
 class JobTargetType(str, enum.Enum):

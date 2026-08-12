@@ -148,25 +148,35 @@ def test_get_repository_not_found(client, viewer_token):
     assert r.status_code == 404, r.text
 
 
-def test_delete_repository_as_operator(client, operator_token, mock_aptly):
+def test_delete_repository_as_operator(client, operator_token):
     client.post("/repositories", json=_repo_payload("delete-repo"), headers=auth_headers(operator_token))
-    r = client.delete("/repositories/delete-repo", headers=auth_headers(operator_token))
-    assert r.status_code == 204, r.text
-    mock_aptly.delete_mirror.assert_called_once_with("delete-repo")
+    with patch("app.tasks.delete_repository_task.delay") as mock_delay:
+        r = client.delete("/repositories/delete-repo", headers=auth_headers(operator_token))
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["job_type"] == "delete_repository"
+        assert body["status"] == "pending"
+        assert body["target_type"] == "repository"
+        mock_delay.assert_called_once_with(str(body["id"]))
 
+    # Not actually deleted yet — deletion happens in the (mocked-away) task.
     r2 = client.get("/repositories/delete-repo", headers=auth_headers(operator_token))
-    assert r2.status_code == 404, r2.text
+    assert r2.status_code == 200, r2.text
 
 
 def test_delete_repository_as_viewer_forbidden(client, operator_token, viewer_token):
     client.post("/repositories", json=_repo_payload("delete-repo2"), headers=auth_headers(operator_token))
-    r = client.delete("/repositories/delete-repo2", headers=auth_headers(viewer_token))
-    assert r.status_code == 403, r.text
+    with patch("app.tasks.delete_repository_task.delay") as mock_delay:
+        r = client.delete("/repositories/delete-repo2", headers=auth_headers(viewer_token))
+        assert r.status_code == 403, r.text
+        mock_delay.assert_not_called()
 
 
 def test_delete_repository_not_found(client, operator_token):
-    r = client.delete("/repositories/does-not-exist", headers=auth_headers(operator_token))
-    assert r.status_code == 404, r.text
+    with patch("app.tasks.delete_repository_task.delay") as mock_delay:
+        r = client.delete("/repositories/does-not-exist", headers=auth_headers(operator_token))
+        assert r.status_code == 404, r.text
+        mock_delay.assert_not_called()
 
 
 def test_delete_repository_referenced_by_content_view_conflicts(client, operator_token):
@@ -180,67 +190,89 @@ def test_delete_repository_referenced_by_content_view_conflicts(client, operator
     )
     assert cv.status_code == 201, cv.text
 
-    r = client.delete("/repositories/cv-repo", headers=auth_headers(operator_token))
-    assert r.status_code == 409, r.text
-    assert "guards-delete-cv" in r.json()["detail"]
+    with patch("app.tasks.delete_repository_task.delay") as mock_delay:
+        r = client.delete("/repositories/cv-repo", headers=auth_headers(operator_token))
+        assert r.status_code == 409, r.text
+        assert "guards-delete-cv" in r.json()["detail"]
+        mock_delay.assert_not_called()
 
 
-def test_update_repository_as_operator(client, operator_token, mock_aptly):
+def test_delete_repository_task_deletes_mirror_and_row(client, operator_token, mock_aptly):
+    from app.tasks import delete_repository_task
+
+    client.post("/repositories", json=_repo_payload("task-delete-repo"), headers=auth_headers(operator_token))
+    with patch("app.tasks.delete_repository_task.delay"):
+        del_r = client.delete("/repositories/task-delete-repo", headers=auth_headers(operator_token))
+        job_id = del_r.json()["id"]
+
+    with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+        delete_repository_task(job_id)
+
+    mock_aptly.delete_mirror.assert_called_with("task-delete-repo")
+
+    job_r = client.get(f"/jobs/{job_id}", headers=auth_headers(operator_token))
+    assert job_r.json()["status"] == "success"
+
+    repo_r = client.get("/repositories/task-delete-repo", headers=auth_headers(operator_token))
+    assert repo_r.status_code == 404, repo_r.text
+
+
+def test_update_repository_as_operator(client, operator_token):
     client.post("/repositories", json=_repo_payload("update-repo"), headers=auth_headers(operator_token))
-    r = client.put(
-        "/repositories/update-repo",
-        json={
-            "archive_url": "http://archive.ubuntu.com/ubuntu",
-            "distribution": "jammy-updates",
-            "components": ["main", "universe"],
-            "architectures": ["amd64", "arm64"],
-        },
-        headers=auth_headers(operator_token),
-    )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["distribution"] == "jammy-updates"
-    assert body["components"] == ["main", "universe"]
-    assert body["architectures"] == ["amd64", "arm64"]
-    assert body["last_synced_at"] is None
-    assert body["size_bytes"] is None
-    mock_aptly.delete_mirror.assert_called_once_with("update-repo")
-    mock_aptly.create_mirror.assert_called_with(
-        name="update-repo",
-        archive_url="http://archive.ubuntu.com/ubuntu",
-        distribution="jammy-updates",
-        components=["main", "universe"],
-        architectures=["amd64", "arm64"],
-    )
+    with patch("app.tasks.update_repository_task.delay") as mock_delay:
+        r = client.put(
+            "/repositories/update-repo",
+            json={
+                "archive_url": "http://archive.ubuntu.com/ubuntu",
+                "distribution": "jammy-updates",
+                "components": ["main", "universe"],
+                "architectures": ["amd64", "arm64"],
+            },
+            headers=auth_headers(operator_token),
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["job_type"] == "update_repository"
+        assert body["status"] == "pending"
+        assert body["target_type"] == "repository"
+        mock_delay.assert_called_once_with(str(body["id"]))
+
+    # Not actually changed yet — the swap happens in the (mocked-away) task.
+    r2 = client.get("/repositories/update-repo", headers=auth_headers(operator_token))
+    assert r2.json()["distribution"] == "jammy"
 
 
 def test_update_repository_as_viewer_forbidden(client, operator_token, viewer_token):
     client.post("/repositories", json=_repo_payload("update-repo2"), headers=auth_headers(operator_token))
-    r = client.put(
-        "/repositories/update-repo2",
-        json={
-            "archive_url": "http://archive.ubuntu.com/ubuntu",
-            "distribution": "jammy",
-            "components": ["main"],
-            "architectures": ["amd64"],
-        },
-        headers=auth_headers(viewer_token),
-    )
-    assert r.status_code == 403, r.text
+    with patch("app.tasks.update_repository_task.delay") as mock_delay:
+        r = client.put(
+            "/repositories/update-repo2",
+            json={
+                "archive_url": "http://archive.ubuntu.com/ubuntu",
+                "distribution": "jammy",
+                "components": ["main"],
+                "architectures": ["amd64"],
+            },
+            headers=auth_headers(viewer_token),
+        )
+        assert r.status_code == 403, r.text
+        mock_delay.assert_not_called()
 
 
 def test_update_repository_not_found(client, operator_token):
-    r = client.put(
-        "/repositories/does-not-exist",
-        json={
-            "archive_url": "http://archive.ubuntu.com/ubuntu",
-            "distribution": "jammy",
-            "components": ["main"],
-            "architectures": ["amd64"],
-        },
-        headers=auth_headers(operator_token),
-    )
-    assert r.status_code == 404, r.text
+    with patch("app.tasks.update_repository_task.delay") as mock_delay:
+        r = client.put(
+            "/repositories/does-not-exist",
+            json={
+                "archive_url": "http://archive.ubuntu.com/ubuntu",
+                "distribution": "jammy",
+                "components": ["main"],
+                "architectures": ["amd64"],
+            },
+            headers=auth_headers(operator_token),
+        )
+        assert r.status_code == 404, r.text
+        mock_delay.assert_not_called()
 
 
 def test_update_repository_referenced_by_content_view_conflicts(client, operator_token):
@@ -254,17 +286,60 @@ def test_update_repository_referenced_by_content_view_conflicts(client, operator
     )
     assert cv.status_code == 201, cv.text
 
-    r = client.put(
-        "/repositories/cv-repo2",
-        json={
-            "archive_url": "http://archive.ubuntu.com/ubuntu",
-            "distribution": "jammy",
-            "components": ["main"],
-            "architectures": ["amd64"],
-        },
-        headers=auth_headers(operator_token),
+    with patch("app.tasks.update_repository_task.delay") as mock_delay:
+        r = client.put(
+            "/repositories/cv-repo2",
+            json={
+                "archive_url": "http://archive.ubuntu.com/ubuntu",
+                "distribution": "jammy",
+                "components": ["main"],
+                "architectures": ["amd64"],
+            },
+            headers=auth_headers(operator_token),
+        )
+        assert r.status_code == 409, r.text
+        mock_delay.assert_not_called()
+
+
+def test_update_repository_task_swaps_mirror_settings(client, operator_token, mock_aptly):
+    from app.tasks import update_repository_task
+
+    client.post("/repositories", json=_repo_payload("task-update-repo"), headers=auth_headers(operator_token))
+    with patch("app.tasks.update_repository_task.delay"):
+        put_r = client.put(
+            "/repositories/task-update-repo",
+            json={
+                "archive_url": "http://archive.ubuntu.com/ubuntu",
+                "distribution": "jammy-updates",
+                "components": ["main", "universe"],
+                "architectures": ["amd64", "arm64"],
+            },
+            headers=auth_headers(operator_token),
+        )
+        job_id = put_r.json()["id"]
+
+    with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+        update_repository_task(job_id)
+
+    mock_aptly.delete_mirror.assert_called_once_with("task-update-repo")
+    mock_aptly.create_mirror.assert_called_with(
+        name="task-update-repo",
+        archive_url="http://archive.ubuntu.com/ubuntu",
+        distribution="jammy-updates",
+        components=["main", "universe"],
+        architectures=["amd64", "arm64"],
     )
-    assert r.status_code == 409, r.text
+
+    job_r = client.get(f"/jobs/{job_id}", headers=auth_headers(operator_token))
+    assert job_r.json()["status"] == "success"
+
+    repo_r = client.get("/repositories/task-update-repo", headers=auth_headers(operator_token))
+    body = repo_r.json()
+    assert body["distribution"] == "jammy-updates"
+    assert body["components"] == ["main", "universe"]
+    assert body["architectures"] == ["amd64", "arm64"]
+    assert body["last_synced_at"] is None
+    assert body["size_bytes"] is None
     assert "guards-update-cv" in r.json()["detail"]
 
 

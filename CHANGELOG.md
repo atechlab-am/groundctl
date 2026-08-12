@@ -25,6 +25,30 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-08-12
+
+### Fixed: repository Delete and Edit timed out and 502'd against a real, non-trivial mirror
+
+- Confirmed live: `DELETE /repositories/{name}` (and `PUT`, "Edit", which
+  deletes-then-recreates the mirror under the hood) blocked the HTTP
+  request on `aptly.delete_mirror()`, which took long enough against a
+  real, fully-synced repository to blow both `AptlyClient`'s default 30s
+  timeout AND the reverse proxy's own timeout — `502 Bad Gateway` before
+  aptly ever responded, and the repository was left in limbo (mirror
+  possibly deleted, DB row not, or vice versa, depending on exactly where
+  the timeout landed). `AptlyClient.delete_mirror` now gets the same 1800s
+  timeout `sync_mirror`/`publish_snapshot` already use for this class of
+  slow operation.
+- Same root cause `sync_repository` was fixed for earlier this cycle: both
+  endpoints now dispatch async, tracked `Job`s (new `delete_repository_task`/
+  `update_repository_task`, `app/tasks.py`) instead of blocking the
+  request — `DELETE`/`PUT /repositories/{name}` now return `201` + the
+  `Job` immediately, not `204`/`200` + the finished result. New
+  `JobType.delete_repository` / `update_repository` (migration
+  `b3f6d29e4a17`). Both re-check the ContentView-reference guard inside
+  the task itself, not just at the endpoint, closing the race window
+  between the request returning and the task actually running.
+
 ## [0.21.0] - 2026-08-11
 
 ### Added: version number and update notice in the header
