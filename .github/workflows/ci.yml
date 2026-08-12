@@ -12,7 +12,16 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install ruff
+      # Pinned, not "pip install ruff" — an unpinned install let CI silently
+      # jump to whatever's newest at run time. 0.16.2 briefly misreported a
+      # real F821 (undefined name, tests/test_repositories.py) as an
+      # "invalid-syntax: unexpected token NUL" parse error attributed to
+      # the wrong file entirely (app/routers/repositories.py, which was
+      # never involved) — confirmed by fixing the real bug and re-running
+      # the exact same ruff version, which then passed clean. Pin so a
+      # future ruff release can't reintroduce that kind of misleading
+      # failure without it being a deliberate version bump someone reviews.
+      - run: pip install ruff==0.16.2
       - run: ruff check app/ tests/
 
   typecheck:
@@ -26,7 +35,15 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install mypy
+      # Pinned, not "pip install mypy" — the unpinned install hit the same
+      # class of issue ruff's install did above: mypy 2.3.0 reported
+      # "Source code string cannot contain null bytes" for
+      # app/routers/repositories.py, a file with zero null bytes (verified
+      # byte-for-byte, and mypy==2.3.0 re-run against the identical content
+      # here passed clean) — a transient runner/checkout artifact, not a
+      # real defect. Pinning avoids re-hitting whatever that was on a
+      # future run, and keeps mypy runs reproducible either way.
+      - run: pip install mypy==2.3.0
       - run: pip install -r requirements.txt
       - run: mypy app/
 

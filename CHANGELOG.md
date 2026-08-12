@@ -25,6 +25,33 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-08-12
+
+### Fixed: CI lint/typecheck false failures, and pinned their tool versions
+
+- `tests/test_repositories.py` had a genuine bug — a stray leftover
+  assertion (`r.json()["detail"]`) duplicated into the wrong test, where
+  `r` was undefined. Ruff caught this correctly as `F821`.
+- What CI actually reported, though, was `invalid-syntax: unexpected token
+  NUL` — thousands of them, attributed to `app/routers/repositories.py`
+  (a file with no relation to the real bug at all, and zero null bytes
+  verified byte-for-byte). Root cause: `ruff check` in CI ran unpinned
+  (`pip install ruff`), landing on 0.16.2, which appears to mishandle that
+  specific F821 case badly enough to misreport it as tokenizer garbage in
+  an unrelated file. Fixing the real bug and re-running the identical
+  pinned ruff version locally reproduced a clean pass.
+- The `typecheck` job's mypy hit the same class of false positive
+  independently and unrelatedly — unpinned `pip install mypy` landed on
+  2.3.0, which reported the identical "Source code string cannot contain
+  null bytes" error for the same file, also unreproducible against a
+  pinned install of the identical version against identical content. This
+  job is `continue-on-error: true` (non-blocking, pre-existing), so it
+  never actually failed the run, but the false signal was worth silencing.
+- Both `ruff` and `mypy` are now version-pinned in `.github/workflows/ci.yml`
+  (`ruff==0.16.2`, `mypy==2.3.0`) so a future tool release can't
+  reintroduce either kind of misleading failure without a deliberate,
+  reviewed version bump.
+
 ## [0.21.1] - 2026-08-12
 
 ### Fixed: repository Delete and Edit timed out and 502'd against a real, non-trivial mirror

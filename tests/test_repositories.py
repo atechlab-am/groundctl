@@ -340,7 +340,6 @@ def test_update_repository_task_swaps_mirror_settings(client, operator_token, mo
     assert body["architectures"] == ["amd64", "arm64"]
     assert body["last_synced_at"] is None
     assert body["size_bytes"] is None
-    assert "guards-update-cv" in r.json()["detail"]
 
 
 def test_probe_repository_archive_as_operator(client, operator_token):
