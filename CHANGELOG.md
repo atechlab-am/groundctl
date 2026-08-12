@@ -25,6 +25,21 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-08-12
+
+### Fixed: `install.sh` printed a "Permission denied" warning during Postgres setup
+
+- `sudo -u postgres <cmd>` switches user but not directory — every such
+  call in `scripts/lib/pg.sh`/`scripts/backup.sh` inherited the invoking
+  operator's cwd (typically their checkout, e.g. `~/groundctl`), which the
+  `postgres` system user has no permission to enter. Harmless in practice
+  (none of these commands actually needed the cwd) but printed a
+  confusing `could not change directory to "..." : Permission denied`
+  during every real install. All calls now pin `--chdir=/tmp`, universally
+  enterable on any standard Debian/Ubuntu install. `backup.sh`'s
+  `pg_dump`/`pg_restore` paths are resolved to absolute first so the
+  `--chdir` can never change where a backup/restore file actually lands.
+
 ## [0.22.0] - 2026-08-12
 
 ### Added: live job status (spinner + elapsed time + log) inline on Sync/Edit/Delete

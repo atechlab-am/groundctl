@@ -15,6 +15,14 @@
 #
 # `restore` takes the same prefix `backup` printed on completion (both
 # <prefix>.pgdump and <prefix>-var-lib-groundctl.tar.gz must exist).
+#
+# Every `sudo -u postgres` call is `--chdir=/tmp` — sudo inherits this
+# script's cwd otherwise, which the postgres system user may not have
+# permission to enter (prints a harmless but confusing "could not change
+# directory ... Permission denied" — see scripts/lib/pg.sh's own note).
+# The pgdump/archive paths passed to pg_dump/pg_restore are resolved to
+# absolute before that point, so --chdir never affects where they're
+# actually read/written.
 
 set -euo pipefail
 
@@ -33,13 +41,20 @@ do_backup() {
     local dest_dir="$1"
     [[ -n "${dest_dir}" ]] || die "backup requires a destination directory: ./scripts/backup.sh backup <dest-dir>"
     mkdir -p "${dest_dir}"
+    # Absolute, not whatever relative form the caller passed — every path
+    # built from this (${prefix}.pgdump etc.) gets handed to `sudo -u
+    # postgres`, which switches user but not directory; a relative path
+    # would resolve against sudo's inherited cwd (this script's invoker,
+    # not necessarily postgres-readable) rather than where the operator
+    # actually meant.
+    dest_dir="$(cd "${dest_dir}" && pwd)"
 
     local timestamp
     timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
     local prefix="${dest_dir}/groundctl-backup-${timestamp}"
 
     log_info "dumping Postgres database '${PG_DB}'..."
-    sudo -u postgres pg_dump -Fc -d "${PG_DB}" -f "${prefix}.pgdump"
+    sudo --chdir=/tmp -u postgres pg_dump -Fc -d "${PG_DB}" -f "${prefix}.pgdump"
 
     log_info "archiving ${DATA_ROOT}..."
     tar -czf "${prefix}-var-lib-groundctl.tar.gz" -C "$(dirname "${DATA_ROOT}")" "$(basename "${DATA_ROOT}")"
@@ -59,6 +74,10 @@ do_restore() {
     local archive="${prefix}-var-lib-groundctl.tar.gz"
     [[ -f "${pgdump}" ]] || die "not found: ${pgdump}"
     [[ -f "${archive}" ]] || die "not found: ${archive}"
+    # Same reasoning as do_backup's dest_dir — pgdump is handed to `sudo -u
+    # postgres pg_restore`, which inherits this script's cwd, not
+    # necessarily postgres-readable; make it absolute so that's moot.
+    pgdump="$(cd "$(dirname "${pgdump}")" && pwd)/$(basename "${pgdump}")"
 
     if [[ -d "${DATA_ROOT}" ]] && [[ -n "$(ls -A "${DATA_ROOT}" 2>/dev/null)" ]] && [[ "${force}" != "--force" ]]; then
         die "${DATA_ROOT} already has content — restore is destructive to whatever's there." \
@@ -66,7 +85,7 @@ do_restore() {
     fi
 
     local role_exists
-    role_exists=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${PG_ROLE}'")
+    role_exists=$(sudo --chdir=/tmp -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${PG_ROLE}'")
     if [[ "${role_exists}" != "1" ]]; then
         die "postgres role '${PG_ROLE}' does not exist — run install.sh first, or" \
             "ensure_postgres_role_and_db manually (scripts/lib/pg.sh) before restoring."
@@ -74,12 +93,12 @@ do_restore() {
 
     if [[ "${force}" == "--force" ]]; then
         log_warn "dropping and recreating database '${PG_DB}' before restore"
-        sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${PG_DB};" >/dev/null
-        sudo -u postgres psql -c "CREATE DATABASE ${PG_DB} OWNER ${PG_ROLE};" >/dev/null
+        sudo --chdir=/tmp -u postgres psql -c "DROP DATABASE IF EXISTS ${PG_DB};" >/dev/null
+        sudo --chdir=/tmp -u postgres psql -c "CREATE DATABASE ${PG_DB} OWNER ${PG_ROLE};" >/dev/null
     fi
 
     log_info "restoring Postgres database '${PG_DB}' from ${pgdump}..."
-    sudo -u postgres pg_restore -d "${PG_DB}" --clean --if-exists "${pgdump}"
+    sudo --chdir=/tmp -u postgres pg_restore -d "${PG_DB}" --clean --if-exists "${pgdump}"
 
     log_info "restoring ${DATA_ROOT} from ${archive}..."
     rm -rf "${DATA_ROOT}"
