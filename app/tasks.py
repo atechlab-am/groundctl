@@ -109,7 +109,13 @@ def _update_checkin_and_reachability(db: Session, servers: list[Server], ansible
     db.commit()
 
 
-def _relay_is_usable(db: Session, relay: Relay | None) -> TypeGuard[Relay]:
+def _relay_is_usable(relay: Relay | None, db: Session) -> TypeGuard[Relay]:
+    # TypeGuard narrows the FIRST positional argument only (PEP 647) — relay
+    # must stay first, db second, even though every other helper in this
+    # file puts db first. Real mypy failure caught in CI when db was added
+    # ahead of relay: the two call sites below lost narrowing and every
+    # relay.hostname/.ssh_user access after the guard became a union-attr
+    # error, since mypy no longer knew the None case was excluded.
     if relay is None or relay.sync_status != RelaySyncStatus.healthy or relay.last_sync_time is None:
         return False
     threshold = datetime.now(timezone.utc) - timedelta(hours=get_effective_settings(db).relay_stale_threshold_hours)
@@ -125,7 +131,7 @@ def _resolve_published_base_url(db: Session, server: Server) -> str:
     """
     if server.site_id is not None:
         relay = db.execute(select(Relay).where(Relay.site_id == server.site_id)).scalar_one_or_none()
-        if _relay_is_usable(db, relay):
+        if _relay_is_usable(relay, db):
             # Relay.hostname has no separate port field (see
             # docs/limitations.md) — assumes the relay's nginx is on the
             # default HTTPS port 443-equivalent for its own NGINX_PORT
@@ -153,7 +159,7 @@ def _relay_proxy_for_servers(db: Session, servers: list[Server]) -> dict[str, st
     proxy_by_hostname: dict[str, str] = {}
     for server in servers:
         relay = relays_by_site.get(server.site_id) if server.site_id else None
-        if _relay_is_usable(db, relay):
+        if _relay_is_usable(relay, db):
             proxy_by_hostname[server.hostname] = f"{relay.ssh_user}@{relay.hostname}"
     return proxy_by_hostname
 
