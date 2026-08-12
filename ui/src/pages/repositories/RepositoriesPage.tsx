@@ -26,6 +26,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
+import { JobStatusIndicator } from "@/components/JobStatusIndicator";
 import { RoleGate } from "@/layout/RoleGate";
 import {
   listRepositories,
@@ -51,6 +52,12 @@ export function RepositoriesPage() {
   const [componentsInput, setComponentsInput] = useState("main,universe");
   const [architecturesInput, setArchitecturesInput] = useState("amd64");
   const [formError, setFormError] = useState<string | null>(null);
+  // Tracks the most recently triggered Sync/Edit/Delete job per repo name,
+  // so its row can show live status without navigating away — separate
+  // from RepositoryRead.last_sync_job_id, since a Delete's Job outlives
+  // the Repository row it targeted (that row is gone by the time the job
+  // finishes) and Edit's Job isn't tracked on the row at all.
+  const [activeJobByRepo, setActiveJobByRepo] = useState<Record<string, string>>({});
 
   const repositoriesQuery = useQuery({ queryKey: ["repositories"], queryFn: () => listRepositories({ limit: 100 }) });
 
@@ -130,8 +137,9 @@ export function RepositoriesPage() {
 
   const syncMutation = useMutation({
     mutationFn: (name: string) => syncRepository(name),
-    onSuccess: () => {
-      toast.success("Sync triggered — click the repository's status to follow progress");
+    onSuccess: (job, name) => {
+      toast.success("Sync triggered");
+      setActiveJobByRepo((m) => ({ ...m, [name]: job.id }));
       void queryClient.invalidateQueries({ queryKey: ["repositories"] });
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
@@ -157,8 +165,9 @@ export function RepositoriesPage() {
   const updateMutation = useMutation({
     mutationFn: (payload: { name: string; archive_url: string; distribution: string; components: string[]; architectures: string[] }) =>
       updateRepository(payload.name, payload),
-    onSuccess: () => {
-      toast.success("Update triggered — check the Jobs page for progress");
+    onSuccess: (job, payload) => {
+      toast.success("Update triggered");
+      setActiveJobByRepo((m) => ({ ...m, [payload.name]: job.id }));
       void queryClient.invalidateQueries({ queryKey: ["repositories"] });
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       setEditing(null);
@@ -181,8 +190,9 @@ export function RepositoriesPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (name: string) => deleteRepository(name),
-    onSuccess: () => {
+    onSuccess: (job, name) => {
       toast.success("Delete triggered — the repository disappears from this list once it finishes");
+      setActiveJobByRepo((m) => ({ ...m, [name]: job.id }));
       void queryClient.invalidateQueries({ queryKey: ["repositories"] });
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
@@ -408,8 +418,10 @@ export function RepositoriesPage() {
                 </TableCell>
                 <TableCell className="text-muted-foreground">{repo.architectures.join(", ")}</TableCell>
                 <TableCell className="text-muted-foreground">{formatBytes(repo.size_bytes)}</TableCell>
-                <TableCell className="text-muted-foreground">
-                  {repo.last_sync_job_id ? (
+                <TableCell className="min-w-40 text-muted-foreground">
+                  {activeJobByRepo[repo.name] ? (
+                    <JobStatusIndicator jobId={activeJobByRepo[repo.name] as string} />
+                  ) : repo.last_sync_job_id ? (
                     <Link to={`/jobs/${repo.last_sync_job_id}`} className="hover:underline">
                       {formatDateTime(repo.last_synced_at)}
                       {repo.last_synced_at === null && " (view job)"}

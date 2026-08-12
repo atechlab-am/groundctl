@@ -25,6 +25,25 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-08-12
+
+### Added: live job status (spinner + elapsed time + log) inline on Sync/Edit/Delete
+
+- New `JobStatusIndicator` component — an indeterminate progress bar (no
+  fake percentage; aptly gives no progress stream for sync/delete/edit,
+  confirmed earlier this cycle), elapsed time since `started_at` while a
+  job is `pending`/`running`, and an expand-to-view-log toggle that shows
+  `Job.log_output` inline without navigating to the Jobs page. Polls every
+  3s while in progress, same as the existing Job detail page.
+- Wired into both the Repositories list (each row now shows this in place
+  of "Last synced" while its own triggered job — Sync, Edit, or Delete —
+  is active) and the Repository detail page (replaces the page's own
+  hand-rolled status card). Previously only Sync's job was tracked via
+  `last_sync_job_id`; Edit's job wasn't visible anywhere on these pages,
+  and Delete's job became untrackable the moment the Repository row itself
+  was deleted. Both pages now track whichever job they most recently
+  triggered in local state, independent of the persisted field.
+
 ## [0.21.2] - 2026-08-12
 
 ### Fixed: CI lint/typecheck false failures, and pinned their tool versions

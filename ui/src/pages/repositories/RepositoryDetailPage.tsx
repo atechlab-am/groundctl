@@ -6,6 +6,7 @@ import { ArrowLeft, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryState } from "@/components/QueryState";
 import { StatusBadge } from "@/components/StatusBadge";
+import { JobStatusIndicator } from "@/components/JobStatusIndicator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -34,15 +35,20 @@ export function RepositoryDetailPage() {
   const [editComponents, setEditComponents] = useState("");
   const [editArchitectures, setEditArchitectures] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
+  // Set by Sync/Edit/Delete's own onSuccess — takes priority over
+  // last_sync_job_id, which only ever tracks Sync (Edit isn't recorded on
+  // the row at all, and Delete's Job outlives the Repository row it
+  // targeted).
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   if (!name) return null;
 
   const repoQuery = useQuery({ queryKey: ["repository", name], queryFn: () => getRepository(name) });
 
-  // The current/most recent sync job — polled live while it's still
-  // pending/running so this page reflects an in-progress sync without a
-  // manual refresh, same pattern as JobDetailPage itself.
-  const currentJobId = repoQuery.data?.last_sync_job_id ?? null;
+  // Polled live while pending/running so this page reflects an
+  // in-progress job without a manual refresh, same pattern as
+  // JobDetailPage itself.
+  const currentJobId = activeJobId ?? repoQuery.data?.last_sync_job_id ?? null;
   const currentJobQuery = useQuery({
     queryKey: ["job", currentJobId],
     queryFn: () => getJob(currentJobId!),
@@ -61,8 +67,9 @@ export function RepositoryDetailPage() {
 
   const syncMutation = useMutation({
     mutationFn: () => syncRepository(name),
-    onSuccess: () => {
+    onSuccess: (job) => {
       toast.success("Sync triggered");
+      setActiveJobId(job.id);
       void queryClient.invalidateQueries({ queryKey: ["repository", name] });
       void queryClient.invalidateQueries({ queryKey: ["jobs", "repository"] });
     },
@@ -87,8 +94,9 @@ export function RepositoryDetailPage() {
         components: editComponents.split(",").map((s) => s.trim()).filter(Boolean),
         architectures: editArchitectures.split(",").map((s) => s.trim()).filter(Boolean),
       }),
-    onSuccess: () => {
-      toast.success("Update triggered — check the Jobs page for progress");
+    onSuccess: (job) => {
+      toast.success("Update triggered");
+      setActiveJobId(job.id);
       void queryClient.invalidateQueries({ queryKey: ["repository", name] });
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       setEditOpen(false);
@@ -179,28 +187,14 @@ export function RepositoryDetailPage() {
               <InfoItem label="Last synced" value={formatDateTime(repo.last_synced_at)} />
             </div>
 
-            {currentJob && (
+            {currentJob && currentJobId && (
               <div className="mb-6 rounded-lg border p-4">
-                <div className="mb-2 flex items-center justify-between">
-                  <p className="text-sm font-medium">
-                    {syncInProgress ? "Sync in progress" : "Last sync"}
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <StatusBadge value={currentJob.status} />
-                    <Link to={`/jobs/${currentJob.id}`} className="text-sm text-muted-foreground hover:underline">
-                      view job
-                    </Link>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-3">
+                <p className="mb-2 text-sm font-medium">{syncInProgress ? "Job in progress" : "Last job"}</p>
+                <JobStatusIndicator jobId={currentJobId} />
+                <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-3">
                   <span>Started: {formatDateTime(currentJob.started_at)}</span>
                   <span>Finished: {formatDateTime(currentJob.finished_at)}</span>
                 </div>
-                {currentJob.log_output && (
-                  <div className="log-viewer mt-3 max-h-40 overflow-y-auto rounded-md bg-muted p-3 text-xs">
-                    {currentJob.log_output}
-                  </div>
-                )}
               </div>
             )}
 
