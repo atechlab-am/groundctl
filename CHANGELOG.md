@@ -25,6 +25,36 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-08-11
+
+### Added: version number and update notice in the header
+
+- Header now always shows the running instance's own version
+  (`vX.Y.Z`, from `VERSION`) and, when a newer GitHub release exists, a
+  badge linking straight to it. New `GET /version` (unauthenticated, same
+  reasoning as `GET /branding` — polled by every logged-in tab, nothing
+  sensitive in a version number). It never calls GitHub itself — reads a
+  cache a new daily Celery Beat task (`scheduled_check_for_new_version`)
+  maintains via the GitHub Releases API, so an outage or rate limit there
+  degrades to "no update info" rather than a slow/broken header for every
+  user. New `VersionCheck` singleton table (migration `a91d5c3e7f04`).
+  New `app/version_check.py`: plain-semver tuple comparison
+  (`is_newer`), deliberately NOT `version_compare.py`'s `dpkg_compare` —
+  that's Debian package-version ordering (epochs/tildes), a different
+  domain from this app's own `X.Y.Z` release tags.
+- **Fixed a real deploy gap found while building this**: `VERSION` was
+  never actually deployed anywhere — `scripts/lib/app.sh`'s
+  `sync_app_code` copied `app/` and `docs/` but not `VERSION`, so a
+  running instance's own process had no way to read its own version at
+  all. Now copied alongside `app/` (same sibling-path pattern
+  `docs_content.py` already uses for `docs/`).
+
+### Changed: page content no longer centered/width-capped
+
+- `AppShell`'s `mx-auto max-w-6xl` wrapper removed — every page previously
+  centered in a 1152px column regardless of viewport width, wasting space
+  on wider screens. Content now uses the full width next to the sidebar.
+
 ## [0.20.0] - 2026-08-11
 
 ### Added: Monitor sidebar section and a Trends page

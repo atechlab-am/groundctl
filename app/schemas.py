@@ -754,6 +754,22 @@ class ComplianceTrendPoint(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# version check
+# ---------------------------------------------------------------------------
+
+
+class VersionRead(BaseModel):
+    current_version: str
+    latest_version: str | None
+    # True only when latest_version is known and strictly newer than
+    # current_version — never true while latest_version is None (an
+    # unreachable/never-run check must not imply "you're up to date" OR
+    # "an update exists"; it implies nothing).
+    update_available: bool
+    last_checked_at: datetime | None
+
+
+# ---------------------------------------------------------------------------
 # errata
 # ---------------------------------------------------------------------------
 

@@ -72,6 +72,12 @@ sync_app_code() {
     fi
     cp "${REPO_ROOT}/requirements.txt" /opt/groundctl/requirements.txt
     cp "${REPO_ROOT}/alembic.ini" /opt/groundctl/alembic.ini
+    # Sibling of app/, same as docs/ above — GET /api/version (app/routers/
+    # version.py) reads this relative to app/'s own location, since the
+    # running process otherwise has no way to know its own version (VERSION
+    # previously wasn't deployed at all, only ever read from the checkout
+    # by groundctl-maintain itself).
+    cp "${REPO_ROOT}/VERSION" /opt/groundctl/VERSION
 
     # Real bug found live: rsync -a --delete only removes destination
     # files/dirs that are genuinely absent from the SOURCE tree it's

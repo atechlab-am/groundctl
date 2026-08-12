@@ -4,6 +4,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Sidebar } from "./Sidebar";
+import { VersionNotice } from "@/components/VersionNotice";
 
 const ROLE_BADGE_VARIANT: Record<string, "default" | "secondary" | "success"> = {
   admin: "default",
@@ -18,7 +19,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="flex h-screen overflow-hidden bg-background">
       <Sidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center justify-end gap-3 border-b bg-card/80 px-6 backdrop-blur-sm">
+        <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b bg-card/80 px-6 backdrop-blur-sm">
+          <VersionNotice />
           {user && (
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2 text-sm">

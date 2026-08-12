@@ -235,6 +235,29 @@ class InstanceSetting(Base):
     )
 
 
+class VersionCheck(Base):
+    """Cached result of the daily GitHub-releases check (scheduled_check_
+    for_new_version, app/tasks.py) — single shared row, same fixed-id
+    singleton pattern as Branding/InstanceSetting. Exists so GET /version
+    (polled by every logged-in browser tab) never itself calls GitHub —
+    only the scheduled task does, once a day, avoiding both per-user rate
+    limiting and making the endpoint fast/available even if GitHub is
+    unreachable at request time (stale cached data beats no data).
+    """
+
+    __tablename__ = "version_checks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    latest_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Null means the last check attempt failed (network error, rate limit,
+    # unexpected response shape) — GET /version falls back to "no update
+    # info available" rather than showing stale-but-wrong data indefinitely
+    # only when this has never once succeeded; a prior successful value is
+    # preserved across a single failed re-check (see the task's docstring).
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    check_failed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
 class ContentView(Base):
     __tablename__ = "content_views"
 

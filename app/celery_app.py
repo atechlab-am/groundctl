@@ -57,6 +57,10 @@ celery_app.conf.update(
             "task": "app.tasks.scheduled_purge_audit_logs",
             "schedule": crontab(hour=6, minute=0),
         },
+        "check-for-new-version-daily": {
+            "task": "app.tasks.scheduled_check_for_new_version",
+            "schedule": crontab(hour=7, minute=0),
+        },
         # Weekly, not daily — aptly db cleanup can be a heavier operation
         # (scans the whole pool) and disk usage doesn't change fast enough
         # to need daily checks. Sunday, after every other daily task's

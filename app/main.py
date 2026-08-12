@@ -45,6 +45,7 @@ from app.routers import (
     sites,
     trends,
     users,
+    version,
 )
 
 configure_logging()
@@ -175,8 +176,10 @@ api_router.include_router(trends.router, prefix="/trends", tags=["trends"])
 api_router.include_router(errata.router, prefix="/errata", tags=["errata"])
 api_router.include_router(host_groups.router, prefix="/host-groups", tags=["host-groups"])
 api_router.include_router(activation_keys.router, prefix="/activation-keys", tags=["activation-keys"])
-# The one router in the app with no Depends(get_current_user) anywhere in
-# it — the activation-key token IS the authentication. See enrollment.py.
+# No Depends(get_current_user) anywhere in this router — the
+# activation-key token IS the authentication. See enrollment.py. (Not the
+# only unauthenticated router in the app — branding and version are too,
+# for their own reasons noted at each include_router call below.)
 api_router.include_router(enrollment.router, prefix="/enrollment", tags=["enrollment"])
 api_router.include_router(sites.router, prefix="/sites", tags=["sites"])
 api_router.include_router(audit_logs.router, prefix="/audit-logs", tags=["audit-logs"])
@@ -191,6 +194,9 @@ api_router.include_router(users.router, prefix="/users", tags=["users"])
 # enrollment.py's ssh-public-key endpoint.
 api_router.include_router(branding.router, prefix="/branding", tags=["branding"])
 api_router.include_router(instance_settings.router, prefix="/instance-settings", tags=["instance-settings"])
+# Unauthenticated for the same reason as branding above — polled by every
+# logged-in tab's header, and the version number itself isn't sensitive.
+api_router.include_router(version.router, prefix="/version", tags=["version"])
 app.include_router(api_router)
 
 
