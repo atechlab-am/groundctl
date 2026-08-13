@@ -25,6 +25,23 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-08-13
+
+### Fixed: 0.22.1's own fix broke installs under a restrictive sudoers policy
+
+- 0.22.1 fixed a directory-permission warning by adding `sudo --chdir=/tmp`
+  to every `sudo -u postgres <cmd>` call. Confirmed live on a real dev
+  server: a sudoers policy scoped to exact commands
+  (`pg_isready`/`psql`/etc., no extra flags permitted) rejects `sudo`'s own
+  `--chdir`/`-D` option outright — `sudo: you are not permitted to use the
+  -D option with /usr/bin/pg_isready` — even though the base command was
+  allowed, breaking `install.sh` at the very first Postgres-readiness
+  check on that host. Replaced with `(cd /tmp && sudo -u postgres <cmd>)`
+  — changes the *calling* shell's directory before sudo runs, adding no
+  sudo-level flag at all, so it can't collide with a restrictive sudoers
+  policy anywhere. Same fix in both `scripts/lib/pg.sh` and
+  `scripts/backup.sh`.
+
 ## [0.22.1] - 2026-08-12
 
 ### Fixed: `install.sh` printed a "Permission denied" warning during Postgres setup
