@@ -20,14 +20,69 @@ install_app_prereqs() {
 
 # Node/npm are a BUILD-TIME dependency only (ROADMAP Phase 8's web UI) — the
 # deployed artifact is static JS/CSS under app/static, nothing Node-related
-# runs as a service. Debian/Ubuntu's own nodejs package is old on some
-# releases, but the UI build has no runtime dependency on Node version
-# beyond what Vite needs, and this avoids adding NodeSource's own apt repo
-# (a second signing-key/trust relationship this project doesn't otherwise
-# need) for a build-time-only tool.
+# runs as a service.
+#
+# Real bug found live: this used to install Debian/Ubuntu's own `nodejs`
+# apt package on the theory that the UI build has no runtime dependency on
+# Node version beyond what Vite needs. That's false in practice — jammy's
+# stock nodejs is v12.x, and TypeScript's own compiler (tsc, run as part of
+# `npm run build`) requires Node 14+ for ES2020 syntax (nullish coalescing,
+# `??`) in its own source; v12 fails immediately with a raw SyntaxError from
+# inside node_modules, not a clean version-check message.
+#
+# Fixed via a direct binary tarball from nodejs.org instead of adding
+# NodeSource's apt repo — nodejs.org's dist URL scheme
+# (https://nodejs.org/dist/vX.Y.Z/...) has been stable/documented for
+# years, and this avoids a second apt signing-key/trust relationship for a
+# build-time-only tool (same reasoning the old comment here already gave,
+# just pointed at a source that doesn't fail on an old distro's stock
+# package). SHASUMS256.txt is nodejs.org's own published checksum manifest
+# for each release — verified before extracting, since this unpacks
+# straight into a directory whose binaries get symlinked onto PATH.
+NODE_VERSION="20.18.1"
+NODE_INSTALL_DIR="/opt/nodejs"
+
 install_node_prereqs() {
     log_info "installing node prerequisites..."
-    apt-get install -y --no-install-recommends nodejs npm >/dev/null
+    if [[ -x "${NODE_INSTALL_DIR}/bin/node" ]] \
+        && "${NODE_INSTALL_DIR}/bin/node" -v | grep -qx "v${NODE_VERSION}"; then
+        log_info "node ${NODE_VERSION} already installed — skipping"
+        return
+    fi
+
+    apt-get install -y --no-install-recommends ca-certificates curl xz-utils >/dev/null
+
+    local arch
+    case "$(dpkg --print-architecture)" in
+        amd64) arch="x64" ;;
+        arm64) arch="arm64" ;;
+        armhf) arch="armv7l" ;;
+        *) die "unsupported architecture for Node: $(dpkg --print-architecture)" ;;
+    esac
+
+    local tmp
+    tmp="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '${tmp}'" RETURN
+
+    local tarball="node-v${NODE_VERSION}-linux-${arch}.tar.xz"
+    local dist_url="https://nodejs.org/dist/v${NODE_VERSION}"
+    log_info "downloading node ${NODE_VERSION} (${arch})..."
+    curl -fsSL -o "${tmp}/${tarball}" "${dist_url}/${tarball}"
+    curl -fsSL -o "${tmp}/SHASUMS256.txt" "${dist_url}/SHASUMS256.txt"
+
+    (
+        cd "${tmp}"
+        grep " ${tarball}\$" SHASUMS256.txt | sha256sum -c - >/dev/null
+    ) || die "node ${NODE_VERSION} tarball failed checksum verification"
+
+    rm -rf "${NODE_INSTALL_DIR}"
+    mkdir -p "${NODE_INSTALL_DIR}"
+    tar -xJf "${tmp}/${tarball}" -C "${NODE_INSTALL_DIR}" --strip-components=1
+
+    ln -sf "${NODE_INSTALL_DIR}/bin/node" /usr/local/bin/node
+    ln -sf "${NODE_INSTALL_DIR}/bin/npm" /usr/local/bin/npm
+    ln -sf "${NODE_INSTALL_DIR}/bin/npx" /usr/local/bin/npx
 }
 
 # Builds the React SPA (ui/) and syncs the output into app/static, which
