@@ -141,18 +141,20 @@ install_redis() {
     systemctl stop redis-server 2>/dev/null || true
     systemctl reset-failed redis-server 2>/dev/null || true
 
-    # Bind loopback only — no auth on Redis in this deployment, same
+    # Bind IPv4 loopback ONLY — no auth on Redis in this deployment, same
     # posture as aptly's own unauthenticated API being loopback-scoped.
-    # Real bug found live: hardcoding "-::1" (IPv6 loopback) unconditionally
-    # made redis fail outright — "Could not create server TCP listening
-    # socket -::1:6379: Name or service not known" — on a box where IPv6 is
-    # disabled/unconfigured at the kernel level. Only bind the IPv6 loopback
-    # if this host actually has one.
-    if [[ -f /proc/net/if_inet6 ]]; then
-        sed -i 's/^bind .*/bind 127.0.0.1 -::1/' /etc/redis/redis.conf
-    else
-        sed -i 's/^bind .*/bind 127.0.0.1/' /etc/redis/redis.conf
-    fi
+    # Real bug found live, through two failed fix attempts: binding "-::1"
+    # (IPv6 loopback) fails with "Could not create server TCP listening
+    # socket -::1:6379: Name or service not known" on some real hosts even
+    # when `ip -6 addr show lo` shows ::1/128 genuinely assigned, IPv6 isn't
+    # disabled via sysctl, and /etc/hosts has a normal ::1 entry — every
+    # layer that would normally explain this says it should work, and it
+    # still doesn't on that box. Rather than keep chasing environment-
+    # specific IPv6/getaddrinfo behavior with no reliable way to detect it
+    # up front, groundctl doesn't need IPv6 here at all (loopback-only,
+    # single-host, nothing fleet-facing) — bind IPv4 loopback
+    # unconditionally, every time, no detection logic to get wrong.
+    sed -i 's/^bind .*/bind 127.0.0.1/' /etc/redis/redis.conf
 
     # Real bug found live: a box whose redis.conf had `daemonize yes` (Ubuntu's
     # own stock default is `daemonize no` — something pre-provisioned this one

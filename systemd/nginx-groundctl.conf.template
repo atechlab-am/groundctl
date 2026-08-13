@@ -1,9 +1,18 @@
 server {
     listen 80;
     server_name _;
-    # Redirect to HTTPS — see docs/https.md for the self-signed-by-default
-    # posture and how to swap in a CA-issued cert for production.
-    return 301 https://$host:__NGINX_PORT__$request_uri;
+    # Redirect to the groundctl UI/API on 443, NOT the published-repo port
+    # below. Real bug found live: this used to redirect to
+    # https://$host:__NGINX_PORT__ (the repo port, e.g. 8080) — the only
+    # thing on this host listening on port 80 at all, so it intercepted
+    # every plain-HTTP request, including a browser's default scheme guess
+    # when a human types the bare hostname expecting the web UI. apt
+    # clients never hit this redirect (sources.list uses explicit
+    # https://host:port URLs, port 80 is unused in that flow), so its only
+    # real audience is humans — and the UI on 443 is what they want. See
+    # docs/https.md for the self-signed-by-default posture and how to swap
+    # in a CA-issued cert for production.
+    return 301 https://$host$request_uri;
 }
 
 server {

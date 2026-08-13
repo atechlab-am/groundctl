@@ -28,7 +28,13 @@ way to force a regeneration without reinstalling.
 
 Plain HTTP on port 80 now only exists as a 301 redirect to HTTPS
 (`nginx-groundctl.conf.template`) — there is no unencrypted serving path
-left by default.
+left by default. It redirects to `https://<host>` (port 443, the
+groundctl UI/API), not the published-repo port — a real bug found live:
+it previously redirected to the repo port instead, which meant a browser
+defaulting to `http://` on a bare hostname (no scheme typed) landed on
+the wrong service instead of the UI. apt clients never hit this redirect
+either way — `sources.list` entries use explicit `https://host:port`
+URLs, so port 80 has no role in that flow.
 
 Why self-signed rather than requiring a real cert up front: Let's Encrypt
 needs a real, publicly resolvable domain name and port 80/443 reachability
