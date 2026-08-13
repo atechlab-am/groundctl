@@ -25,6 +25,30 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.22.3] - 2026-08-13
+
+### Fixed: `redis-server.service` failed to start after `install.sh` (config/systemd daemonize mismatch)
+
+- Confirmed live: a box whose `/etc/redis/redis.conf` had `daemonize yes`
+  made `redis-server` fork on startup despite the systemd unit passing
+  `--supervised systemd --daemonize no` on the command line — the config
+  file's directive won, redis exited 0 (a normal successful daemonization
+  from its own perspective), and systemd — tracking that exited process as
+  its supervised child — marked the unit `failed`, even though redis was
+  actually running fine in the background. `journalctl -xeu redis-server`
+  showed no real error at all, just systemd's own "exited, status=1"
+  noise, because nothing had actually gone wrong from redis's side.
+  `install_redis` (`scripts/lib/app.sh`) now forces `daemonize no`
+  unconditionally, the same way it already forces the `bind` line, so
+  config and unit file can never disagree regardless of what the box
+  shipped with.
+- New `scripts/uninstall.sh --yes` — tears down everything `install.sh`
+  sets up (services, the Postgres database/role, `/opt/groundctl`,
+  `/etc/groundctl`, `/var/lib/groundctl`, the `groundctl`/`groundctl-sync`
+  users, the templated systemd units) and purges+reinstalls the
+  `redis-server` package itself, so a stuck dev box can get back to a
+  genuine fresh-install state without hand-running a dozen commands.
+
 ## [0.22.2] - 2026-08-13
 
 ### Fixed: 0.22.1's own fix broke installs under a restrictive sudoers policy

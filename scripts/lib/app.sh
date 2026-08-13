@@ -50,6 +50,19 @@ install_redis() {
     # Bind loopback only — no auth on Redis in this deployment, same
     # posture as aptly's own unauthenticated API being loopback-scoped.
     sed -i 's/^bind .*/bind 127.0.0.1 -::1/' /etc/redis/redis.conf
+    # Real bug found live: a box whose redis.conf had `daemonize yes` (Ubuntu's
+    # own stock default is `daemonize no` — something pre-provisioned this one
+    # differently, unrelated to this script) made redis fork on startup despite
+    # the systemd unit passing `--supervised systemd --daemonize no` on the
+    # command line — the config file's daemonize directive won, redis exited
+    # 0 as a normal successful daemonization, and systemd (tracking that exited
+    # process as its supervised child) marked the unit failed even though redis
+    # was actually running fine in the background. `journalctl -xeu
+    # redis-server` showed no real error at all — just systemd's own "exited,
+    # status=1" noise — because from redis's own perspective nothing went
+    # wrong. Force `daemonize no` unconditionally so config and unit file can
+    # never disagree, regardless of what the box shipped with.
+    sed -i 's/^daemonize .*/daemonize no/' /etc/redis/redis.conf
     systemctl enable --now redis-server >/dev/null
 }
 
