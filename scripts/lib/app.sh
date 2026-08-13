@@ -127,6 +127,20 @@ install_redis() {
     # binary-fetch/keyring dance like aptly needed.
     apt-get install -y redis-server >/dev/null
 
+    # Real bug found live, after all three fixes below were already in
+    # place: Debian/Ubuntu's redis-server postinst auto-starts the service
+    # immediately as part of `apt-get install`, against the STOCK
+    # unmodified config — before this function ever reaches the sed edits
+    # further down. On a box without IPv6, that first apt-triggered start
+    # fails for the same "-::1" bind reason the fix below addresses, and
+    # leaves the unit in a failed/backoff state that the later `systemctl
+    # enable --now` inherits — so every fix after this point was correct
+    # but applied too late to matter. Stop it and clear systemd's failure
+    # state before touching config, so the edits below apply to a unit
+    # that hasn't already failed once.
+    systemctl stop redis-server 2>/dev/null || true
+    systemctl reset-failed redis-server 2>/dev/null || true
+
     # Bind loopback only — no auth on Redis in this deployment, same
     # posture as aptly's own unauthenticated API being loopback-scoped.
     # Real bug found live: hardcoding "-::1" (IPv6 loopback) unconditionally
