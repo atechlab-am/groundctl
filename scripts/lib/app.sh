@@ -39,7 +39,20 @@ install_app_prereqs() {
 # package). SHASUMS256.txt is nodejs.org's own published checksum manifest
 # for each release — verified before extracting, since this unpacks
 # straight into a directory whose binaries get symlinked onto PATH.
-NODE_VERSION="20.18.1"
+#
+# Second real bug found live, same day: 20.18.1 (the first version pinned
+# here) still wasn't new enough — ui/package.json's rolldown/vite versions
+# declare `"engines": {"node": "^20.19.0 || >=22.12.0"}`, and Node
+# <20.19 makes rolldown's native-binding resolution fail with "Cannot
+# find native binding" (an error whose own text blames a totally
+# different, unrelated npm optional-deps bug — npm/cli#4828 — which
+# cost real time chasing node_modules/cache/permission theories before
+# `npm warn EBADENGINE` in plain `npm ci` output pointed at the actual
+# cause). 22.12.0 chosen over the bare-minimum 20.19.0: it's current
+# Node LTS, not just the floor this one dependency happens to require —
+# more headroom against the next dependency bump needing something newer
+# than 20.x can ever satisfy.
+NODE_VERSION="22.12.0"
 NODE_INSTALL_DIR="/opt/nodejs"
 
 install_node_prereqs() {
@@ -92,6 +105,17 @@ install_node_prereqs() {
 # artifact.
 build_ui() {
     log_info "building web UI..."
+    # Real bug found live: `npm ci` failed with npm's own documented
+    # optional-dependency bug (npm/cli#4828) — "Cannot find native binding"
+    # for rolldown's linux-x64-gnu binary — even though package-lock.json
+    # correctly lists it. Root cause: this box previously ran a much older
+    # system npm (bundled with jammy's stock nodejs 12.x, before
+    # install_node_prereqs switched to a real Node 20 install) against this
+    # same ui/ directory, leaving a stale/corrupted npm cache that a plain
+    # `npm ci` reuses. A fresh node_modules alone doesn't fix it — npm's own
+    # cache has to go too, or it just re-poisons the reinstall the same way.
+    rm -rf "${REPO_ROOT}/ui/node_modules"
+    npm cache clean --force --silent 2>/dev/null || true
     ( cd "${REPO_ROOT}/ui" && npm ci --silent && npm run build --silent )
     rm -rf "${REPO_ROOT}/app/static"
     cp -a "${REPO_ROOT}/ui/dist" "${REPO_ROOT}/app/static"

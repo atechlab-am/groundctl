@@ -25,6 +25,43 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.22.4] - 2026-08-13
+
+### Fixed: `install.sh` failed on a real fresh-install run — redis and Node both broken
+
+- `install_redis` (`scripts/lib/app.sh`): hardcoding `bind 127.0.0.1 -::1`
+  made redis fail outright on a host with IPv6 disabled at the kernel
+  level (`Could not create server TCP listening socket -::1:6379: Name or
+  service not known`) — now conditional on `/proc/net/if_inet6` existing.
+  Separately, after a purge+reinstall (see `scripts/uninstall.sh` below),
+  `/var/lib/redis` didn't exist yet when systemd started the service
+  (`Can't chdir to '/var/lib/redis': No such file or directory`) —
+  normally recreated by systemd-tmpfiles at boot, but nothing in this
+  install flow can rely on a reboot happening first; now created and
+  `chown redis:redis`'d explicitly.
+- `install_node_prereqs` (`scripts/lib/app.sh`): Debian/Ubuntu's own
+  `nodejs` apt package is too old to build this project's UI at all — jammy
+  ships Node 12.x, and TypeScript's compiler needs 14+ just to parse (fails
+  with a raw `SyntaxError` on `??`, not a clean version message). Replaced
+  with a direct, checksum-verified binary tarball from nodejs.org (avoids
+  adding NodeSource's apt repo as a second signing-key trust relationship
+  for a build-time-only tool). First pin (20.18.1) still wasn't new enough —
+  `ui/package.json`'s vite/rolldown versions require `^20.19.0 || >=22.12.0`
+  and Node <20.19 makes rolldown's native-binding resolution fail with an
+  error that misleadingly blames an unrelated npm bug (npm/cli#4828). Now
+  pinned to 22.12.0 (current LTS, not just the bare floor one dependency
+  happens to require).
+- `build_ui` (`scripts/lib/app.sh`): now clears `ui/node_modules` and npm's
+  cache before every `npm ci` — a stale cache from a box's previous
+  (much older) system npm can otherwise poison a rebuild after upgrading
+  Node, independent of the version fix above.
+- New `scripts/uninstall.sh --yes` — tears down everything `install.sh`
+  sets up (services, the Postgres database/role, `/opt/groundctl`,
+  `/etc/groundctl`, `/var/lib/groundctl`, the `groundctl`/`groundctl-sync`
+  users, the templated systemd units) and purges+reinstalls the
+  `redis-server` package itself, so a stuck dev box can get back to a
+  genuine fresh-install state without hand-running a dozen commands.
+
 ## [0.22.3] - 2026-08-13
 
 ### Fixed: `redis-server.service` failed to start after `install.sh` (config/systemd daemonize mismatch)

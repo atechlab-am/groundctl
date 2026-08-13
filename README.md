@@ -1,6 +1,6 @@
 # Groundctl
 
-**Version:** [0.14.0](CHANGELOG.md#0140---2026-08-06) · see [`CHANGELOG.md`](CHANGELOG.md) for release history and [`docs/releasing.md`](docs/releasing.md) for how releases are cut.
+**Version:** [0.22.4](CHANGELOG.md#0224---2026-08-13) · see [`CHANGELOG.md`](CHANGELOG.md) for release history and [`docs/releasing.md`](docs/releasing.md) for how releases are cut.
 
 **A self-hosted content-view and patch-level manager for Debian/Ubuntu fleets — mirror repos, snapshot them, stage different package versions to different environments, and manage servers from one place.**
 
@@ -73,4 +73,4 @@ See [`docs/install.md`](docs/install.md) for the full walkthrough, then [`docs/q
 
 ## Status
 
-Core flows implemented: mirror → snapshot → publish, server registration, environment assignment, patch job triggering, package-drift dashboard, RBAC (enforced per-endpoint, hierarchical viewer/operator/admin), Alembic migrations, a pytest suite, structured logging/metrics, backups, a web UI, and a CLI. See [`ROADMAP.md`](ROADMAP.md) for what's next and [`docs/limitations.md`](docs/limitations.md) for known gaps.
+Core flows implemented: mirror → snapshot → publish, server registration, environment assignment, patch job triggering, package-drift dashboard, RBAC (enforced per-endpoint, hierarchical viewer/operator/admin), Alembic migrations, a pytest suite, structured logging/metrics, backups, a web UI, and a CLI. Repositories are fully manageable from the UI (create, sync, edit, delete — all as tracked, cancellable jobs with live status), and admins get a Settings > System page for runtime-editable operational tunables (retention windows, staleness thresholds, webhook alerting) plus a Monitor section with trend charts for job/compliance history. See [`ROADMAP.md`](ROADMAP.md) for what's next and [`docs/limitations.md`](docs/limitations.md) for known gaps.

@@ -8,7 +8,7 @@ services — no containers. This is the only supported way to deploy groundctl.
 Installs and configures, as native systemd services:
 
 - **postgresql** — via the distro package, `groundctl` role + database created idempotently.
-- **redis** — via the distro package, bound to `127.0.0.1` only (no auth — same posture as aptly's own unauthenticated API). Celery broker + result backend.
+- **redis** — via the distro package, bound to `127.0.0.1` (plus `::1` if the host has IPv6 available) only, no auth — same posture as aptly's own unauthenticated API. Celery broker + result backend.
 - **aptly** — binary fetched from GitHub releases, config written, archive GPG keyrings imported, bound to `127.0.0.1:8090` only (its REST API has no authentication of its own — never expose it beyond loopback).
 - **nginx** — serves aptly's published repo tree over HTTPS (self-signed cert by default, see `docs/https.md`; plain HTTP on port 80 only exists as a redirect to HTTPS).
 - **groundctl** — the FastAPI app (`groundctl.service`, also HTTPS by default), plus a Celery job worker (`groundctl-worker.service`) and scheduler (`groundctl-beat.service`), installed into one Python venv under `/opt/groundctl`. The web UI (`ui/`) is built with `npm` and its static output copied into `app/static/`, served by this same service — see `docs/web-ui.md`.
@@ -20,7 +20,7 @@ All services run as a dedicated, non-root `groundctl` system user. `groundctl.se
 - A fresh Debian 12+ or Ubuntu 22.04+ host, reachable over the network you intend your managed fleet to use.
 - Root/sudo access.
 - A checked-out copy of this repo on the target host — `install.sh` does **not** clone the repo itself (there's no published release yet). `git clone` this repo, then run the script from inside it.
-- Outbound internet access during install: `install.sh` installs `nodejs`/`npm` from the distro's own apt repos and runs `npm ci` to build the web UI. Node/npm are a **build-time** dependency only — nothing Node-related runs as a service afterward.
+- Outbound internet access during install: `install.sh` fetches a specific Node.js release directly from nodejs.org (checksum-verified against nodejs.org's own published SHASUMS256.txt — the distro's own `nodejs` package is too old on Debian/Ubuntu to build this project's UI at all, see `CHANGELOG.md`) and runs `npm ci` to build the web UI. Node/npm are a **build-time** dependency only, installed to `/opt/nodejs` — nothing Node-related runs as a service afterward.
 
 ## Usage
 
@@ -97,6 +97,18 @@ sudo groundctl-maintain regen-cert
 Regenerates the self-signed TLS cert (fleet hostname read back from `/etc/groundctl/groundctl.env`, no re-prompting) and restarts `groundctl` + `nginx` to pick it up. Backs up the existing cert/key pair first (`/etc/groundctl/tls/backup-<timestamp>/`) — `install.sh`'s own `ensure_tls_cert` never overwrites an existing cert on its own, so this is the supported way to force a regeneration (e.g. after upgrading past a fix to how the cert is generated) without a full reinstall. See [`docs/https.md`](https.md).
 
 `groundctl-maintain` finds its checkout via `/etc/groundctl/maintain.conf` (written by `install.sh`, holds `GROUNDCTL_REPO_ROOT`) — if that file is missing or doesn't point at a valid git checkout, it fails with a clear error rather than guessing.
+
+## Starting over: `scripts/uninstall.sh`
+
+```bash
+sudo ./scripts/uninstall.sh --yes
+```
+
+Tears down everything `install.sh` sets up, so a following `install.sh` run is a genuine fresh install rather than picking up leftover state — useful when a box has gotten into a broken state worth abandoning rather than debugging further. **Destroys** the `groundctl` Postgres database and role, `/opt/groundctl`, `/etc/groundctl`, `/var/lib/groundctl` (aptly's mirror/snapshot/published data — irrecoverable unless you have a backup, see [`docs/backup.md`](backup.md)), the `groundctl`/`groundctl-sync` system users, and the templated systemd units. Also purges and reinstalls the `redis-server` package itself, clearing any stuck state a config-level fix can't reach.
+
+Requires `--yes` — run without it and it prints a warning and exits without touching anything. Doesn't remove the `postgresql`/`nginx`/`openssh-server` *packages* (only groundctl's own config/data layered on top of them) — `redis-server` is the one exception, since it's the specific thing this script exists to unstick.
+
+Standalone, not sourced by `install.sh` or `groundctl-maintain` — this is a deliberate, rarely-run operator action, never something another script invokes on your behalf.
 
 ## Layout on disk
 
