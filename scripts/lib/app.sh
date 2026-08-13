@@ -47,9 +47,20 @@ install_redis() {
     # Redis is packaged directly in Debian/Ubuntu's own apt repos — no
     # binary-fetch/keyring dance like aptly needed.
     apt-get install -y redis-server >/dev/null
+
     # Bind loopback only — no auth on Redis in this deployment, same
     # posture as aptly's own unauthenticated API being loopback-scoped.
-    sed -i 's/^bind .*/bind 127.0.0.1 -::1/' /etc/redis/redis.conf
+    # Real bug found live: hardcoding "-::1" (IPv6 loopback) unconditionally
+    # made redis fail outright — "Could not create server TCP listening
+    # socket -::1:6379: Name or service not known" — on a box where IPv6 is
+    # disabled/unconfigured at the kernel level. Only bind the IPv6 loopback
+    # if this host actually has one.
+    if [[ -f /proc/net/if_inet6 ]]; then
+        sed -i 's/^bind .*/bind 127.0.0.1 -::1/' /etc/redis/redis.conf
+    else
+        sed -i 's/^bind .*/bind 127.0.0.1/' /etc/redis/redis.conf
+    fi
+
     # Real bug found live: a box whose redis.conf had `daemonize yes` (Ubuntu's
     # own stock default is `daemonize no` — something pre-provisioned this one
     # differently, unrelated to this script) made redis fork on startup despite
@@ -63,6 +74,20 @@ install_redis() {
     # wrong. Force `daemonize no` unconditionally so config and unit file can
     # never disagree, regardless of what the box shipped with.
     sed -i 's/^daemonize .*/daemonize no/' /etc/redis/redis.conf
+
+    # Real bug found live: after a purge+reinstall (see scripts/uninstall.sh),
+    # apt's postinst didn't recreate /var/lib/redis before systemd started the
+    # service — redis's own working directory (config `dir` — its RDB
+    # save path, needed even with persistence effectively unused here since
+    # groundctl treats Redis as a cache/broker) didn't exist yet, and redis
+    # refused to start: "Can't chdir to '/var/lib/redis': No such file or
+    # directory". Normally recreated by systemd-tmpfiles at boot, but nothing
+    # in this install flow can rely on a reboot happening — create and own it
+    # explicitly instead of hoping tmpfiles gets there first.
+    mkdir -p /var/lib/redis
+    chown redis:redis /var/lib/redis
+    chmod 750 /var/lib/redis
+
     systemctl enable --now redis-server >/dev/null
 }
 
