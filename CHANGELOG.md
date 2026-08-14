@@ -25,6 +25,44 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-08-14
+
+### Added: content views are now listable, deep-linkable, and deletable
+
+- New `GET /content-views` and `GET /content-views/{id}` — the backend
+  previously had no way to list or look up an existing content view at
+  all (only creation returned one), a gap the frontend had been working
+  around with a `localStorage`-backed "known content views" list, visible
+  only to the browser that created each one and lost on a fresh
+  profile/device. That workaround (`useKnownContentViews.ts`) is removed.
+- New `GET /content-views/{id}/filters` to list a content view's existing
+  filters, and `DELETE /content-views/{id}/filters/{filter_id}` to remove
+  one — filters could previously only be added, never inspected or
+  undone once created.
+- New `DELETE /content-views/{id}` — blocked (409) if any
+  LifecycleEnvironment still references the content view, same guard
+  shape as Repository delete's ContentView-reference check. Deletes the
+  content view's filters and version history along with it (they have no
+  meaning without their parent).
+- Content Views page is now a real list + detail pair
+  (`/content-views/:id` is deep-linkable) instead of a single page driven
+  by in-memory/localStorage selection state — matches every other
+  resource's list/detail pattern in this app.
+
+## [0.25.3] - 2026-08-14
+
+### Fixed: repository detail page's "Sync history" list froze finished jobs at "running"
+
+- `jobsQuery` (`RepositoryDetailPage.tsx`) had no `refetchInterval` — it
+  fetched the job list once on page load and never again. The live
+  indicator above it (`currentJobQuery`) polls every 3s and correctly
+  flipped to success/failed when a job finished, but that same job's row
+  in the "Sync history" list below stayed stuck at "running" until a
+  manual page reload. Now polls every 3s whenever any job currently in
+  the fetched list is still pending/running, same cadence as the rest of
+  this page's live-status queries, and stops once everything it knows
+  about has reached a terminal state.
+
 ## [0.25.2] - 2026-08-14
 
 ### Changed: job progress bar eases toward completion instead of sliding indeterminately

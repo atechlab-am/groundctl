@@ -228,6 +228,218 @@ def test_publish_content_view_no_repositories_422(client, operator_token, db_ses
     assert r.status_code == 422, r.text
 
 
+def test_list_content_views_as_viewer(client, operator_token, viewer_token):
+    repo = _create_repo(client, operator_token, "list-cv-repo")
+    client.post(
+        "/content-views",
+        json={"name": "list-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    )
+    r = client.get("/content-views", headers=auth_headers(viewer_token))
+    assert r.status_code == 200, r.text
+    assert any(cv["name"] == "list-cv" for cv in r.json())
+
+
+def test_get_content_view_as_viewer(client, operator_token, viewer_token):
+    repo = _create_repo(client, operator_token, "get-cv-repo")
+    cv = client.post(
+        "/content-views",
+        json={"name": "get-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+
+    r = client.get(f"/content-views/{cv['id']}", headers=auth_headers(viewer_token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"] == "get-cv"
+    assert body["repository_ids"] == [repo["id"]]
+
+
+def test_get_content_view_not_found(client, viewer_token):
+    r = client.get("/content-views/00000000-0000-0000-0000-000000000000", headers=auth_headers(viewer_token))
+    assert r.status_code == 404, r.text
+
+
+def test_delete_content_view_as_operator(client, operator_token):
+    repo = _create_repo(client, operator_token, "delete-cv-repo")
+    cv = client.post(
+        "/content-views",
+        json={"name": "delete-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+
+    r = client.delete(f"/content-views/{cv['id']}", headers=auth_headers(operator_token))
+    assert r.status_code == 204, r.text
+
+    get_r = client.get(f"/content-views/{cv['id']}", headers=auth_headers(operator_token))
+    assert get_r.status_code == 404, get_r.text
+
+
+def test_delete_content_view_as_viewer_forbidden(client, operator_token, viewer_token):
+    repo = _create_repo(client, operator_token, "delete-cv-repo2")
+    cv = client.post(
+        "/content-views",
+        json={"name": "delete-cv2", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+
+    r = client.delete(f"/content-views/{cv['id']}", headers=auth_headers(viewer_token))
+    assert r.status_code == 403, r.text
+
+
+def test_delete_content_view_not_found(client, operator_token):
+    r = client.delete("/content-views/00000000-0000-0000-0000-000000000000", headers=auth_headers(operator_token))
+    assert r.status_code == 404, r.text
+
+
+def test_delete_content_view_referenced_by_lifecycle_environment_conflicts(client, operator_token):
+    repo = _create_repo(client, operator_token, "delete-cv-repo3")
+    cv = client.post(
+        "/content-views",
+        json={"name": "delete-cv3", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+    env_r = client.post(
+        "/lifecycle-environments",
+        json={
+            "name": "delete-cv-env",
+            "path_name": "delete-cv-path",
+            "position": 0,
+            "content_view_id": cv["id"],
+            "distro": "ubuntu",
+            "release": "jammy",
+            "publish_prefix": "delete-cv-prefix",
+            "allow_unsigned": True,
+        },
+        headers=auth_headers(operator_token),
+    )
+    assert env_r.status_code == 201, env_r.text
+
+    r = client.delete(f"/content-views/{cv['id']}", headers=auth_headers(operator_token))
+    assert r.status_code == 409, r.text
+    assert "delete-cv-env" in r.json()["detail"]
+
+
+def test_list_content_view_filters_empty(client, operator_token, viewer_token):
+    repo = _create_repo(client, operator_token, "filters-empty-repo")
+    cv = client.post(
+        "/content-views",
+        json={"name": "filters-empty-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+
+    r = client.get(f"/content-views/{cv['id']}/filters", headers=auth_headers(viewer_token))
+    assert r.status_code == 200, r.text
+    assert r.json() == []
+
+
+def test_list_content_view_filters_not_found(client, viewer_token):
+    r = client.get(
+        "/content-views/00000000-0000-0000-0000-000000000000/filters",
+        headers=auth_headers(viewer_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_list_content_view_filters_after_create(client, operator_token, viewer_token):
+    repo = _create_repo(client, operator_token, "filters-list-repo")
+    cv = client.post(
+        "/content-views",
+        json={"name": "filters-list-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+    client.post(
+        f"/content-views/{cv['id']}/filters",
+        json={"filter_type": "include", "pattern": "nginx*"},
+        headers=auth_headers(operator_token),
+    )
+
+    r = client.get(f"/content-views/{cv['id']}/filters", headers=auth_headers(viewer_token))
+    assert r.status_code == 200, r.text
+    assert len(r.json()) == 1
+    assert r.json()[0]["pattern"] == "nginx*"
+
+
+def test_delete_content_view_filter_as_operator(client, operator_token):
+    repo = _create_repo(client, operator_token, "delete-filter-repo")
+    cv = client.post(
+        "/content-views",
+        json={"name": "delete-filter-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+    content_filter = client.post(
+        f"/content-views/{cv['id']}/filters",
+        json={"filter_type": "include", "pattern": "nginx*"},
+        headers=auth_headers(operator_token),
+    ).json()
+
+    r = client.delete(
+        f"/content-views/{cv['id']}/filters/{content_filter['id']}", headers=auth_headers(operator_token)
+    )
+    assert r.status_code == 204, r.text
+
+    list_r = client.get(f"/content-views/{cv['id']}/filters", headers=auth_headers(operator_token))
+    assert list_r.json() == []
+
+
+def test_delete_content_view_filter_as_viewer_forbidden(client, operator_token, viewer_token):
+    repo = _create_repo(client, operator_token, "delete-filter-repo2")
+    cv = client.post(
+        "/content-views",
+        json={"name": "delete-filter-cv2", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+    content_filter = client.post(
+        f"/content-views/{cv['id']}/filters",
+        json={"filter_type": "include", "pattern": "nginx*"},
+        headers=auth_headers(operator_token),
+    ).json()
+
+    r = client.delete(
+        f"/content-views/{cv['id']}/filters/{content_filter['id']}", headers=auth_headers(viewer_token)
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_delete_content_view_filter_not_found(client, operator_token):
+    repo = _create_repo(client, operator_token, "delete-filter-repo3")
+    cv = client.post(
+        "/content-views",
+        json={"name": "delete-filter-cv3", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+
+    r = client.delete(
+        f"/content-views/{cv['id']}/filters/00000000-0000-0000-0000-000000000000",
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_delete_content_view_filter_wrong_content_view_404s(client, operator_token):
+    repo = _create_repo(client, operator_token, "delete-filter-repo4")
+    cv1 = client.post(
+        "/content-views",
+        json={"name": "delete-filter-cv4a", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+    cv2 = client.post(
+        "/content-views",
+        json={"name": "delete-filter-cv4b", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+    content_filter = client.post(
+        f"/content-views/{cv1['id']}/filters",
+        json={"filter_type": "include", "pattern": "nginx*"},
+        headers=auth_headers(operator_token),
+    ).json()
+
+    r = client.delete(
+        f"/content-views/{cv2['id']}/filters/{content_filter['id']}", headers=auth_headers(operator_token)
+    )
+    assert r.status_code == 404, r.text
+
+
 def test_publish_content_view_aptly_unreachable_returns_502(db_session, mock_aptly, mock_aptly_unreachable):
     from app.aptly_client import get_aptly_client
     from app.main import app

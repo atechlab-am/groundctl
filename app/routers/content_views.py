@@ -3,7 +3,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.aptly_client import AptlyClient, AptlyError, get_aptly_client
@@ -19,6 +19,7 @@ from app.models import (
     Erratum,
     ErratumPackage,
     FilterType,
+    LifecycleEnvironment,
     Repository,
     Role,
     User,
@@ -33,6 +34,42 @@ from app.schemas import (
 )
 
 router = APIRouter()
+
+
+def _content_view_repository_ids(db: Session, content_view_id: uuid.UUID) -> list[uuid.UUID]:
+    return list(
+        db.execute(
+            select(ContentViewRepository.repository_id)
+            .where(ContentViewRepository.content_view_id == content_view_id)
+        ).scalars()
+    )
+
+
+def _read_content_view(db: Session, content_view: ContentView) -> ContentViewRead:
+    return ContentViewRead(
+        id=content_view.id,
+        name=content_view.name,
+        repository_ids=_content_view_repository_ids(db, content_view.id),
+        created_at=content_view.created_at,
+        updated_at=content_view.updated_at,
+    )
+
+
+def _get_content_view_or_404(db: Session, content_view_id: uuid.UUID) -> ContentView:
+    content_view = db.get(ContentView, content_view_id)
+    if content_view is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view not found")
+    return content_view
+
+
+def _referencing_lifecycle_environment_names(db: Session, content_view_id: uuid.UUID) -> list[str]:
+    return list(
+        db.execute(
+            select(LifecycleEnvironment.name)
+            .where(LifecycleEnvironment.content_view_id == content_view_id)
+            .order_by(LifecycleEnvironment.name)
+        ).scalars()
+    )
 
 
 def _content_view_repositories(db: Session, content_view_id: uuid.UUID) -> list[Repository]:
@@ -138,13 +175,71 @@ def create_content_view(
     db.commit()
     db.refresh(content_view)
 
-    return ContentViewRead(
-        id=content_view.id,
-        name=content_view.name,
-        repository_ids=list(payload.repository_ids),
-        created_at=content_view.created_at,
-        updated_at=content_view.updated_at,
+    return _read_content_view(db, content_view)
+
+
+@router.get("", response_model=list[ContentViewRead])
+def list_content_views(
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.viewer)),
+):
+    content_views = list(
+        db.execute(select(ContentView).order_by(ContentView.name).limit(limit).offset(offset)).scalars()
     )
+    return [_read_content_view(db, cv) for cv in content_views]
+
+
+@router.get("/{content_view_id}", response_model=ContentViewRead)
+def get_content_view(
+    content_view_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.viewer)),
+):
+    content_view = _get_content_view_or_404(db, content_view_id)
+    return _read_content_view(db, content_view)
+
+
+@router.delete("/{content_view_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_content_view(
+    content_view_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """Blocked (409) if any LifecycleEnvironment still references this
+    content view — same reasoning as Repository's delete guard against
+    ContentView references: deleting the content view out from under an
+    environment would leave that environment pointing at a nonexistent
+    parent, and there's no cascade that makes sense here (an environment
+    always needs a content view). ContentViewVersion rows and
+    ContentViewFilter rows belonging to this content view are deleted
+    alongside it — versions are historical snapshots of THIS content
+    view specifically and have no meaning once it's gone; unlike
+    Repository, no other resource references a ContentViewVersion by id.
+    """
+    content_view = _get_content_view_or_404(db, content_view_id)
+
+    referencing = _referencing_lifecycle_environment_names(db, content_view_id)
+    if referencing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"content view is used by lifecycle environment(s): {', '.join(referencing)}",
+        )
+
+    db.execute(delete(ContentViewRepository).where(ContentViewRepository.content_view_id == content_view_id))
+    db.execute(delete(ContentViewFilter).where(ContentViewFilter.content_view_id == content_view_id))
+    db.execute(delete(ContentViewVersion).where(ContentViewVersion.content_view_id == content_view_id))
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.delete_content_view,
+            resource_type="content_view",
+            resource_id=content_view.name,
+        )
+    )
+    db.delete(content_view)
+    db.commit()
 
 
 @router.get("/{content_view_id}/versions", response_model=list[ContentViewVersionRead])
@@ -155,9 +250,7 @@ def list_content_view_versions(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(Role.viewer)),
 ):
-    content_view = db.get(ContentView, content_view_id)
-    if content_view is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view not found")
+    _get_content_view_or_404(db, content_view_id)
 
     return list(
         db.execute(
@@ -170,6 +263,49 @@ def list_content_view_versions(
     )
 
 
+@router.get("/{content_view_id}/filters", response_model=list[ContentViewFilterRead])
+def list_content_view_filters(
+    content_view_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.viewer)),
+):
+    _get_content_view_or_404(db, content_view_id)
+
+    return list(
+        db.execute(
+            select(ContentViewFilter)
+            .where(ContentViewFilter.content_view_id == content_view_id)
+            .order_by(ContentViewFilter.created_at)
+        ).scalars()
+    )
+
+
+@router.delete("/{content_view_id}/filters/{filter_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_content_view_filter(
+    content_view_id: uuid.UUID,
+    filter_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    _get_content_view_or_404(db, content_view_id)
+
+    content_filter = db.get(ContentViewFilter, filter_id)
+    if content_filter is None or content_filter.content_view_id != content_view_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="filter not found")
+
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.delete_content_view_filter,
+            resource_type="content_view",
+            resource_id=str(content_view_id),
+            detail={"filter_type": content_filter.filter_type.value, "pattern": content_filter.pattern},
+        )
+    )
+    db.delete(content_filter)
+    db.commit()
+
+
 @router.post("/{content_view_id}/filters", response_model=ContentViewFilterRead, status_code=status.HTTP_201_CREATED)
 def create_content_view_filter(
     content_view_id: uuid.UUID,
@@ -177,9 +313,7 @@ def create_content_view_filter(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(Role.operator)),
 ):
-    content_view = db.get(ContentView, content_view_id)
-    if content_view is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view not found")
+    _get_content_view_or_404(db, content_view_id)
 
     content_filter = ContentViewFilter(
         content_view_id=content_view_id,
@@ -310,9 +444,7 @@ def publish_content_view(
     aptly: AptlyClient = Depends(get_aptly_client),
     current_user: User = Depends(require_role(Role.operator)),
 ):
-    content_view = db.get(ContentView, content_view_id)
-    if content_view is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view not found")
+    content_view = _get_content_view_or_404(db, content_view_id)
 
     version, cut = do_publish(content_view, db, aptly, current_user)
     return PublishResponse(content_view_version=ContentViewVersionRead.model_validate(version), version_cut=cut)

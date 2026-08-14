@@ -113,6 +113,8 @@ class AuditAction(str, enum.Enum):
     rollback_environment = "rollback_environment"
     create_content_view = "create_content_view"
     create_content_view_filter = "create_content_view_filter"
+    delete_content_view = "delete_content_view"
+    delete_content_view_filter = "delete_content_view_filter"
     create_lifecycle_environment = "create_lifecycle_environment"
     create_server = "create_server"
     trigger_bootstrap = "trigger_bootstrap"

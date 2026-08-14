@@ -1,15 +1,5 @@
 import { api } from "./client";
 
-// NOTE: the backend has no GET /content-views (list) or GET
-// /content-views/{id} (detail) endpoint — confirmed by reading
-// app/routers/content_views.py in full. Content views can only be
-// created and then referenced by id (e.g. from
-// LifecycleEnvironmentRead.content_view_id). The Content Views page
-// therefore works from a client-accumulated set (see
-// pages/content-views/useKnownContentViews.ts) rather than a real list
-// call. This is a backend gap, not something to paper over with an
-// invented endpoint.
-
 export type FilterType = "include" | "exclude" | "errata_since";
 
 export interface ContentViewCreate {
@@ -59,8 +49,25 @@ export interface ContentViewFilterRead {
   created_at: string;
 }
 
+export interface ListContentViewsParams {
+  limit?: number;
+  offset?: number;
+}
+
+export function listContentViews(params: ListContentViewsParams = {}): Promise<ContentViewRead[]> {
+  return api.get<ContentViewRead[]>("/content-views", params);
+}
+
+export function getContentView(contentViewId: string): Promise<ContentViewRead> {
+  return api.get<ContentViewRead>(`/content-views/${contentViewId}`);
+}
+
 export function createContentView(payload: ContentViewCreate): Promise<ContentViewRead> {
   return api.post<ContentViewRead>("/content-views", payload);
+}
+
+export function deleteContentView(contentViewId: string): Promise<void> {
+  return api.delete<void>(`/content-views/${contentViewId}`);
 }
 
 export function listContentViewVersions(
@@ -70,11 +77,19 @@ export function listContentViewVersions(
   return api.get<ContentViewVersionRead[]>(`/content-views/${contentViewId}/versions`, params);
 }
 
+export function listContentViewFilters(contentViewId: string): Promise<ContentViewFilterRead[]> {
+  return api.get<ContentViewFilterRead[]>(`/content-views/${contentViewId}/filters`);
+}
+
 export function createContentViewFilter(
   contentViewId: string,
   payload: ContentViewFilterCreate,
 ): Promise<ContentViewFilterRead> {
   return api.post<ContentViewFilterRead>(`/content-views/${contentViewId}/filters`, payload);
+}
+
+export function deleteContentViewFilter(contentViewId: string, filterId: string): Promise<void> {
+  return api.delete<void>(`/content-views/${contentViewId}/filters/${filterId}`);
 }
 
 export function publishContentView(contentViewId: string): Promise<PublishResponse> {

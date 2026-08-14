@@ -11,6 +11,7 @@ import { DashboardPage } from "@/pages/dashboard/DashboardPage";
 import { RepositoriesPage } from "@/pages/repositories/RepositoriesPage";
 import { RepositoryDetailPage } from "@/pages/repositories/RepositoryDetailPage";
 import { ContentViewsPage } from "@/pages/content-views/ContentViewsPage";
+import { ContentViewDetailPage } from "@/pages/content-views/ContentViewDetailPage";
 import { EnvironmentsPage } from "@/pages/environments/EnvironmentsPage";
 import { ServersPage } from "@/pages/servers/ServersPage";
 import { ServerDetailPage } from "@/pages/servers/ServerDetailPage";
@@ -59,6 +60,7 @@ export default function App() {
             <Route path="/repositories" element={<Shell><RepositoriesPage /></Shell>} />
             <Route path="/repositories/:name" element={<Shell><RepositoryDetailPage /></Shell>} />
             <Route path="/content-views" element={<Shell><ContentViewsPage /></Shell>} />
+            <Route path="/content-views/:contentViewId" element={<Shell><ContentViewDetailPage /></Shell>} />
             <Route path="/environments" element={<Shell><EnvironmentsPage /></Shell>} />
             <Route path="/servers" element={<Shell><ServersPage /></Shell>} />
             <Route path="/servers/:serverId" element={<Shell><ServerDetailPage /></Shell>} />

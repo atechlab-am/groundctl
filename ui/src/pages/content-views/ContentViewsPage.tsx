@@ -1,14 +1,15 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { Plus } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
+import { QueryState } from "@/components/QueryState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   Dialog,
   DialogContent,
@@ -19,29 +20,31 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { RoleGate } from "@/layout/RoleGate";
-import { createContentView, type ContentViewCreate } from "@/api/contentViews";
+import { createContentView, listContentViews, type ContentViewCreate } from "@/api/contentViews";
 import { listRepositories } from "@/api/repositories";
+import { formatDateTime } from "@/lib/format";
 import { errorMessage } from "@/lib/errors";
-import { useKnownContentViews } from "./useKnownContentViews";
-import { ContentViewDetail } from "./ContentViewDetail";
 
 export function ContentViewsPage() {
   const queryClient = useQueryClient();
-  const { views, remember } = useKnownContentViews();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [name, setName] = useState("");
   const [selectedRepoIds, setSelectedRepoIds] = useState<string[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
-  const [selectedViewId, setSelectedViewId] = useState<string | null>(null);
+
+  const contentViewsQuery = useQuery({
+    queryKey: ["content-views"],
+    queryFn: () => listContentViews({ limit: 100 }),
+  });
 
   const repositoriesQuery = useQuery({ queryKey: ["repositories"], queryFn: () => listRepositories({ limit: 100 }) });
+  const repoNameById = new Map((repositoriesQuery.data ?? []).map((r) => [r.id, r.name]));
 
   const createMutation = useMutation({
     mutationFn: (payload: ContentViewCreate) => createContentView(payload),
     onSuccess: (view) => {
       toast.success(`Content view "${view.name}" created`);
-      remember(view);
-      setSelectedViewId(view.id);
+      void queryClient.invalidateQueries({ queryKey: ["content-views"] });
       setDialogOpen(false);
       setName("");
       setSelectedRepoIds([]);
@@ -63,8 +66,6 @@ export function ContentViewsPage() {
     }
     createMutation.mutate({ name, repository_ids: selectedRepoIds });
   }
-
-  const selectedView = views.find((v) => v.id === selectedViewId) ?? null;
 
   return (
     <div>
@@ -124,65 +125,40 @@ export function ContentViewsPage() {
         }
       />
 
-      <Alert className="mb-6">
-        <AlertDescription>
-          The backend has no endpoint to list all content views — only creation exists. This page tracks content
-          views you've created in this browser session only.
-        </AlertDescription>
-      </Alert>
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-1">
-          <Card>
-            <CardHeader>
-              <CardTitle>Known content views</CardTitle>
-              <CardDescription>Created this session</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <p className="border-b pb-3 text-xs text-muted-foreground">
-                No backend endpoint lists all content views — only what this browser session has created appears
-                here.
-              </p>
-              {views.length === 0 ? (
-                <p className="text-sm text-muted-foreground">None yet.</p>
-              ) : (
-                <ul className="flex flex-col divide-y">
-                  {views.map((v) => (
-                    <li key={v.id}>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedViewId(v.id)}
-                        className={`w-full rounded px-2 py-2 text-left text-sm hover:bg-accent ${
-                          selectedViewId === v.id ? "bg-accent font-medium" : ""
-                        }`}
-                      >
-                        {v.name}
-                        <div className="text-xs text-muted-foreground">{v.repository_ids.length} repositories</div>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="lg:col-span-2">
-          {selectedView ? (
-            <ContentViewDetail
-              view={selectedView}
-              onPublished={() => void queryClient.invalidateQueries({ queryKey: ["content-view-versions", selectedView.id] })}
-            />
-          ) : (
-            <Card>
-              <CardContent className="p-8 text-center text-sm text-muted-foreground">
-                Select a content view to view its versions, add filters, or publish.
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      </div>
+      <QueryState
+        isLoading={contentViewsQuery.isLoading}
+        isError={contentViewsQuery.isError}
+        error={contentViewsQuery.error}
+        isEmpty={contentViewsQuery.data?.length === 0}
+        emptyMessage="No content views yet. Create one to bundle repositories for promotion."
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Repositories</TableHead>
+              <TableHead>Created</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {contentViewsQuery.data?.map((view) => (
+              <TableRow key={view.id}>
+                <TableCell className="font-medium">
+                  <Link to={`/content-views/${view.id}`} className="hover:underline">
+                    {view.name}
+                  </Link>
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {view.repository_ids.length === 0
+                    ? "—"
+                    : view.repository_ids.map((id) => repoNameById.get(id) ?? id).join(", ")}
+                </TableCell>
+                <TableCell className="text-muted-foreground">{formatDateTime(view.created_at)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </QueryState>
     </div>
   );
 }
-

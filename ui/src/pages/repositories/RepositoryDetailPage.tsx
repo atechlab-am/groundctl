@@ -84,6 +84,18 @@ export function RepositoryDetailPage() {
     queryKey: ["jobs", "repository", repoQuery.data?.id],
     queryFn: () => listJobs({ repository_id: repoQuery.data!.id, limit: 50 }),
     enabled: repoQuery.data !== undefined,
+    // Without this, a job's row in "Sync history" below stayed frozen at
+    // whatever status this query saw on page load — real bug found live:
+    // the live indicator above (currentJobQuery) polls and correctly
+    // flips to success/failed when a job finishes, but this list never
+    // re-fetched, so the same job showed "running" here indefinitely
+    // until a manual reload. Poll while anything in the current page's
+    // view is still in flight, same 3s cadence as currentJobQuery.
+    refetchInterval: (query) => {
+      const jobs = query.state.data;
+      const anyInProgress = jobs?.some((j) => j.status === "pending" || j.status === "running") ?? false;
+      return anyInProgress ? 3000 : false;
+    },
   });
 
   const productsQuery = useQuery({
