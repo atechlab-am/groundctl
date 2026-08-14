@@ -7,7 +7,9 @@ export type JobType =
   | "bulk_apply_updates"
   | "run_command"
   | "manage_package"
-  | "sync_repository";
+  | "sync_repository"
+  | "update_repository"
+  | "delete_repository";
 
 export type JobStatus = "pending" | "running" | "success" | "failed";
 export type JobTargetType = "server" | "environment" | "host_group" | "adhoc" | "repository";

@@ -21,6 +21,10 @@ export interface RepositoryRead {
   // first successful sync completes.
   size_bytes: number | null;
   last_sync_job_id: string | null;
+  // Most recent Job of any kind (sync/update/delete) — unlike
+  // last_sync_job_id, tracks Edit/Delete too, so the UI can restore live
+  // status for whichever action was running after a page reload.
+  last_job_id: string | null;
   // Whether the nightly scheduled sweep includes this repository. Defaults
   // true on creation — manual sync always works regardless of this flag.
   auto_sync_enabled: boolean;

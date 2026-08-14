@@ -112,6 +112,47 @@ def test_sync_repository_as_operator(client, operator_token):
         mock_delay.assert_called_once_with(str(body["id"]))
 
 
+def test_sync_repository_sets_last_job_id(client, operator_token):
+    client.post("/repositories", json=_repo_payload("sync-repo-lastjob"), headers=auth_headers(operator_token))
+    with patch("app.tasks.sync_repository_task.delay"):
+        sync_r = client.post("/repositories/sync-repo-lastjob/sync", headers=auth_headers(operator_token))
+        job_id = sync_r.json()["id"]
+
+    repo_r = client.get("/repositories/sync-repo-lastjob", headers=auth_headers(operator_token))
+    body = repo_r.json()
+    assert body["last_job_id"] == job_id
+    assert body["last_sync_job_id"] == job_id
+
+
+def test_delete_repository_sets_last_job_id_before_task_runs(client, operator_token):
+    client.post("/repositories", json=_repo_payload("delete-repo-lastjob"), headers=auth_headers(operator_token))
+    with patch("app.tasks.delete_repository_task.delay"):
+        del_r = client.delete("/repositories/delete-repo-lastjob", headers=auth_headers(operator_token))
+        job_id = del_r.json()["id"]
+
+    repo_r = client.get("/repositories/delete-repo-lastjob", headers=auth_headers(operator_token))
+    assert repo_r.json()["last_job_id"] == job_id
+
+
+def test_update_repository_sets_last_job_id(client, operator_token):
+    client.post("/repositories", json=_repo_payload("update-repo-lastjob"), headers=auth_headers(operator_token))
+    with patch("app.tasks.update_repository_task.delay"):
+        put_r = client.put(
+            "/repositories/update-repo-lastjob",
+            json={
+                "archive_url": "http://archive.ubuntu.com/ubuntu",
+                "distribution": "jammy",
+                "components": ["main"],
+                "architectures": ["amd64"],
+            },
+            headers=auth_headers(operator_token),
+        )
+        job_id = put_r.json()["id"]
+
+    repo_r = client.get("/repositories/update-repo-lastjob", headers=auth_headers(operator_token))
+    assert repo_r.json()["last_job_id"] == job_id
+
+
 def test_sync_repository_as_viewer_forbidden(client, operator_token, viewer_token):
     client.post("/repositories", json=_repo_payload("sync-repo2"), headers=auth_headers(operator_token))
     with patch("app.tasks.sync_repository_task.delay") as mock_delay:

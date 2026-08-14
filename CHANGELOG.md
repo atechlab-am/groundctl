@@ -25,6 +25,35 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-08-14
+
+### Added: job status survives a page reload for Edit/Delete too, and a "usually takes ~Xm" estimate
+
+- New `Repository.last_job_id` (migration `e5c9a173f2b8`) — the most
+  recent Job of any kind (sync/update/delete), unlike the existing
+  `last_sync_job_id` which only ever tracked Sync. Closing and reopening
+  the browser mid-Sync already showed accurate live status (backed by
+  `last_sync_job_id`); mid-Edit or mid-Delete it didn't — that tracking
+  only lived in in-memory React state, lost on reload, even though the
+  job itself was always safe and unaffected. Both the Repositories list
+  and the repository detail page now recover live status after a reload
+  regardless of which action was running.
+- Repositories list: the "Last synced" column now checks whether
+  `last_job_id`'s job is still in progress before falling back to the
+  plain date — only shows the live indicator while something's actually
+  running, so a long-finished job doesn't leave every row permanently
+  showing a status badge.
+- No real percentage/ETA is possible for sync/edit/delete — aptly gives
+  no progress signal, confirmed repeatedly this cycle (single blocking
+  call, nothing to poll mid-operation). Added the honest substitute
+  instead: while a sync is running, the repository detail page shows
+  "Usually takes ~Xm" — the average duration of that repository's own
+  past successful syncs, computed from job history already being fetched
+  for the sync-history list (no new query).
+- Frontend `JobType` was missing `update_repository`/`delete_repository`
+  (backend has had them since 0.21.1) — fixed, since the duration
+  estimate needs to compare same-type jobs correctly.
+
 ## [0.23.0] - 2026-08-13
 
 ### Added: per-repository nightly auto-sync toggle

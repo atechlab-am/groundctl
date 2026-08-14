@@ -40,10 +40,50 @@ import {
   deleteRepository,
   type RepositoryRead,
 } from "@/api/repositories";
+import { getJob } from "@/api/jobs";
 import { formatDateTime, formatBytes } from "@/lib/format";
 import { errorMessage } from "@/lib/errors";
 
 const DEFAULT_ARCHIVE_URL = "http://archive.ubuntu.com/ubuntu";
+
+// Shows live job status (spinner/elapsed/log) while a Sync/Edit/Delete
+// triggered from this page is running (activeJobId, in-memory). After a
+// page reload that state is gone, so this also polls repo.last_job_id
+// (persisted — set by Sync/Edit/Delete alike, unlike last_sync_job_id
+// which only ever tracks Sync) just enough to know if IT is still
+// in-progress; only then does it render the full indicator. Otherwise
+// falls back to the plain last-synced date, same as before last_job_id
+// existed — avoids every row permanently sprouting a status badge/log
+// toggle for jobs that finished long ago.
+function RepositoryStatusCell({ repo, activeJobId }: { repo: RepositoryRead; activeJobId: string | undefined }) {
+  const lastJobId = activeJobId ?? repo.last_job_id ?? undefined;
+
+  const lastJobQuery = useQuery({
+    queryKey: ["job", lastJobId],
+    queryFn: () => getJob(lastJobId!),
+    enabled: lastJobId !== undefined,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "pending" || status === "running" ? 3000 : false;
+    },
+  });
+
+  const job = lastJobQuery.data;
+  const inProgress = job?.status === "pending" || job?.status === "running";
+
+  if (activeJobId || inProgress) {
+    return <JobStatusIndicator jobId={lastJobId as string} />;
+  }
+  if (repo.last_sync_job_id) {
+    return (
+      <Link to={`/jobs/${repo.last_sync_job_id}`} className="hover:underline">
+        {formatDateTime(repo.last_synced_at)}
+        {repo.last_synced_at === null && " (view job)"}
+      </Link>
+    );
+  }
+  return <>{formatDateTime(repo.last_synced_at)}</>;
+}
 
 export function RepositoriesPage() {
   const queryClient = useQueryClient();
@@ -433,16 +473,7 @@ export function RepositoriesPage() {
                 <TableCell className="text-muted-foreground">{repo.architectures.join(", ")}</TableCell>
                 <TableCell className="text-muted-foreground">{formatBytes(repo.size_bytes)}</TableCell>
                 <TableCell className="min-w-40 text-muted-foreground">
-                  {activeJobByRepo[repo.name] ? (
-                    <JobStatusIndicator jobId={activeJobByRepo[repo.name] as string} />
-                  ) : repo.last_sync_job_id ? (
-                    <Link to={`/jobs/${repo.last_sync_job_id}`} className="hover:underline">
-                      {formatDateTime(repo.last_synced_at)}
-                      {repo.last_synced_at === null && " (view job)"}
-                    </Link>
-                  ) : (
-                    formatDateTime(repo.last_synced_at)
-                  )}
+                  <RepositoryStatusCell repo={repo} activeJobId={activeJobByRepo[repo.name]} />
                 </TableCell>
                 <TableCell>
                   {canOperate ? (

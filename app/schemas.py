@@ -187,6 +187,11 @@ class RepositoryRead(BaseModel):
     # sync_repository job completes.
     size_bytes: int | None
     last_sync_job_id: uuid.UUID | None
+    # Most recent Job of any kind (sync/update/delete) — unlike
+    # last_sync_job_id above, tracks Edit/Delete too, so the UI can restore
+    # live status for whichever action was running after a page reload,
+    # not just Sync.
+    last_job_id: uuid.UUID | None
     # Whether the nightly scheduled sweep (scheduled_sync_all_repositories,
     # app/tasks.py) includes this repository — defaults True on creation.
     # Manual sync (POST .../sync) always works regardless of this flag.

@@ -56,8 +56,10 @@ export function RepositoryDetailPage() {
 
   // Polled live while pending/running so this page reflects an
   // in-progress job without a manual refresh, same pattern as
-  // JobDetailPage itself.
-  const currentJobId = activeJobId ?? repoQuery.data?.last_sync_job_id ?? null;
+  // JobDetailPage itself. last_job_id (tracks Sync/Edit/Delete alike)
+  // takes priority over the narrower last_sync_job_id so a reload during
+  // an Edit or Delete still recovers live status, not just Sync.
+  const currentJobId = activeJobId ?? repoQuery.data?.last_job_id ?? repoQuery.data?.last_sync_job_id ?? null;
   const currentJobQuery = useQuery({
     queryKey: ["job", currentJobId],
     queryFn: () => getJob(currentJobId!),
@@ -141,6 +143,34 @@ export function RepositoryDetailPage() {
   const repo = repoQuery.data;
   const currentJob = currentJobQuery.data;
   const syncInProgress = currentJob?.status === "pending" || currentJob?.status === "running";
+
+  // "Usually takes ~Xm" — average duration of this repo's own past
+  // successful jobs of the SAME type as the one currently running.
+  // Aptly gives no progress signal for sync/edit/delete (single blocking
+  // call, confirmed repeatedly), so a real percentage/ETA isn't
+  // buildable — this is the honest substitute: real history, not a
+  // guess. Computed from jobsQuery, already fetched for the sync-history
+  // list below, so this costs nothing extra.
+  const typicalDuration = (() => {
+    if (!currentJob || !jobsQuery.data) return null;
+    const durationsMs = jobsQuery.data
+      .filter(
+        (j) =>
+          j.job_type === currentJob.job_type &&
+          j.status === "success" &&
+          j.id !== currentJob.id &&
+          j.started_at &&
+          j.finished_at,
+      )
+      .map((j) => new Date(j.finished_at!).getTime() - new Date(j.started_at!).getTime());
+    if (durationsMs.length === 0) return null;
+    const avgMs = durationsMs.reduce((sum, ms) => sum + ms, 0) / durationsMs.length;
+    const avgMinutes = Math.round(avgMs / 60000);
+    if (avgMinutes < 1) return "under a minute";
+    if (avgMinutes < 60) return `${avgMinutes}m`;
+    const hours = Math.floor(avgMinutes / 60);
+    return `${hours}h ${avgMinutes % 60}m`;
+  })();
 
   return (
     <div>
@@ -234,6 +264,9 @@ export function RepositoryDetailPage() {
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-3">
                   <span>Started: {formatDateTime(currentJob.started_at)}</span>
                   <span>Finished: {formatDateTime(currentJob.finished_at)}</span>
+                  {syncInProgress && typicalDuration !== null && (
+                    <span>Usually takes: ~{typicalDuration}</span>
+                  )}
                 </div>
               </div>
             )}

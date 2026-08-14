@@ -336,6 +336,11 @@ def delete_repository(
         created_by_user_id=current_user.id,
     )
     db.add(job)
+    db.flush()
+    # Set even though the row is about to be deleted server-side — the
+    # window between this request returning and delete_repository_task
+    # actually running is exactly when a reload needs to find this job.
+    repository.last_job_id = job.id
     db.commit()
     db.refresh(job)
 
@@ -380,6 +385,7 @@ def update_repository(
     )
     db.add(job)
     db.flush()
+    repository.last_job_id = job.id
     db.add(
         AuditLog(
             user_id=current_user.id,
@@ -429,6 +435,7 @@ def sync_repository(
     db.add(job)
     db.flush()
     repository.last_sync_job_id = job.id
+    repository.last_job_id = job.id
     db.add(
         AuditLog(
             user_id=current_user.id,

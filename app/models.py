@@ -201,6 +201,18 @@ class Repository(Base):
     last_sync_job_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("jobs.id", use_alter=True), nullable=True
     )
+    # Most recent Job of ANY kind (sync/update/delete) targeting this
+    # repository — distinct from last_sync_job_id, which only ever tracks
+    # sync specifically. Exists so the UI can show live status after a
+    # page reload no matter which action was running when the browser
+    # closed: last_sync_job_id alone left Edit/Delete jobs untracked once
+    # in-memory React state was lost on reload (the job itself was always
+    # safe either way, just not visible). Set alongside last_sync_job_id
+    # on sync (redundant there, kept for a single "what's active" read
+    # path); the only field set for update/delete.
+    last_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jobs.id", use_alter=True), nullable=True
+    )
     # Whether scheduled_sync_all_repositories (app/tasks.py, nightly via
     # Celery Beat) includes this repository. Defaults true — a newly
     # created repository is auto-synced nightly unless explicitly opted
