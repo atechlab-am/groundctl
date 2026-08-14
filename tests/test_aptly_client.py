@@ -1,5 +1,4 @@
 import httpx
-import pytest
 
 from app.aptly_client import AptlyClient
 
