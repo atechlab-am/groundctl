@@ -28,6 +28,9 @@ export interface ContentViewVersionRead {
   version: number;
   snapshots: ContentViewVersionSnapshot[];
   content_hash: string;
+  // Total packages across this version's final (post-filter) snapshots —
+  // null only for versions cut before this field existed.
+  package_count: number | null;
   published_at: string;
 }
 

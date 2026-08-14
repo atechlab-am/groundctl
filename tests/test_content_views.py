@@ -159,6 +159,10 @@ def test_publish_content_view_cuts_new_version(client, operator_token, mock_aptl
     mock_aptly.get_mirror_packages.return_value = [
         {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
     ]
+    mock_aptly.get_snapshot_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"},
+        {"Package": "curl", "Version": "7.81.0-1", "Architecture": "amd64"},
+    ]
     repo = _create_repo(client, operator_token, "publish-repo")
     cv = client.post(
         "/content-views",
@@ -173,6 +177,50 @@ def test_publish_content_view_cuts_new_version(client, operator_token, mock_aptl
     assert body["content_view_version"]["version"] == 1
     assert len(body["content_view_version"]["snapshots"]) == 1
     assert body["content_view_version"]["snapshots"][0]["component"] == "main"
+    # Counted from get_snapshot_packages (the final, post-filter snapshot),
+    # not get_mirror_packages (the source mirror) — this content view has
+    # no filters, but the two are deliberately given different package
+    # lists here to prove the count comes from the right call.
+    assert body["content_view_version"]["package_count"] == 2
+
+
+def test_publish_content_view_package_count_not_double_counted_across_components(client, operator_token, mock_aptly):
+    """A repo with multiple components reuses the same snapshot_name across
+    several `snapshots` entries — package_count must sum unique snapshots
+    once, not once per (repo, component) entry.
+    """
+    mock_aptly.get_mirror_packages.return_value = [{"Package": "nginx", "Version": "1.0", "Architecture": "amd64"}]
+    mock_aptly.get_snapshot_packages.return_value = [
+        {"Package": "nginx", "Version": "1.0", "Architecture": "amd64"},
+        {"Package": "curl", "Version": "7.0", "Architecture": "amd64"},
+        {"Package": "vim", "Version": "9.0", "Architecture": "amd64"},
+    ]
+    repo_r = client.post(
+        "/repositories",
+        json={
+            "name": "multi-component-repo",
+            "archive_url": "http://archive.ubuntu.com/ubuntu",
+            "distribution": "jammy",
+            "components": ["main", "universe"],
+            "architectures": ["amd64"],
+        },
+        headers=auth_headers(operator_token),
+    )
+    assert repo_r.status_code == 201, repo_r.text
+    repo = repo_r.json()
+    cv = client.post(
+        "/content-views",
+        json={"name": "multi-component-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+
+    r = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
+    assert r.status_code == 201, r.text
+    body = r.json()
+    # Two components -> two snapshots entries, but both share the same
+    # underlying snapshot_name (one repo, no filters) -> counted once.
+    assert len(body["content_view_version"]["snapshots"]) == 2
+    assert body["content_view_version"]["package_count"] == 3
 
 
 def test_publish_content_view_idempotent_when_unchanged(client, operator_token, mock_aptly):

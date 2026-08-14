@@ -377,6 +377,9 @@ class ContentViewVersionRead(BaseModel):
     version: int
     snapshots: list[ContentViewVersionSnapshot]
     content_hash: str
+    # Total packages across this version's final (post-filter) snapshots —
+    # null only for versions cut before this field existed.
+    package_count: int | None
     published_at: datetime
 
     model_config = {"from_attributes": True}

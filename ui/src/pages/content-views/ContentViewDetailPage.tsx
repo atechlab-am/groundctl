@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, Plus, Trash2, UploadCloud } from "lucide-react";
+import { ArrowLeft, Plus, Rocket, Trash2, UploadCloud } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryState } from "@/components/QueryState";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +11,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { RoleGate } from "@/layout/RoleGate";
 import {
   getContentView,
@@ -20,9 +28,11 @@ import {
   deleteContentViewFilter,
   deleteContentView,
   publishContentView,
+  type ContentViewVersionRead,
   type FilterType,
 } from "@/api/contentViews";
 import { listRepositories } from "@/api/repositories";
+import { listLifecycleEnvironments, promoteEnvironment } from "@/api/environments";
 import { formatDateTime } from "@/lib/format";
 import { errorMessage } from "@/lib/errors";
 
@@ -58,6 +68,15 @@ export function ContentViewDetailPage() {
   const filtersQuery = useQuery({
     queryKey: ["content-view-filters", contentViewId],
     queryFn: () => listContentViewFilters(contentViewId),
+  });
+
+  // Only environments whose content_view_id is this one are valid promote
+  // targets — promoteEnvironment resolves the version against the
+  // environment's OWN content_view_id server-side, so offering an
+  // environment on a different content view would just 404.
+  const environmentsQuery = useQuery({
+    queryKey: ["lifecycle-environments", "content-view", contentViewId],
+    queryFn: () => listLifecycleEnvironments({ content_view_id: contentViewId, limit: 100 }),
   });
 
   const filterMutation = useMutation({
@@ -102,6 +121,41 @@ export function ContentViewDetailPage() {
     },
     onError: (err) => toast.error(errorMessage(err)),
   });
+
+  const [promotingVersion, setPromotingVersion] = useState<ContentViewVersionRead | null>(null);
+  const [promoteEnvironmentId, setPromoteEnvironmentId] = useState<string>("");
+  const [promoteError, setPromoteError] = useState<string | null>(null);
+
+  const promoteMutation = useMutation({
+    mutationFn: () =>
+      promoteEnvironment(promoteEnvironmentId, {
+        content_view_version_id: promotingVersion!.id,
+      }),
+    onSuccess: (result) => {
+      toast.success(`Promoted version ${promotingVersion!.version} — live at ${result.published_url}`);
+      setPromotingVersion(null);
+      setPromoteEnvironmentId("");
+      setPromoteError(null);
+      void queryClient.invalidateQueries({ queryKey: ["lifecycle-environments", "content-view", contentViewId] });
+    },
+    onError: (err) => setPromoteError(errorMessage(err)),
+  });
+
+  function openPromote(version: ContentViewVersionRead) {
+    setPromotingVersion(version);
+    setPromoteEnvironmentId("");
+    setPromoteError(null);
+  }
+
+  function handlePromote(e: FormEvent) {
+    e.preventDefault();
+    if (!promoteEnvironmentId) {
+      setPromoteError("select an environment");
+      return;
+    }
+    setPromoteError(null);
+    promoteMutation.mutate();
+  }
 
   function handleAddFilter(e: FormEvent) {
     e.preventDefault();
@@ -253,24 +307,73 @@ export function ContentViewDetailPage() {
                   emptyMessage="No versions published yet."
                 >
                   <ul className="flex flex-col divide-y">
-                    {versionsQuery.data?.map((v) => (
-                      <li key={v.id} className="py-3">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium">Version {v.version}</span>
-                          <span className="text-xs text-muted-foreground">{formatDateTime(v.published_at)}</span>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {v.snapshots.map((s) => (
-                            <Badge key={`${s.repository_id}-${s.component}`} variant="outline">
-                              {s.repository_name}/{s.component}
-                            </Badge>
-                          ))}
-                        </div>
-                        <p className="mt-1 truncate text-xs text-muted-foreground" title={v.content_hash}>
-                          hash: {v.content_hash}
-                        </p>
-                      </li>
-                    ))}
+                    {versionsQuery.data?.map((v, i) => {
+                      const liveOn = (environmentsQuery.data ?? []).filter((env) => env.current_version_id === v.id);
+                      // Versions are server-ordered newest-first, so the
+                      // next array entry is the immediately preceding
+                      // version — lets each row show "+N/-N packages vs
+                      // vPrev" the way Satellite's version list does.
+                      const previous = versionsQuery.data?.[i + 1];
+                      const delta =
+                        v.package_count !== null && previous?.package_count != null
+                          ? v.package_count - previous.package_count
+                          : null;
+                      return (
+                        <li key={v.id} className="py-3">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium">Version {v.version}</span>
+                              {v.package_count !== null && (
+                                <span className="text-xs text-muted-foreground">
+                                  {v.package_count.toLocaleString()} package{v.package_count === 1 ? "" : "s"}
+                                  {delta !== null && delta !== 0 && (
+                                    <span className={delta > 0 ? "text-success" : "text-destructive"}>
+                                      {" "}
+                                      ({delta > 0 ? "+" : ""}
+                                      {delta})
+                                    </span>
+                                  )}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <span className="text-xs text-muted-foreground">{formatDateTime(v.published_at)}</span>
+                              <RoleGate minRole="operator">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 gap-1.5 px-2 text-xs"
+                                  onClick={() => openPromote(v)}
+                                >
+                                  <Rocket className="h-3.5 w-3.5" />
+                                  Promote to…
+                                </Button>
+                              </RoleGate>
+                            </div>
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {v.snapshots.map((s) => (
+                              <Badge key={`${s.repository_id}-${s.component}`} variant="outline">
+                                {s.repository_name}/{s.component}
+                              </Badge>
+                            ))}
+                          </div>
+                          {liveOn.length > 0 && (
+                            <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+                              <span className="text-muted-foreground">Live on:</span>
+                              {liveOn.map((env) => (
+                                <Badge key={env.id} variant="success">
+                                  {env.name}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
+                          <p className="mt-1 truncate text-xs text-muted-foreground" title={v.content_hash}>
+                            hash: {v.content_hash}
+                          </p>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </QueryState>
               </CardContent>
@@ -278,6 +381,53 @@ export function ContentViewDetailPage() {
           </div>
         )}
       </QueryState>
+
+      <Dialog open={promotingVersion !== null} onOpenChange={(open) => !open && setPromotingVersion(null)}>
+        <DialogContent>
+          <form onSubmit={handlePromote}>
+            <DialogHeader>
+              <DialogTitle>Promote version {promotingVersion?.version}</DialogTitle>
+              <DialogDescription>
+                Points the chosen environment's publish prefix at this version — clients synced to that environment
+                will pick it up on their next `apt update`. A path environment beyond position 0 requires its
+                predecessor to already be live on this version first.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-4 flex flex-col gap-4">
+              {promoteError && <p className="text-sm text-destructive">{promoteError}</p>}
+              <div className="flex flex-col gap-1.5">
+                <Label>Environment</Label>
+                {environmentsQuery.data?.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No lifecycle environments use this content view yet.
+                  </p>
+                ) : (
+                  <Select value={promoteEnvironmentId} onValueChange={setPromoteEnvironmentId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select an environment" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {environmentsQuery.data?.map((env) => (
+                        <SelectItem key={env.id} value={env.id}>
+                          {env.name} ({env.path_name}, position {env.position})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            </div>
+            <DialogFooter className="mt-6">
+              <Button type="button" variant="outline" onClick={() => setPromotingVersion(null)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={promoteMutation.isPending || environmentsQuery.data?.length === 0}>
+                {promoteMutation.isPending ? "Promoting…" : "Promote"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

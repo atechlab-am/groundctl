@@ -378,6 +378,15 @@ class ContentViewVersion(Base):
     # invariant; never updated after insert.
     snapshots: Mapped[list] = mapped_column(JSON, nullable=False)
     content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    # Sum of package counts across every (repository, component) snapshot
+    # entry above, counted from the FINAL snapshot each entry points at
+    # (i.e. after any ContentViewFilter has been applied) — not the source
+    # mirror's package count, which would overcount whenever a filter
+    # excludes packages. Lets version N and version N+1 show a real "this
+    # many packages" figure the way Satellite does, instead of only a
+    # content hash. Nullable only for rows written before this column
+    # existed; every version cut going forward always sets it.
+    package_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True

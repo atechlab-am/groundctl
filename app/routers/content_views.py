@@ -414,11 +414,28 @@ def do_publish(
                 }
             )
 
+    # Counted from the actual final snapshot each entry points at (post-
+    # filter), not the source mirror — a content view with an
+    # include/exclude filter publishes fewer packages than its repos hold,
+    # and this number should reflect what a client actually gets. One
+    # get_snapshot_packages call per UNIQUE snapshot name, not per
+    # (repo, component) entry — a repo with multiple components reuses the
+    # same snapshot_name across several `snapshots` entries (see the loop
+    # above), and counting per-entry would double/triple-count it.
+    unique_snapshot_names = {entry["snapshot_name"] for entry in snapshots}
+    package_count = 0
+    for name in unique_snapshot_names:
+        try:
+            package_count += len(aptly.get_snapshot_packages(name))
+        except AptlyError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
     version = ContentViewVersion(
         content_view_id=content_view.id,
         version=next_version,
         snapshots=snapshots,
         content_hash=content_hash,
+        package_count=package_count,
         created_by_user_id=user.id,
     )
     db.add(version)

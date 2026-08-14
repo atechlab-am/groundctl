@@ -25,6 +25,29 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-08-14
+
+### Added: promote a specific content view version from its version list, with live-package counts
+
+- The backend already supported promoting any specific
+  `content_view_version_id` to any environment (`POST
+  /lifecycle-environments/{id}/promote`), but nothing in the UI ever
+  exposed picking one — the only Promote button (on the Environments
+  page) always promoted "latest, publishing first if needed." There was
+  no way to do a Satellite-style "promote v1 to prod, v2 to dev." Each
+  version row on the Content View detail page now has a "Promote to…"
+  action that opens a dialog to pick any environment using that content
+  view; each row also shows which environments are currently live on it.
+- New `ContentViewVersion.package_count` — total packages across a
+  version's final, post-filter snapshots (not the source repositories'
+  package count, which would overcount whenever the content view has an
+  include/exclude filter). Computed once at publish time from
+  `AptlyClient.get_snapshot_packages`, summed per unique snapshot name
+  (a repo with multiple components reuses one snapshot across several
+  entries — counted once, not per component). The version list now shows
+  each version's package count and the +/- delta versus the previous
+  version, the same "how did this version change" signal Satellite shows.
+
 ## [0.26.0] - 2026-08-14
 
 ### Added: content views are now listable, deep-linkable, and deletable
