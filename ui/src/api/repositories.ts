@@ -16,10 +16,20 @@ export interface RepositoryRead {
   distribution: string;
   components: string[];
   architectures: string[];
+  // NULL = ungrouped. See Product — purely organizational, never affects
+  // sync/publish/content-view behavior.
+  product_id: string | null;
   last_synced_at: string | null;
   // Actual on-disk size aptly reports as of last_synced_at; null until the
   // first successful sync completes.
   size_bytes: number | null;
+  // Package count from that same sync pass; null under the same condition
+  // as size_bytes (never synced yet).
+  package_count: number | null;
+  // Computed by the server at read time — "never_synced" if last_synced_at
+  // is null, "stale" if older than the admin-configurable threshold
+  // (Settings > System), "healthy" otherwise. Display-only.
+  health_status: "healthy" | "stale" | "never_synced";
   last_sync_job_id: string | null;
   // Most recent Job of any kind (sync/update/delete) — unlike
   // last_sync_job_id, tracks Edit/Delete too, so the UI can restore live
@@ -33,6 +43,7 @@ export interface RepositoryRead {
 
 export interface ListRepositoriesParams {
   distribution?: string;
+  product_id?: string;
   limit?: number;
   offset?: number;
 }
@@ -134,4 +145,12 @@ export function estimateRepositorySize(
 // Celery task so the caller can link straight to /jobs/{id} for status.
 export function syncRepository(name: string): Promise<JobRead> {
   return api.post<JobRead>(`/repositories/${encodeURIComponent(name)}/sync`);
+}
+
+// DB-only, no aptly call — assigns or unassigns (productId=null) this
+// repository's Product grouping.
+export function updateRepositoryProduct(name: string, productId: string | null): Promise<RepositoryRead> {
+  return api.patch<RepositoryRead>(`/repositories/${encodeURIComponent(name)}/product`, {
+    product_id: productId,
+  });
 }

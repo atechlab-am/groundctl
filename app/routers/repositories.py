@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -9,6 +9,7 @@ from app.aptly_client import AptlyClient, AptlyError, get_aptly_client
 from app.archive_probe import ArchiveProbeError, estimate_repository_size_bytes, probe_distributions
 from app.auth import require_role
 from app.database import get_db
+from app.instance_settings import get_effective_settings
 from app.models import (
     AuditAction,
     AuditLog,
@@ -17,6 +18,7 @@ from app.models import (
     Job,
     JobTargetType,
     JobType,
+    Product,
     Repository,
     Role,
     User,
@@ -33,11 +35,43 @@ from app.schemas import (
     RepositoryEstimateSizeResult,
     RepositoryProbeRequest,
     RepositoryProbeResult,
+    RepositoryProductUpdate,
     RepositoryRead,
     RepositoryUpdate,
 )
 
 router = APIRouter()
+
+
+def _repository_health_status(repository: Repository, stale_threshold_hours: int) -> str:
+    if repository.last_synced_at is None:
+        return "never_synced"
+    age = datetime.now(timezone.utc) - repository.last_synced_at
+    if age > timedelta(hours=stale_threshold_hours):
+        return "stale"
+    return "healthy"
+
+
+class _RepositoryWithHealth:
+    """Thin attribute-forwarding wrapper so RepositoryRead.model_validate
+    (from_attributes=True) can read health_status off something
+    attribute-shaped, same as every real column on Repository — health_status
+    isn't a stored column (see RepositoryRead's docstring), so the ORM
+    object alone doesn't have it.
+    """
+
+    def __init__(self, repository: Repository, health_status: str) -> None:
+        self._repository = repository
+        self.health_status = health_status
+
+    def __getattr__(self, name: str):
+        return getattr(self._repository, name)
+
+
+def _read_repository(db: Session, repository: Repository) -> RepositoryRead:
+    stale_threshold_hours = get_effective_settings(db).repository_stale_threshold_hours
+    health_status = _repository_health_status(repository, stale_threshold_hours)
+    return RepositoryRead.model_validate(_RepositoryWithHealth(repository, health_status))
 
 
 def do_sync_repository(repository: Repository, db: Session, aptly: AptlyClient, user_id: uuid.UUID | None) -> None:
@@ -131,7 +165,7 @@ def create_repository(
 
     db.commit()
     db.refresh(repository)
-    return repository
+    return _read_repository(db, repository)
 
 
 @router.post("/estimate-size", response_model=RepositoryEstimateSizeResult)
@@ -217,7 +251,7 @@ def create_repositories_batch(
 
         db.commit()
         db.refresh(repository)
-        created.append(RepositoryRead.model_validate(repository))
+        created.append(_read_repository(db, repository))
 
     return RepositoryBatchCreateResult(created=created, errors=errors)
 
@@ -225,6 +259,7 @@ def create_repositories_batch(
 @router.get("", response_model=list[RepositoryRead])
 def list_repositories(
     distribution: str | None = None,
+    product_id: uuid.UUID | None = None,
     limit: int = 100,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -233,8 +268,11 @@ def list_repositories(
     query = select(Repository)
     if distribution is not None:
         query = query.where(Repository.distribution == distribution)
+    if product_id is not None:
+        query = query.where(Repository.product_id == product_id)
     query = query.order_by(Repository.name).limit(limit).offset(offset)
-    return list(db.execute(query).scalars())
+    repositories = list(db.execute(query).scalars())
+    return [_read_repository(db, repository) for repository in repositories]
 
 
 def _get_repository_or_404(db: Session, name: str) -> Repository:
@@ -267,7 +305,8 @@ def get_repository(
     architectures a list row truncates aren't otherwise inspectable without
     going through the CLI or the database directly.
     """
-    return _get_repository_or_404(db, name)
+    repository = _get_repository_or_404(db, name)
+    return _read_repository(db, repository)
 
 
 @router.patch("/{name}/auto-sync", response_model=RepositoryRead)
@@ -295,7 +334,40 @@ def update_repository_auto_sync(
     )
     db.commit()
     db.refresh(repository)
-    return repository
+    return _read_repository(db, repository)
+
+
+@router.patch("/{name}/product", response_model=RepositoryRead)
+def update_repository_product(
+    name: str,
+    payload: RepositoryProductUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """Assigns or unassigns (product_id=None) this repository's Product
+    grouping — DB-only, no aptly call, same posture as the auto-sync toggle
+    above. Purely organizational (see Product's docstring in models.py).
+    """
+    repository = _get_repository_or_404(db, name)
+
+    if payload.product_id is not None:
+        product = db.get(Product, payload.product_id)
+        if product is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="product not found")
+
+    repository.product_id = payload.product_id
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.update_repository,
+            resource_type="repository",
+            resource_id=repository.name,
+            detail={"product_id": str(payload.product_id) if payload.product_id else None},
+        )
+    )
+    db.commit()
+    db.refresh(repository)
+    return _read_repository(db, repository)
 
 
 @router.delete("/{name}", response_model=JobRead, status_code=status.HTTP_201_CREATED)

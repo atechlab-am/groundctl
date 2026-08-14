@@ -656,7 +656,7 @@ def sync_repository_task(self, job_id: str) -> str:
         aptly = get_aptly_client()
         try:
             do_sync_repository(repository, db, aptly, user_id=job.created_by_user_id)
-            repository.size_bytes = aptly.get_mirror_size_bytes(repository.name)
+            repository.size_bytes, repository.package_count = aptly.get_mirror_size_and_count(repository.name)
             db.commit()
             _mark_job(db, job, JobStatus.success, f"synced {repository.name}")
             return "successful"
@@ -852,6 +852,7 @@ def update_repository_task(self, job_id: str) -> str:
             repository.architectures = new_architectures
             repository.last_synced_at = None
             repository.size_bytes = None
+            repository.package_count = None
             repository.last_sync_job_id = None
             db.commit()
             _mark_job(db, job, JobStatus.success, f"updated {repository_name}")
@@ -885,7 +886,7 @@ def scheduled_sync_all_repositories() -> str:
         for repository in repositories:
             try:
                 do_sync_repository(repository, db, aptly, user_id=None)
-                repository.size_bytes = aptly.get_mirror_size_bytes(repository.name)
+                repository.size_bytes, repository.package_count = aptly.get_mirror_size_and_count(repository.name)
                 db.commit()
             except AptlyError as exc:
                 db.rollback()

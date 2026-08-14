@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # week means its whole site falls back to WAN traffic against the
     # primary, which should surface fast.
     relay_stale_threshold_hours: int = 24
+    # A repository whose last_synced_at exceeds this is shown as "stale" in
+    # the UI's health indicator — display-only (unlike stale_checkin_hours/
+    # relay_stale_threshold_hours above, this doesn't drive a scheduled
+    # sweep or a webhook, just a computed field on GET /repositories).
+    repository_stale_threshold_hours: int = 24 * 2
     # Root logger level for app/logging_config.py's JSON formatter.
     log_level: str = "INFO"
     # scheduled_aptly_maintenance (app/tasks.py) fires a disk.usage_high

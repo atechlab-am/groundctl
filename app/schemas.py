@@ -154,6 +154,38 @@ class AuditLogRead(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# products
+# ---------------------------------------------------------------------------
+
+
+class ProductCreate(BaseModel):
+    name: str
+    description: str | None = None
+
+    _validate_name = field_validator("name")(validate_aptly_name)
+
+
+class ProductRead(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str | None
+    # Count of repositories currently assigned — computed by the router
+    # (a join/count, not a stored column), same reasoning as
+    # RepositoryRead.health_status.
+    repository_count: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ProductUpdate(BaseModel):
+    name: str
+    description: str | None = None
+
+    _validate_name = field_validator("name")(validate_aptly_name)
+
+
+# ---------------------------------------------------------------------------
 # repositories
 # ---------------------------------------------------------------------------
 
@@ -181,11 +213,25 @@ class RepositoryRead(BaseModel):
     distribution: str
     components: list[str]
     architectures: list[str]
+    # NULL = ungrouped. See Product's docstring — purely organizational,
+    # never affects sync/publish/content-view behavior.
+    product_id: uuid.UUID | None
     last_synced_at: datetime | None
     # Actual on-disk package size aptly reports as of last_synced_at (see
     # AptlyClient.get_mirror_size_bytes) — null until the first successful
     # sync_repository job completes.
     size_bytes: int | None
+    # Package count from that same sync pass — null under the identical
+    # condition as size_bytes (never synced yet).
+    package_count: int | None
+    # Computed, not a stored column — "never_synced" if last_synced_at is
+    # null, "stale" if it's older than InstanceSetting's
+    # repository_stale_threshold_hours (admin-configurable, Settings >
+    # System), "healthy" otherwise. Display-only: unlike the server/relay
+    # staleness sweeps, nothing schedules off this or fires a webhook for
+    # it — set explicitly by the router (not a plain from_attributes
+    # mapping) since computing it needs that threshold at read time.
+    health_status: Literal["healthy", "stale", "never_synced"]
     last_sync_job_id: uuid.UUID | None
     # Most recent Job of any kind (sync/update/delete) — unlike
     # last_sync_job_id above, tracks Edit/Delete too, so the UI can restore
@@ -199,6 +245,11 @@ class RepositoryRead(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class RepositoryProductUpdate(BaseModel):
+    # None = ungroup (remove from whatever Product it's currently in).
+    product_id: uuid.UUID | None = None
 
 
 class RepositoryAutoSyncUpdate(BaseModel):
@@ -884,6 +935,7 @@ class InstanceSettingsRead(BaseModel):
     activation_key_default_ttl_hours: int
     stale_checkin_hours: int
     relay_stale_threshold_hours: int
+    repository_stale_threshold_hours: int
     disk_usage_warn_percent: float
     webhook_url: str | None
     # Deliberately excluded: webhook_secret is write-only, same posture as
@@ -906,6 +958,7 @@ class InstanceSettingsUpdate(BaseModel):
     activation_key_default_ttl_hours: int | None = None
     stale_checkin_hours: int | None = None
     relay_stale_threshold_hours: int | None = None
+    repository_stale_threshold_hours: int | None = None
     disk_usage_warn_percent: float | None = None
     webhook_url: str | None = None
     # Same None-clears/omitted-leaves-unchanged semantics — but note
@@ -921,6 +974,7 @@ class InstanceSettingsUpdate(BaseModel):
         "activation_key_default_ttl_hours",
         "stale_checkin_hours",
         "relay_stale_threshold_hours",
+        "repository_stale_threshold_hours",
     )
     @classmethod
     def _validate_positive_int(cls, v: int | None) -> int | None:

@@ -5,6 +5,9 @@ export interface InstanceSettingsRead {
   activation_key_default_ttl_hours: number;
   stale_checkin_hours: number;
   relay_stale_threshold_hours: number;
+  // Display-only threshold for RepositoryRead.health_status — unlike the
+  // two above, doesn't drive a scheduled sweep or webhook.
+  repository_stale_threshold_hours: number;
   disk_usage_warn_percent: number;
   webhook_url: string | null;
   // webhook_secret itself is never returned by the API (write-only, same
@@ -24,6 +27,7 @@ export interface InstanceSettingsUpdate {
   activation_key_default_ttl_hours?: number | null;
   stale_checkin_hours?: number | null;
   relay_stale_threshold_hours?: number | null;
+  repository_stale_threshold_hours?: number | null;
   disk_usage_warn_percent?: number | null;
   webhook_url?: string | null;
   webhook_secret?: string | null;

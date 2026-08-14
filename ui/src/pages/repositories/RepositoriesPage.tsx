@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { FolderCog, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryState } from "@/components/QueryState";
 import { Button } from "@/components/ui/button";
@@ -25,8 +25,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { JobStatusIndicator } from "@/components/JobStatusIndicator";
+import { RepositoryHealthBadge } from "@/components/RepositoryHealthBadge";
 import { RoleGate } from "@/layout/RoleGate";
 import { useHasRole } from "@/auth/useHasRole";
 import {
@@ -37,12 +39,16 @@ import {
   estimateRepositorySize,
   updateRepository,
   updateRepositoryAutoSync,
+  updateRepositoryProduct,
   deleteRepository,
   type RepositoryRead,
 } from "@/api/repositories";
+import { listProducts, createProduct, updateProduct, deleteProduct, type ProductRead } from "@/api/products";
 import { getJob } from "@/api/jobs";
 import { formatDateTime, formatBytes } from "@/lib/format";
 import { errorMessage } from "@/lib/errors";
+
+const UNGROUPED = "__ungrouped__";
 
 const DEFAULT_ARCHIVE_URL = "http://archive.ubuntu.com/ubuntu";
 
@@ -114,6 +120,121 @@ export function RepositoriesPage() {
     queryFn: () => listRepositories({ limit: 100 }),
     refetchInterval: 10_000,
   });
+
+  const productsQuery = useQuery({
+    queryKey: ["products"],
+    queryFn: listProducts,
+  });
+
+  const groupedRepositories = useMemo(() => {
+    const repos = repositoriesQuery.data ?? [];
+    const groups = new Map<string, RepositoryRead[]>();
+    for (const repo of repos) {
+      const key = repo.product_id ?? UNGROUPED;
+      const list = groups.get(key);
+      if (list) list.push(repo);
+      else groups.set(key, [repo]);
+    }
+    const productGroups = (productsQuery.data ?? [])
+      .filter((p) => groups.has(p.id))
+      .map((p) => ({ key: p.id, label: p.name, repos: groups.get(p.id)! }));
+    const ungrouped = groups.get(UNGROUPED);
+    return ungrouped ? [...productGroups, { key: UNGROUPED, label: "Ungrouped", repos: ungrouped }] : productGroups;
+  }, [repositoriesQuery.data, productsQuery.data]);
+
+  const [manageProductsOpen, setManageProductsOpen] = useState(false);
+  const [newProductName, setNewProductName] = useState("");
+  const [newProductDescription, setNewProductDescription] = useState("");
+  const [productError, setProductError] = useState<string | null>(null);
+  const [editingProduct, setEditingProduct] = useState<ProductRead | null>(null);
+  const [editProductName, setEditProductName] = useState("");
+  const [editProductDescription, setEditProductDescription] = useState("");
+  const [assigningProduct, setAssigningProduct] = useState<RepositoryRead | null>(null);
+
+  const createProductMutation = useMutation({
+    mutationFn: createProduct,
+    onSuccess: () => {
+      toast.success("Product created");
+      setNewProductName("");
+      setNewProductDescription("");
+      setProductError(null);
+      void queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+    onError: (err) => setProductError(errorMessage(err)),
+  });
+
+  const updateProductMutation = useMutation({
+    mutationFn: (payload: { id: string; name: string; description: string | null }) =>
+      updateProduct(payload.id, { name: payload.name, description: payload.description }),
+    onSuccess: () => {
+      toast.success("Product updated");
+      setEditingProduct(null);
+      void queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+    onError: (err) => setProductError(errorMessage(err)),
+  });
+
+  const deleteProductMutation = useMutation({
+    mutationFn: deleteProduct,
+    onSuccess: () => {
+      toast.success("Product deleted — its repositories are now ungrouped");
+      void queryClient.invalidateQueries({ queryKey: ["products"] });
+      void queryClient.invalidateQueries({ queryKey: ["repositories"] });
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+
+  const setRepoProductMutation = useMutation({
+    mutationFn: (payload: { name: string; productId: string | null }) =>
+      updateRepositoryProduct(payload.name, payload.productId),
+    onSuccess: () => {
+      toast.success("Product assignment updated");
+      setAssigningProduct(null);
+      void queryClient.invalidateQueries({ queryKey: ["repositories"] });
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+
+  function handleCreateProduct(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newProductName.trim()) {
+      setProductError("Name is required.");
+      return;
+    }
+    setProductError(null);
+    createProductMutation.mutate({
+      name: newProductName.trim(),
+      description: newProductDescription.trim() || null,
+    });
+  }
+
+  function openEditProduct(product: ProductRead) {
+    setEditingProduct(product);
+    setEditProductName(product.name);
+    setEditProductDescription(product.description ?? "");
+    setProductError(null);
+  }
+
+  function handleUpdateProduct(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingProduct) return;
+    setProductError(null);
+    updateProductMutation.mutate({
+      id: editingProduct.id,
+      name: editProductName.trim(),
+      description: editProductDescription.trim() || null,
+    });
+  }
+
+  function handleDeleteProduct(product: ProductRead) {
+    if (
+      !confirm(
+        `Delete product "${product.name}"? Its ${product.repository_count} repositor${product.repository_count === 1 ? "y" : "ies"} will become ungrouped.`,
+      )
+    )
+      return;
+    deleteProductMutation.mutate(product.id);
+  }
 
   function resetDialog() {
     setArchiveUrl(DEFAULT_ARCHIVE_URL);
@@ -311,6 +432,11 @@ export function RepositoriesPage() {
         description="Upstream apt archives mirrored by aptly"
         actions={
           <RoleGate minRole="operator">
+            <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setManageProductsOpen(true)}>
+              <FolderCog className="h-4 w-4" />
+              Manage products
+            </Button>
             <Dialog
               open={dialogOpen}
               onOpenChange={(open) => {
@@ -435,6 +561,7 @@ export function RepositoriesPage() {
                 )}
               </DialogContent>
             </Dialog>
+            </div>
           </RoleGate>
         }
       />
@@ -454,87 +581,111 @@ export function RepositoriesPage() {
               <TableHead>Distribution</TableHead>
               <TableHead>Components</TableHead>
               <TableHead>Architectures</TableHead>
+              <TableHead>Packages</TableHead>
               <TableHead>Size</TableHead>
+              <TableHead>Health</TableHead>
               <TableHead>Last synced</TableHead>
               <TableHead>Nightly sync</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {repositoriesQuery.data?.map((repo) => (
-              <TableRow key={repo.id}>
-                <TableCell className="font-medium">
-                  <Link to={`/repositories/${encodeURIComponent(repo.name)}`} className="hover:underline">
-                    {repo.name}
-                  </Link>
-                </TableCell>
-                <TableCell className="max-w-64 truncate text-muted-foreground" title={repo.archive_url}>
-                  {repo.archive_url}
-                </TableCell>
-                <TableCell>{repo.distribution}</TableCell>
-                <TableCell>
-                  <div className="flex flex-wrap gap-1">
-                    {repo.components.map((c) => (
-                      <Badge key={c} variant="outline">
-                        {c}
-                      </Badge>
-                    ))}
-                  </div>
-                </TableCell>
-                <TableCell className="text-muted-foreground">{repo.architectures.join(", ")}</TableCell>
-                <TableCell className="text-muted-foreground">{formatBytes(repo.size_bytes)}</TableCell>
-                <TableCell className="min-w-40 text-muted-foreground">
-                  <RepositoryStatusCell repo={repo} activeJobId={activeJobByRepo[repo.name]} />
-                </TableCell>
-                <TableCell>
-                  {canOperate ? (
-                    <Checkbox
-                      checked={repo.auto_sync_enabled}
-                      disabled={autoSyncMutation.isPending && autoSyncMutation.variables?.name === repo.name}
-                      onCheckedChange={(checked) =>
-                        autoSyncMutation.mutate({ name: repo.name, enabled: checked === true })
-                      }
-                      aria-label={`Nightly auto-sync for ${repo.name}`}
-                    />
-                  ) : (
-                    <span className="text-sm text-muted-foreground">{repo.auto_sync_enabled ? "On" : "Off"}</span>
-                  )}
-                </TableCell>
-                <TableCell className="text-right">
-                  <RoleGate minRole="operator">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm">
-                          <MoreHorizontal className="h-3.5 w-3.5" />
-                          <span className="sr-only">Actions for {repo.name}</span>
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          className="gap-2"
-                          disabled={syncMutation.isPending && syncMutation.variables === repo.name}
-                          onClick={() => syncMutation.mutate(repo.name)}
-                        >
-                          <RefreshCw className="h-3.5 w-3.5" />
-                          Sync
-                        </DropdownMenuItem>
-                        <DropdownMenuItem className="gap-2" onClick={() => openEdit(repo)}>
-                          <Pencil className="h-3.5 w-3.5" />
-                          Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          className="gap-2 text-destructive focus:text-destructive"
-                          disabled={deleteMutation.isPending && deleteMutation.variables === repo.name}
-                          onClick={() => handleDelete(repo)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </RoleGate>
-                </TableCell>
-              </TableRow>
+            {groupedRepositories.map((group) => (
+              <Fragment key={group.key}>
+                <TableRow className="bg-muted/40 hover:bg-muted/40">
+                  <TableCell colSpan={11} className="py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {group.label}
+                    <span className="ml-2 font-normal normal-case text-muted-foreground/70">
+                      ({group.repos.length})
+                    </span>
+                  </TableCell>
+                </TableRow>
+                {group.repos.map((repo) => (
+                  <TableRow key={repo.id}>
+                    <TableCell className="font-medium">
+                      <Link to={`/repositories/${encodeURIComponent(repo.name)}`} className="hover:underline">
+                        {repo.name}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="max-w-64 truncate text-muted-foreground" title={repo.archive_url}>
+                      {repo.archive_url}
+                    </TableCell>
+                    <TableCell>{repo.distribution}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-1">
+                        {repo.components.map((c) => (
+                          <Badge key={c} variant="outline">
+                            {c}
+                          </Badge>
+                        ))}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">{repo.architectures.join(", ")}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {repo.package_count === null ? "—" : repo.package_count.toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">{formatBytes(repo.size_bytes)}</TableCell>
+                    <TableCell>
+                      <RepositoryHealthBadge status={repo.health_status} />
+                    </TableCell>
+                    <TableCell className="min-w-40 text-muted-foreground">
+                      <RepositoryStatusCell repo={repo} activeJobId={activeJobByRepo[repo.name]} />
+                    </TableCell>
+                    <TableCell>
+                      {canOperate ? (
+                        <Checkbox
+                          checked={repo.auto_sync_enabled}
+                          disabled={autoSyncMutation.isPending && autoSyncMutation.variables?.name === repo.name}
+                          onCheckedChange={(checked) =>
+                            autoSyncMutation.mutate({ name: repo.name, enabled: checked === true })
+                          }
+                          aria-label={`Nightly auto-sync for ${repo.name}`}
+                        />
+                      ) : (
+                        <span className="text-sm text-muted-foreground">{repo.auto_sync_enabled ? "On" : "Off"}</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <RoleGate minRole="operator">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="outline" size="sm">
+                              <MoreHorizontal className="h-3.5 w-3.5" />
+                              <span className="sr-only">Actions for {repo.name}</span>
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-56">
+                            <DropdownMenuItem
+                              className="gap-2"
+                              disabled={syncMutation.isPending && syncMutation.variables === repo.name}
+                              onClick={() => syncMutation.mutate(repo.name)}
+                            >
+                              <RefreshCw className="h-3.5 w-3.5" />
+                              Sync
+                            </DropdownMenuItem>
+                            <DropdownMenuItem className="gap-2" onClick={() => openEdit(repo)}>
+                              <Pencil className="h-3.5 w-3.5" />
+                              Edit
+                            </DropdownMenuItem>
+                            <DropdownMenuItem className="gap-2" onClick={() => setAssigningProduct(repo)}>
+                              <FolderCog className="h-3.5 w-3.5" />
+                              Set product…
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="gap-2 text-destructive focus:text-destructive"
+                              disabled={deleteMutation.isPending && deleteMutation.variables === repo.name}
+                              onClick={() => handleDelete(repo)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </RoleGate>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </Fragment>
             ))}
           </TableBody>
         </Table>
@@ -599,6 +750,145 @@ export function RepositoriesPage() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={assigningProduct !== null} onOpenChange={(open) => !open && setAssigningProduct(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Set product for {assigningProduct?.name}</DialogTitle>
+            <DialogDescription>
+              Purely organizational — has no effect on sync/publish/content-view behavior.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-4">
+            <Select
+              value={assigningProduct?.product_id ?? UNGROUPED}
+              onValueChange={(value) => {
+                if (!assigningProduct) return;
+                setRepoProductMutation.mutate({
+                  name: assigningProduct.name,
+                  productId: value === UNGROUPED ? null : value,
+                });
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={UNGROUPED}>Ungrouped</SelectItem>
+                {(productsQuery.data ?? []).map((product) => (
+                  <SelectItem key={product.id} value={product.id}>
+                    {product.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter className="mt-6">
+            <Button variant="outline" onClick={() => setAssigningProduct(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={manageProductsOpen} onOpenChange={setManageProductsOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Manage products</DialogTitle>
+            <DialogDescription>
+              Products group related repositories (e.g. jammy + jammy-security + jammy-updates as "Ubuntu 22.04").
+              Purely organizational — deleting a product just ungroups its repositories.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-4 flex flex-col gap-4">
+            {productError && <p className="text-sm text-destructive">{productError}</p>}
+            <div className="flex flex-col gap-2 max-h-56 overflow-y-auto rounded-md border p-2">
+              {(productsQuery.data ?? []).length === 0 && (
+                <p className="px-2 py-1 text-sm text-muted-foreground">No products yet.</p>
+              )}
+              {productsQuery.data?.map((product) => (
+                <div key={product.id} className="flex items-center justify-between gap-2 rounded px-2 py-1.5 hover:bg-muted/50">
+                  {editingProduct?.id === product.id ? (
+                    <form onSubmit={handleUpdateProduct} className="flex flex-1 items-center gap-2">
+                      <Input
+                        value={editProductName}
+                        onChange={(e) => setEditProductName(e.target.value)}
+                        className="h-8"
+                        autoFocus
+                        required
+                      />
+                      <Input
+                        value={editProductDescription}
+                        onChange={(e) => setEditProductDescription(e.target.value)}
+                        placeholder="Description (optional)"
+                        className="h-8"
+                      />
+                      <Button type="submit" size="sm" disabled={updateProductMutation.isPending}>
+                        Save
+                      </Button>
+                      <Button type="button" size="sm" variant="outline" onClick={() => setEditingProduct(null)}>
+                        Cancel
+                      </Button>
+                    </form>
+                  ) : (
+                    <>
+                      <div className="flex min-w-0 flex-1 flex-col">
+                        <span className="truncate text-sm font-medium">{product.name}</span>
+                        {product.description && (
+                          <span className="truncate text-xs text-muted-foreground">{product.description}</span>
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {product.repository_count} repo{product.repository_count === 1 ? "" : "s"}
+                      </span>
+                      <Button variant="ghost" size="sm" onClick={() => openEditProduct(product)}>
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => handleDeleteProduct(product)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+            <form onSubmit={handleCreateProduct} className="flex items-end gap-2 border-t pt-4">
+              <div className="flex flex-1 flex-col gap-1.5">
+                <Label htmlFor="new-product-name">New product name</Label>
+                <Input
+                  id="new-product-name"
+                  value={newProductName}
+                  onChange={(e) => setNewProductName(e.target.value)}
+                  placeholder="Ubuntu 22.04"
+                  required
+                />
+              </div>
+              <div className="flex flex-1 flex-col gap-1.5">
+                <Label htmlFor="new-product-description">Description (optional)</Label>
+                <Input
+                  id="new-product-description"
+                  value={newProductDescription}
+                  onChange={(e) => setNewProductDescription(e.target.value)}
+                />
+              </div>
+              <Button type="submit" disabled={createProductMutation.isPending}>
+                <Plus className="h-4 w-4" />
+                Add
+              </Button>
+            </form>
+          </div>
+          <DialogFooter className="mt-6">
+            <Button variant="outline" onClick={() => setManageProductsOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

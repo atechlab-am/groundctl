@@ -111,6 +111,7 @@ def _mock_aptly() -> MagicMock:
     mock.sync_mirror.return_value = {}
     mock.get_mirror_packages.return_value = []
     mock.get_mirror_size_bytes.return_value = 0
+    mock.get_mirror_size_and_count.return_value = (0, 0)
     mock.create_snapshot_from_mirror.return_value = {}
     mock.get_snapshot_packages.return_value = []
     mock.publish_exists.return_value = False
@@ -136,6 +137,7 @@ def mock_aptly_unreachable():
         "sync_mirror",
         "get_mirror_packages",
         "get_mirror_size_bytes",
+        "get_mirror_size_and_count",
         "create_snapshot_from_mirror",
         "get_snapshot_packages",
         "publish_exists",

@@ -22,3 +22,7 @@ CLAUDE.MD
 ROADMAP.MD
 .claude/settings.local.json
 .claude/*
+
+# Personal/local working notes — not project documentation (that's
+# ROADMAP.md, checked in). Never committed; each dev's own scratch list.
+todo.md

@@ -25,6 +25,38 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-08-14
+
+### Added: repository Products (grouping) and health-status indicator
+
+- New `Product` model — groups related repositories under one named parent
+  (Satellite's "Product" concept, e.g. jammy + jammy-security +
+  jammy-updates grouped as "Ubuntu 22.04"). Purely organizational: a
+  Product has no effect on sync/publish/content-view behavior, which all
+  still operate per-Repository exactly as before. A repository belongs to
+  at most one Product (nullable FK), defaulting ungrouped. Full CRUD at
+  `/api/products`; deleting a Product ungroups its member repositories
+  rather than blocking, since nothing content-lifecycle-relevant depends
+  on the grouping.
+- `Repository.product_id` and a new `PATCH /repositories/{name}/product`
+  endpoint to assign/unassign; `GET /repositories` accepts an optional
+  `product_id` filter.
+- New `RepositoryRead.health_status` (`healthy` / `stale` /
+  `never_synced`), computed at read time from `last_synced_at` against a
+  new admin-configurable `repository_stale_threshold_hours` instance
+  setting (Settings > System, default 48h). Display-only — unlike the
+  server/relay staleness sweeps, nothing schedules off this or fires a
+  webhook for it.
+- New `Repository.package_count`, computed in the same sync pass as
+  `size_bytes` (`AptlyClient.get_mirror_size_and_count`, one aptly call
+  instead of two) — null until the first successful sync, reset to null
+  on edit (same lifecycle as `size_bytes`, which previously wasn't reset
+  on edit either — also fixed here).
+- Repositories page: grouped-by-Product table sections, package-count and
+  health-status columns, a "Manage products" dialog (create/edit/delete),
+  and a per-repository "Set product…" action. Repository detail page and
+  Settings > System gained matching fields.
+
 ## [0.24.1] - 2026-08-14
 
 ### Fixed: elapsed-time counter froze between polls, repo list/detail data went stale in the background

@@ -47,3 +47,21 @@ def test_get_mirror_size_bytes_skips_missing_or_malformed():
 def test_get_mirror_size_bytes_empty_mirror():
     client = _client_with_packages([])
     assert client.get_mirror_size_bytes("jammy") == 0
+
+
+def test_get_mirror_size_and_count_matches_size_bytes_and_len():
+    client = _client_with_packages(
+        [
+            {"Package": "a", "Size": "1000"},
+            {"Package": "b", "Size": "2500"},
+            {"Package": "c"},
+        ]
+    )
+    size, count = client.get_mirror_size_and_count("jammy")
+    assert size == 3500
+    assert count == 3
+
+
+def test_get_mirror_size_and_count_empty_mirror():
+    client = _client_with_packages([])
+    assert client.get_mirror_size_and_count("jammy") == (0, 0)

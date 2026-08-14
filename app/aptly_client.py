@@ -197,6 +197,23 @@ class AptlyClient:
                 total += int(size)
         return total
 
+    def get_mirror_size_and_count(self, name: str) -> tuple[int, int]:
+        """Same size computation as get_mirror_size_bytes, plus the package
+        count from the same fetched list — one aptly call instead of two for
+        callers (sync_repository_task, scheduled_sync_all_repositories) that
+        need both Repository.size_bytes and Repository.package_count after a
+        sync.
+        """
+        packages = self.get_mirror_packages(name)
+        total = 0
+        for package in packages:
+            size = package.get("Size")
+            if isinstance(size, int):
+                total += size
+            elif isinstance(size, str) and size.isdigit():
+                total += int(size)
+        return total, len(packages)
+
     # -- snapshots ------------------------------------------------------------
 
     def create_snapshot_from_mirror(self, mirror_name: str, snapshot_name: str) -> dict:

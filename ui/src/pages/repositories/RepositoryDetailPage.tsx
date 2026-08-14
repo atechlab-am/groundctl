@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { QueryState } from "@/components/QueryState";
 import { StatusBadge } from "@/components/StatusBadge";
 import { JobStatusIndicator } from "@/components/JobStatusIndicator";
+import { RepositoryHealthBadge } from "@/components/RepositoryHealthBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -29,6 +30,7 @@ import {
   updateRepositoryAutoSync,
   deleteRepository,
 } from "@/api/repositories";
+import { listProducts } from "@/api/products";
 import { getJob, listJobs } from "@/api/jobs";
 import { formatDateTime, formatBytes } from "@/lib/format";
 import { errorMessage } from "@/lib/errors";
@@ -83,6 +85,12 @@ export function RepositoryDetailPage() {
     queryFn: () => listJobs({ repository_id: repoQuery.data!.id, limit: 50 }),
     enabled: repoQuery.data !== undefined,
   });
+
+  const productsQuery = useQuery({
+    queryKey: ["products"],
+    queryFn: listProducts,
+  });
+  const productName = productsQuery.data?.find((p) => p.id === repoQuery.data?.product_id)?.name ?? "Ungrouped";
 
   const syncMutation = useMutation({
     mutationFn: () => syncRepository(name),
@@ -238,7 +246,13 @@ export function RepositoryDetailPage() {
                 }
               />
               <InfoItem label="Architectures" value={repo.architectures.join(", ")} />
+              <InfoItem label="Product" value={productName} />
+              <InfoItem
+                label="Packages"
+                value={repo.package_count === null ? "—" : repo.package_count.toLocaleString()}
+              />
               <InfoItem label="Size" value={formatBytes(repo.size_bytes)} />
+              <InfoItem label="Health" value={<RepositoryHealthBadge status={repo.health_status} />} />
               <InfoItem label="Created" value={formatDateTime(repo.created_at)} />
               <InfoItem label="Last synced" value={formatDateTime(repo.last_synced_at)} />
               <InfoItem

@@ -14,6 +14,7 @@ _OVERRIDABLE_FIELDS = (
     "activation_key_default_ttl_hours",
     "stale_checkin_hours",
     "relay_stale_threshold_hours",
+    "repository_stale_threshold_hours",
     "disk_usage_warn_percent",
     "webhook_url",
 )
@@ -29,6 +30,7 @@ def _read(db: Session) -> InstanceSettingsRead:
         activation_key_default_ttl_hours=effective.activation_key_default_ttl_hours,
         stale_checkin_hours=effective.stale_checkin_hours,
         relay_stale_threshold_hours=effective.relay_stale_threshold_hours,
+        repository_stale_threshold_hours=effective.repository_stale_threshold_hours,
         disk_usage_warn_percent=effective.disk_usage_warn_percent,
         webhook_url=effective.webhook_url,
         has_webhook_secret=effective.webhook_secret is not None,

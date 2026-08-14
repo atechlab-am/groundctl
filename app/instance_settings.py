@@ -17,6 +17,7 @@ class EffectiveSettings:
     activation_key_default_ttl_hours: int
     stale_checkin_hours: int
     relay_stale_threshold_hours: int
+    repository_stale_threshold_hours: int
     disk_usage_warn_percent: float
     webhook_url: str | None
     webhook_secret: str | None
@@ -63,6 +64,10 @@ def get_effective_settings(db: Session) -> EffectiveSettings:
         relay_stale_threshold_hours=(
             row.relay_stale_threshold_hours if row and row.relay_stale_threshold_hours is not None
             else settings.relay_stale_threshold_hours
+        ),
+        repository_stale_threshold_hours=(
+            row.repository_stale_threshold_hours if row and row.repository_stale_threshold_hours is not None
+            else settings.repository_stale_threshold_hours
         ),
         disk_usage_warn_percent=(
             row.disk_usage_warn_percent if row and row.disk_usage_warn_percent is not None

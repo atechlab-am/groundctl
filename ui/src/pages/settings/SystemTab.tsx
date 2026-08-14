@@ -16,6 +16,7 @@ type NumericField =
   | "activation_key_default_ttl_hours"
   | "stale_checkin_hours"
   | "relay_stale_threshold_hours"
+  | "repository_stale_threshold_hours"
   | "disk_usage_warn_percent";
 
 const NUMERIC_FIELDS: { key: NumericField; label: string; help: string; step?: string }[] = [
@@ -40,6 +41,11 @@ const NUMERIC_FIELDS: { key: NumericField; label: string; help: string; step?: s
     help: "A relay whose last sync exceeds this is flagged stale and job routing falls back to the primary.",
   },
   {
+    key: "repository_stale_threshold_hours",
+    label: "Stale repository threshold (hours)",
+    help: "A repository whose last sync exceeds this shows as \"stale\" in the Repositories list. Display-only — doesn't trigger a sweep or webhook.",
+  },
+  {
     key: "disk_usage_warn_percent",
     label: "Disk usage warning threshold (%)",
     help: "Fires a disk.usage_high webhook when aptly's data volume crosses this percent used.",
@@ -54,6 +60,7 @@ export function SystemTab() {
     activation_key_default_ttl_hours: "",
     stale_checkin_hours: "",
     relay_stale_threshold_hours: "",
+    repository_stale_threshold_hours: "",
     disk_usage_warn_percent: "",
   });
   const [webhookUrl, setWebhookUrl] = useState("");
@@ -70,6 +77,7 @@ export function SystemTab() {
       activation_key_default_ttl_hours: String(data.activation_key_default_ttl_hours),
       stale_checkin_hours: String(data.stale_checkin_hours),
       relay_stale_threshold_hours: String(data.relay_stale_threshold_hours),
+      repository_stale_threshold_hours: String(data.repository_stale_threshold_hours),
       disk_usage_warn_percent: String(data.disk_usage_warn_percent),
     });
     setWebhookUrl(data.webhook_url ?? "");

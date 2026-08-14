@@ -40,6 +40,7 @@ from app.routers import (
     instance_settings,
     jobs,
     lifecycle_environments,
+    products,
     repositories,
     servers,
     sites,
@@ -165,6 +166,7 @@ app.add_middleware(MetricsMiddleware)
 api_router = APIRouter(prefix="/api")
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(repositories.router, prefix="/repositories", tags=["repositories"])
+api_router.include_router(products.router, prefix="/products", tags=["products"])
 api_router.include_router(content_views.router, prefix="/content-views", tags=["content-views"])
 api_router.include_router(
     lifecycle_environments.router, prefix="/lifecycle-environments", tags=["lifecycle-environments"]

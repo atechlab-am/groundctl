@@ -608,3 +608,153 @@ def test_sync_repository_task_marks_job_failed_on_aptly_error(db_session, mock_a
         repo_r = c.get("/repositories", params={"distribution": "jammy"}, headers=auth_headers(token))
         repo = next(r for r in repo_r.json() if r["id"] == repo_id)
         assert repo["last_synced_at"] is None
+
+
+def test_repository_health_status_never_synced_by_default(client, operator_token):
+    r = client.post("/repositories", json=_repo_payload("health-never"), headers=auth_headers(operator_token))
+    assert r.status_code == 201, r.text
+    assert r.json()["health_status"] == "never_synced"
+    assert r.json()["package_count"] is None
+
+
+def test_repository_health_status_healthy_after_sync(db_session, mock_aptly):
+    """Exercises sync_repository_task directly (same pattern as
+    test_sync_repository_task_marks_job_failed_on_aptly_error) so
+    last_synced_at is actually set to "now" — health_status is computed
+    at read time from that field, not stored, so this is the only way to
+    observe "healthy" rather than "never_synced".
+    """
+    mock_aptly.get_mirror_size_and_count.return_value = (12345, 7)
+    app.dependency_overrides[get_aptly_client] = lambda: mock_aptly
+    try:
+        with TestClient(app) as c:
+            token = _token_for(c, db_session, Role.operator)
+            r = c.post("/repositories", json=_repo_payload("health-healthy"), headers=auth_headers(token))
+            assert r.status_code == 201, r.text
+
+            with patch("app.tasks.sync_repository_task.delay"):
+                sync_r = c.post("/repositories/health-healthy/sync", headers=auth_headers(token))
+                job_id = sync_r.json()["id"]
+    finally:
+        app.dependency_overrides.clear()
+
+    from app.aptly_client import get_aptly_client as _get_aptly_client_dep
+    from app.tasks import sync_repository_task
+
+    app.dependency_overrides[_get_aptly_client_dep] = lambda: mock_aptly
+    try:
+        with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+            sync_repository_task(job_id)
+    finally:
+        app.dependency_overrides.clear()
+
+    with TestClient(app) as c:
+        r = c.get("/repositories/health-healthy", headers=auth_headers(token))
+        body = r.json()
+        assert body["health_status"] == "healthy"
+        assert body["size_bytes"] == 12345
+        assert body["package_count"] == 7
+
+
+def test_repository_health_status_stale_past_threshold(db_session, mock_aptly, admin_token):
+    """Sets a very small repository_stale_threshold_hours override via
+    instance-settings (admin-only) so a just-synced repository reads as
+    "stale" without needing to fake the clock.
+    """
+    mock_aptly.get_mirror_size_and_count.return_value = (100, 1)
+    app.dependency_overrides[get_aptly_client] = lambda: mock_aptly
+    try:
+        with TestClient(app) as c:
+            token = _token_for(c, db_session, Role.operator)
+            admin = _token_for(c, db_session, Role.admin)
+            c.put(
+                "/instance-settings",
+                json={"repository_stale_threshold_hours": 0},
+                headers=auth_headers(admin),
+            )
+            r = c.post("/repositories", json=_repo_payload("health-stale"), headers=auth_headers(token))
+            assert r.status_code == 201, r.text
+
+            with patch("app.tasks.sync_repository_task.delay"):
+                sync_r = c.post("/repositories/health-stale/sync", headers=auth_headers(token))
+                job_id = sync_r.json()["id"]
+    finally:
+        app.dependency_overrides.clear()
+
+    from app.aptly_client import get_aptly_client as _get_aptly_client_dep
+    from app.tasks import sync_repository_task
+
+    app.dependency_overrides[_get_aptly_client_dep] = lambda: mock_aptly
+    try:
+        with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+            sync_repository_task(job_id)
+    finally:
+        app.dependency_overrides.clear()
+
+    with TestClient(app) as c:
+        r = c.get("/repositories/health-stale", headers=auth_headers(token))
+        assert r.json()["health_status"] == "stale"
+
+
+def test_update_repository_product_as_operator(client, operator_token):
+    client.post("/repositories", json=_repo_payload("product-repo"), headers=auth_headers(operator_token))
+    product_r = client.post(
+        "/products", json={"name": "Ubuntu 22.04"}, headers=auth_headers(operator_token)
+    )
+    assert product_r.status_code == 201, product_r.text
+    product_id = product_r.json()["id"]
+
+    r = client.patch(
+        "/repositories/product-repo/product",
+        json={"product_id": product_id},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["product_id"] == product_id
+
+    unset_r = client.patch(
+        "/repositories/product-repo/product",
+        json={"product_id": None},
+        headers=auth_headers(operator_token),
+    )
+    assert unset_r.status_code == 200, unset_r.text
+    assert unset_r.json()["product_id"] is None
+
+
+def test_update_repository_product_unknown_product_404s(client, operator_token):
+    client.post("/repositories", json=_repo_payload("product-repo-2"), headers=auth_headers(operator_token))
+    r = client.patch(
+        "/repositories/product-repo-2/product",
+        json={"product_id": "00000000-0000-0000-0000-000000000000"},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_update_repository_product_as_viewer_forbidden(client, operator_token, viewer_token):
+    client.post("/repositories", json=_repo_payload("product-repo-3"), headers=auth_headers(operator_token))
+    r = client.patch(
+        "/repositories/product-repo-3/product",
+        json={"product_id": None},
+        headers=auth_headers(viewer_token),
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_list_repositories_filter_by_product_id(client, operator_token):
+    client.post("/repositories", json=_repo_payload("filter-a", "jammy-a"), headers=auth_headers(operator_token))
+    client.post("/repositories", json=_repo_payload("filter-b", "jammy-b"), headers=auth_headers(operator_token))
+    product_r = client.post(
+        "/products", json={"name": "Filter Product"}, headers=auth_headers(operator_token)
+    )
+    product_id = product_r.json()["id"]
+    client.patch(
+        "/repositories/filter-a/product",
+        json={"product_id": product_id},
+        headers=auth_headers(operator_token),
+    )
+
+    r = client.get("/repositories", params={"product_id": product_id}, headers=auth_headers(operator_token))
+    assert r.status_code == 200, r.text
+    names = [repo["name"] for repo in r.json()]
+    assert names == ["filter-a"]

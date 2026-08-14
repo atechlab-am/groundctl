@@ -143,6 +143,9 @@ class AuditAction(str, enum.Enum):
     change_own_password = "change_own_password"
     update_branding = "update_branding"
     update_instance_settings = "update_instance_settings"
+    create_product = "create_product"
+    update_product = "update_product"
+    delete_product = "delete_product"
 
 
 class User(Base):
@@ -181,6 +184,30 @@ class RefreshToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
 
+class Product(Base):
+    """Groups related repositories under one named parent — Satellite's
+    "Product" (e.g. an OS release's BaseOS + AppStream + Extras repos,
+    grouped as "RHEL 9 Server"; here, more likely jammy + jammy-security +
+    jammy-updates grouped as "Ubuntu 22.04"). Purely organizational: has no
+    effect on sync/publish/content-view behavior, which all still operate
+    per-Repository exactly as before — a Product is a grouping label for
+    the UI/inventory, not a new unit of content lifecycle. A Repository
+    belongs to at most one Product (nullable FK on Repository, not a
+    many-to-many) — matches Satellite's own one-product-per-repo shape and
+    avoids a repo appearing in two different groupings' totals at once.
+    """
+
+    __tablename__ = "products"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+
 class Repository(Base):
     __tablename__ = "repositories"
 
@@ -190,6 +217,11 @@ class Repository(Base):
     distribution: Mapped[str] = mapped_column(String, nullable=False)
     components: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False)
     architectures: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False)
+    # NULL = ungrouped — a Repository doesn't have to belong to a Product;
+    # existing repositories stay ungrouped until manually assigned.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id"), nullable=True
+    )
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Sum of Size across every package aptly reports for this mirror as of
     # last_synced_at — populated after a successful sync_repository job
@@ -198,6 +230,10 @@ class Repository(Base):
     # from GET /api/mirrors/{name}/packages so it can never drift from what
     # aptly actually holds.
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Count of packages in the mirror as of last_synced_at — computed in
+    # the same sync pass as size_bytes (get_mirror_packages is already
+    # fetched to compute that; the count is free, no extra aptly call).
+    package_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_sync_job_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("jobs.id", use_alter=True), nullable=True
     )
@@ -249,6 +285,12 @@ class InstanceSetting(Base):
     activation_key_default_ttl_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
     stale_checkin_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
     relay_stale_threshold_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A repository whose last_synced_at exceeds this is considered "stale"
+    # for the health-status computed field (see schemas.py's
+    # RepositoryRead.health_status) — display-only, does not gate or
+    # trigger anything (unlike stale_checkin_hours/relay_stale_threshold_hours,
+    # which drive real scheduled sweeps + webhooks for servers/relays).
+    repository_stale_threshold_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
     disk_usage_warn_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     webhook_url: Mapped[str | None] = mapped_column(String, nullable=True)
     webhook_secret: Mapped[str | None] = mapped_column(String, nullable=True)
