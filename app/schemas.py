@@ -974,12 +974,22 @@ class InstanceSettingsUpdate(BaseModel):
         "activation_key_default_ttl_hours",
         "stale_checkin_hours",
         "relay_stale_threshold_hours",
-        "repository_stale_threshold_hours",
     )
     @classmethod
     def _validate_positive_int(cls, v: int | None) -> int | None:
         if v is not None and v <= 0:
             raise ValueError("must be a positive number of hours/days")
+        return v
+
+    @field_validator("repository_stale_threshold_hours")
+    @classmethod
+    def _validate_non_negative_int(cls, v: int | None) -> int | None:
+        # Unlike the sibling thresholds above, 0 is a legitimate value here
+        # — "flag as stale immediately once synced" (see
+        # _repository_health_status in repositories.py, which already
+        # special-cases stale_threshold_hours <= 0). Only reject negative.
+        if v is not None and v < 0:
+            raise ValueError("must be zero or a positive number of hours")
         return v
 
     @field_validator("disk_usage_warn_percent")

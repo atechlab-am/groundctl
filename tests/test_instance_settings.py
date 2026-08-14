@@ -87,6 +87,27 @@ def test_update_instance_settings_rejects_non_positive(client, admin_token):
     assert r.status_code == 422, r.text
 
 
+def test_update_instance_settings_repository_stale_threshold_allows_zero(client, admin_token):
+    # Unlike the other hour/day thresholds, 0 is legitimate here — "flag as
+    # stale immediately once synced" (see _repository_health_status).
+    r = client.put(
+        "/instance-settings",
+        json={"repository_stale_threshold_hours": 0},
+        headers=auth_headers(admin_token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["repository_stale_threshold_hours"] == 0
+
+
+def test_update_instance_settings_repository_stale_threshold_rejects_negative(client, admin_token):
+    r = client.put(
+        "/instance-settings",
+        json={"repository_stale_threshold_hours": -1},
+        headers=auth_headers(admin_token),
+    )
+    assert r.status_code == 422, r.text
+
+
 def test_update_instance_settings_rejects_bad_percent(client, admin_token):
     r = client.put(
         "/instance-settings",

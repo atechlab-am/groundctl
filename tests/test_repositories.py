@@ -656,7 +656,7 @@ def test_repository_health_status_healthy_after_sync(db_session, mock_aptly):
         assert body["package_count"] == 7
 
 
-def test_repository_health_status_stale_past_threshold(db_session, mock_aptly, admin_token):
+def test_repository_health_status_stale_past_threshold(db_session, mock_aptly):
     """Sets a very small repository_stale_threshold_hours override via
     instance-settings (admin-only) so a just-synced repository reads as
     "stale" without needing to fake the clock.
