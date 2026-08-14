@@ -39,9 +39,14 @@ backwards-compatible features, `PATCH` for backwards-compatible bug fixes.
      it's a no-op (nothing to release) — this is what makes a normal,
      non-version-bumping push to `dev` safe; it runs CI but never creates
      a release.
-   - Otherwise: extracts the matching `## [X.Y.Z]` section from
-     `CHANGELOG.md`, fast-forwards `main` to `dev`, tags `main` as
-     `vX.Y.Z`, and creates a GitHub Release with those notes.
+   - Otherwise: rewrites `README.md`'s `**Version:** [X.Y.Z](...)` line to
+     match, committing that directly to `dev` if it changed — README's
+     version line is otherwise easy to forget every release, so this
+     keeps it truthful automatically rather than relying on discipline.
+     Then extracts the matching `## [X.Y.Z]` section from `CHANGELOG.md`,
+     fast-forwards `main` to `dev` (now including the README commit, if
+     one was made), tags `main` as `vX.Y.Z`, and creates a GitHub Release
+     with those notes.
 
 If `CHANGELOG.md` has no section matching `VERSION`, the release still
 happens but with an empty body and a workflow warning — always add the

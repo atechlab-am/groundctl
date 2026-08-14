@@ -25,6 +25,32 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-08-14
+
+### Added: on-demand version check, in-app changelog viewer, GitHub link, and an always-in-sync README
+
+- New admin-only `POST /version/check-now` — runs the same GitHub
+  releases lookup `scheduled_check_for_new_version` performs once daily
+  via Celery Beat, but synchronously and on demand. The header's version
+  badge previously only ever reflected whatever the last scheduled check
+  found, with no way to force a fresh look or tell whether Beat had even
+  run yet on a given install — this closes that gap and gives an "Update
+  available" state a hard "Check now" escape hatch. Both call sites now
+  share one `refresh_version_check` implementation
+  (`app/version_check.py`) so they can't drift in behavior.
+- New `GET /version/changelog` serves this deploy's own `CHANGELOG.md`
+  (synced into `/opt/groundctl` by `sync_app_code`, same pattern as
+  `VERSION` itself). The header's version area now has a "Changelog"
+  button opening an in-app markdown viewer, plus a "GitHub" link to the
+  repo — previously the only way to see release notes was clicking
+  through to a specific GitHub release tag, and there was no link to the
+  repo itself anywhere in the app.
+- `README.md`'s `**Version:** [X.Y.Z](CHANGELOG.md#...)` line was 5
+  releases stale (hand-maintained, nobody remembers to update it every
+  release). Fixed now, and `release.yml` gained a step that rewrites and
+  commits that line automatically as part of every release going
+  forward — it can't drift again the way it just did.
+
 ## [0.27.1] - 2026-08-14
 
 ### Changed: "Create new version" always cuts a version, even with nothing changed

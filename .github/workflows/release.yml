@@ -35,6 +35,58 @@ jobs:
           # is fine here — pushing to main is the end of this pipeline, not
           # meant to re-trigger CI/release on main.
 
+      - name: Check whether VERSION changed on this push
+        id: version_check
+        run: |
+          CURRENT_VERSION="$(tr -d '[:space:]' < VERSION)"
+          echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+
+          if git rev-parse "v${CURRENT_VERSION}" >/dev/null 2>&1; then
+            echo "tag v${CURRENT_VERSION} already exists — nothing to release"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync README's version line to VERSION
+        if: steps.version_check.outputs.should_release == 'true'
+        env:
+          VERSION: ${{ steps.version_check.outputs.current_version }}
+        run: |
+          # README's "**Version:** [X.Y.Z](CHANGELOG.md#anchor)" line is
+          # otherwise hand-maintained and reliably goes stale (found live —
+          # it sat 5 releases behind before this step existed, see
+          # CHANGELOG.md). Committed to dev BEFORE the fast-forward below,
+          # so the corrected README rides along as part of the exact
+          # commit that becomes main's new HEAD — no separate commit ever
+          # lands on main directly, keeping this workflow's fast-forward-
+          # only invariant (see docs/releasing.md) intact.
+          #
+          # Anchor mirrors GitHub's own markdown heading-to-anchor
+          # slugification of "## [X.Y.Z] - YYYY-MM-DD": lowercase, drop
+          # "[" "]" and ".", turn spaces into "-" (the literal " - "
+          # becomes "--" since the existing hyphen survives alongside the
+          # space-turned-hyphen on either side of it).
+          HEADING="$(grep -m1 "^## \[${VERSION}\]" CHANGELOG.md)"
+          if [ -z "${HEADING}" ]; then
+            echo "::warning::No CHANGELOG.md section found for [${VERSION}] — skipping README version-line sync."
+          else
+            DATE="$(echo "${HEADING}" | sed -E 's/^## \[[^]]+\] - //')"
+            ANCHOR="$(echo "${VERSION}${DATE:+---$DATE}" | tr -d '.' | tr '[:upper:]' '[:lower:]')"
+            # "|" as the sed delimiter, not "#" — the replacement text
+            # itself contains a literal "#" (the markdown anchor
+            # fragment), which would prematurely end an s#...#...# form.
+            sed -i -E "s|^\*\*Version:\*\* \[[0-9]+\.[0-9]+\.[0-9]+\]\(CHANGELOG\.md#[^)]+\)|**Version:** [${VERSION}](CHANGELOG.md#${ANCHOR})|" README.md
+
+            if ! git diff --quiet -- README.md; then
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git add README.md
+              git commit -m "Synced README version line to v${VERSION}"
+              git push origin HEAD:refs/heads/dev
+            fi
+          fi
+
       - name: Fast-forward main to dev
         run: |
           git config user.name "github-actions[bot]"
@@ -62,19 +114,6 @@ jobs:
           # dev. Promoting tested code to main and cutting a version tag
           # are different questions; only the tag should wait on a
           # version bump.
-
-      - name: Check whether VERSION changed on this push
-        id: version_check
-        run: |
-          CURRENT_VERSION="$(tr -d '[:space:]' < VERSION)"
-          echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
-
-          if git rev-parse "v${CURRENT_VERSION}" >/dev/null 2>&1; then
-            echo "tag v${CURRENT_VERSION} already exists — nothing to release"
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Extract this version's CHANGELOG section
         if: steps.version_check.outputs.should_release == 'true'

@@ -844,6 +844,10 @@ class VersionRead(BaseModel):
     last_checked_at: datetime | None
 
 
+class ChangelogRead(BaseModel):
+    content: str
+
+
 # ---------------------------------------------------------------------------
 # errata
 # ---------------------------------------------------------------------------

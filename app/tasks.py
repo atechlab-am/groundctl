@@ -43,11 +43,10 @@ from app.models import (
     ServerLifecycleState,
     ServerStatus,
     SiteEnvironment,
-    VersionCheck,
 )
 from app.routers.compliance import ComplianceDataNotReadyError, do_check_compliance
 from app.routers.repositories import do_sync_repository
-from app.version_check import VersionCheckError, fetch_latest_release_version
+from app.version_check import refresh_version_check
 from app.webhooks import send_webhook
 
 logger = logging.getLogger("groundctl.tasks")
@@ -1088,38 +1087,18 @@ def scheduled_flag_stale_relays() -> str:
         db.close()
 
 
-_VERSION_CHECK_ID = uuid.UUID("00000000-0000-0000-0000-000000000003")
-
-
 @celery_app.task
 def scheduled_check_for_new_version() -> str:
     """Daily: caches the latest GitHub release tag so GET /version (polled
     by every logged-in browser tab) never itself calls GitHub — see
-    VersionCheck's docstring. A failed check preserves whatever
-    latest_version a prior successful check found (check_failed=True is set
-    regardless, so the age of that cached value is visible via
-    checked_at) rather than wiping it out — a transient GitHub outage
-    shouldn't make an already-known update disappear from the UI.
+    VersionCheck's docstring and refresh_version_check's. Same underlying
+    refresh as the on-demand POST /version/check-now admin endpoint.
     """
     db = SessionLocal()
     try:
-        row = db.get(VersionCheck, _VERSION_CHECK_ID)
-        if row is None:
-            row = VersionCheck(id=_VERSION_CHECK_ID)
-            db.add(row)
-
-        try:
-            row.latest_version = fetch_latest_release_version()
-            row.check_failed = False
-            result = f"latest release: {row.latest_version}"
-        except VersionCheckError as exc:
-            row.check_failed = True
-            result = f"check failed: {exc}"
-            logger.warning("version check failed: %s", exc)
-
-        row.checked_at = datetime.now(timezone.utc)
+        row = refresh_version_check(db)
         db.commit()
-        return result
+        return f"check failed: latest_version stayed at {row.latest_version}" if row.check_failed else f"latest release: {row.latest_version}"
     finally:
         db.close()
 

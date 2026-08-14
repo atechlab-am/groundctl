@@ -211,6 +211,10 @@ sync_app_code() {
     # previously wasn't deployed at all, only ever read from the checkout
     # by groundctl-maintain itself).
     cp "${REPO_ROOT}/VERSION" /opt/groundctl/VERSION
+    # Same reasoning as VERSION above — GET /api/version/changelog
+    # (app/routers/version.py) serves this so the web UI can show release
+    # notes without leaving the app or needing GitHub reachable.
+    cp "${REPO_ROOT}/CHANGELOG.md" /opt/groundctl/CHANGELOG.md
 
     # Real bug found live: rsync -a --delete only removes destination
     # files/dirs that are genuinely absent from the SOURCE tree it's
