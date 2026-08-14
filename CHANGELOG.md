@@ -25,6 +25,21 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-08-14
+
+### Added: `groundctl-maintain upgrade --force`
+
+- `upgrade` treats "HEAD already matches origin/main" as "nothing to do"
+  and skips `build_ui`/`sync_app_code`/service restarts entirely — correct
+  in the common case, but found live to go wrong when a checkout's HEAD is
+  already at the right commit while the deployed artifacts (built
+  `ui/dist`, in this case) are stale for some other reason (an earlier
+  `upgrade` interrupted mid-build, or code arriving via a plain `git pull`
+  outside `upgrade`). `upgrade` reported "already up to date" and left the
+  browser served an old JS bundle with no way to force a redeploy short of
+  a no-op commit. New `--force` flag redeploys unconditionally even when
+  HEAD didn't move.
+
 ## [0.25.0] - 2026-08-14
 
 ### Added: repository Products (grouping) and health-status indicator

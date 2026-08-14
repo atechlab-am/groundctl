@@ -20,7 +20,7 @@
 # still install.sh's job, run from the checkout.
 #
 # Usage:
-#   sudo groundctl-maintain upgrade
+#   sudo groundctl-maintain upgrade [--force]
 #   sudo groundctl-maintain regen-cert
 
 set -euo pipefail
@@ -47,6 +47,13 @@ load_conf() {
 
 cmd_upgrade() {
     require_root
+    local force=0
+    for arg in "$@"; do
+        case "${arg}" in
+            --force) force=1 ;;
+            *) die "unknown option: ${arg} (see --help)" ;;
+        esac
+    done
     load_conf
     local repo_root="${GROUNDCTL_REPO_ROOT}"
     cd "${repo_root}"
@@ -131,10 +138,23 @@ cmd_upgrade() {
     # manually restarted it or went looking. HEAD is the actual "did
     # anything change" signal.
     if [[ "${before_commit}" == "${after_commit}" ]]; then
-        log_info "already up to date (v${after_version})."
-        return
-    fi
-    if [[ "${before_version}" == "${after_version}" ]]; then
+        if [[ "${force}" -eq 1 ]]; then
+            # --force exists for exactly this: HEAD already matches
+            # origin/main (an earlier upgrade/pull already moved the code)
+            # but the redeploy itself never completed — e.g. build_ui was
+            # interrupted, or code landed via a manual `git pull` instead
+            # of `upgrade`, leaving ui/dist stale even though the checkout
+            # is at the right commit. Real bug found live: "already up to
+            # date" here means "HEAD didn't move THIS run," not "the
+            # deployed artifacts are known-current" — those are different
+            # claims, and only --force lets an operator act on the gap
+            # between them without a no-op commit.
+            log_info "already at v${after_version} (HEAD unchanged) — --force given, redeploying anyway"
+        else
+            log_info "already up to date (v${after_version})."
+            return
+        fi
+    elif [[ "${before_version}" == "${after_version}" ]]; then
         log_info "new commits on main (v${after_version} unchanged) — redeploying app code and restarting services"
     else
         log_info "upgrading v${before_version} -> v${after_version}"
@@ -223,10 +243,15 @@ case "${1:-}" in
 Usage: groundctl-maintain <command>
 
 Commands:
-  upgrade      Pull the latest released version (main) and apply it:
+  upgrade [--force]
+               Pull the latest released version (main) and apply it:
                rebuilds the web UI, resyncs app code, updates Python
                deps, applies pending database migrations, and restarts
-               groundctl/worker/beat.
+               groundctl/worker/beat. Normally a no-op if HEAD is already
+               at origin/main's commit. --force redeploys anyway — use
+               this if the checkout is already at the right commit but
+               the build/sync/restart itself is suspected stale (e.g. an
+               earlier upgrade was interrupted).
   regen-cert   Regenerate the self-signed TLS cert (fleet hostname read
                back from /etc/groundctl/groundctl.env) and restart
                groundctl + nginx to pick it up. Backs up the old cert
