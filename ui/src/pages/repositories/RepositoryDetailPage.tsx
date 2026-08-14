@@ -52,7 +52,15 @@ export function RepositoryDetailPage() {
 
   if (!name) return null;
 
-  const repoQuery = useQuery({ queryKey: ["repository", name], queryFn: () => getRepository(name) });
+  // Polled, same reasoning as RepositoriesPage's own list query — a
+  // background job keeps running via Celery regardless of whether this
+  // page is open, so fields like size_bytes/last_synced_at need to catch
+  // up on their own, not just when a local mutation invalidates them.
+  const repoQuery = useQuery({
+    queryKey: ["repository", name],
+    queryFn: () => getRepository(name),
+    refetchInterval: 10_000,
+  });
 
   // Polled live while pending/running so this page reflects an
   // in-progress job without a manual refresh, same pattern as

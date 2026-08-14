@@ -102,7 +102,18 @@ export function RepositoriesPage() {
   // finishes) and Edit's Job isn't tracked on the row at all.
   const [activeJobByRepo, setActiveJobByRepo] = useState<Record<string, string>>({});
 
-  const repositoriesQuery = useQuery({ queryKey: ["repositories"], queryFn: () => listRepositories({ limit: 100 }) });
+  // Polled, not just invalidated on your own mutations — a background job
+  // (yours from an earlier visit, or anyone else's) keeps running via
+  // Celery regardless of whether this page is open; without a poll here,
+  // fields like size_bytes/last_synced_at on the Repository row itself
+  // only updated when something local invalidated the query, so a sync
+  // that finished while you were just looking at the page (not the one
+  // who triggered it) appeared stuck until a manual reload.
+  const repositoriesQuery = useQuery({
+    queryKey: ["repositories"],
+    queryFn: () => listRepositories({ limit: 100 }),
+    refetchInterval: 10_000,
+  });
 
   function resetDialog() {
     setArchiveUrl(DEFAULT_ARCHIVE_URL);

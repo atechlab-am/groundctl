@@ -25,6 +25,26 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-08-14
+
+### Fixed: elapsed-time counter froze between polls, repo list/detail data went stale in the background
+
+- `JobStatusIndicator`'s "running… Xm Ys" counter was a pure function of
+  `Date.now()` computed only at render time — with nothing forcing a
+  re-render between the 3s data polls, the number sat frozen until the
+  next poll happened to land (worse with a backgrounded tab, where
+  polling throttles further), reading as stuck even though the job itself
+  was progressing normally. New `useNow` hook ticks once a second, only
+  while a job is actually in-progress, so the counter now genuinely
+  updates every second.
+- The Repositories list and repository detail page only refreshed
+  `size_bytes`/`last_synced_at`/etc. when a mutation triggered *locally*
+  invalidated the query — a job that kept running in the background
+  (Celery doesn't care whether any browser has the page open) wouldn't be
+  reflected until a manual reload, even though the job itself completed
+  correctly. Both pages now poll their own data every 10s so a background
+  job's result shows up on its own.
+
 ## [0.24.0] - 2026-08-14
 
 ### Added: job status survives a page reload for Edit/Delete too, and a "usually takes ~Xm" estimate
