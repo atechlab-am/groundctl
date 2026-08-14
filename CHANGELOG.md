@@ -25,6 +25,24 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.25.2] - 2026-08-14
+
+### Changed: job progress bar eases toward completion instead of sliding indeterminately
+
+- `JobStatusIndicator`'s progress bar was a fixed-width chunk bouncing
+  back and forth (CSS `animate-indeterminate`) for the entire duration of
+  every in-progress job, regardless of how long that job type usually
+  takes — accurate (aptly gives no real percent-complete signal) but read
+  as "stuck" rather than "progressing." Now fills gradually: eases toward
+  95% over the average duration of that job's own past successful runs of
+  the same type (and same target repository, when there is one), using an
+  ease-out curve so it moves fastest early and slows as it nears the
+  estimate. Never claims 100% before the job's real status does — holds
+  at 95% if it runs longer than typical. Jobs with no prior successful
+  history to average (a new job type, or the very first run) still fall
+  back to the old indeterminate animation, since there's nothing honest
+  to pace a fill against yet.
+
 ## [0.25.1] - 2026-08-14
 
 ### Added: `groundctl-maintain upgrade --force`
