@@ -95,6 +95,9 @@ export function deleteContentViewFilter(contentViewId: string, filterId: string)
   return api.delete<void>(`/content-views/${contentViewId}/filters/${filterId}`);
 }
 
-export function publishContentView(contentViewId: string): Promise<PublishResponse> {
-  return api.post<PublishResponse>(`/content-views/${contentViewId}/publish`);
+// force=true always cuts a new version, even with nothing changed since
+// the latest one — a version is also a promotion checkpoint, not purely
+// a content-change record.
+export function publishContentView(contentViewId: string, force = false): Promise<PublishResponse> {
+  return api.post<PublishResponse>(`/content-views/${contentViewId}/publish`, { force });
 }

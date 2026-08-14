@@ -99,14 +99,13 @@ export function ContentViewDetailPage() {
     onError: (err) => toast.error(errorMessage(err)),
   });
 
+  // Always force=true — "Create new version" always cuts one, even with
+  // nothing changed since the latest (a version doubles as a promotion
+  // checkpoint, not purely a content-change record).
   const publishMutation = useMutation({
-    mutationFn: () => publishContentView(contentViewId),
+    mutationFn: () => publishContentView(contentViewId, true),
     onSuccess: (result) => {
-      toast.success(
-        result.version_cut
-          ? `Published version ${result.content_view_version.version}`
-          : `No content changes — version ${result.content_view_version.version} is still current`,
-      );
+      toast.success(`Created version ${result.content_view_version.version}`);
       void queryClient.invalidateQueries({ queryKey: ["content-view-versions", contentViewId] });
     },
     onError: (err) => toast.error(errorMessage(err)),
@@ -189,7 +188,7 @@ export function ContentViewDetailPage() {
                   <div className="flex gap-2">
                     <Button size="sm" onClick={() => publishMutation.mutate()} disabled={publishMutation.isPending}>
                       <UploadCloud className="h-4 w-4" />
-                      {publishMutation.isPending ? "Publishing…" : "Publish"}
+                      {publishMutation.isPending ? "Creating…" : "Create new version"}
                     </Button>
                     <Button
                       variant="destructive"

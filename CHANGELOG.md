@@ -25,6 +25,23 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-08-14
+
+### Changed: "Create new version" always cuts a version, even with nothing changed
+
+- `POST /content-views/{id}/publish` previously always deduped against
+  the latest version's content hash — publishing with nothing changed
+  since the last version was a no-op that returned the existing version
+  unchanged (`version_cut: false`). New optional `force` field on the
+  request body always cuts a new version regardless of the hash — a
+  version doubles as a promotion checkpoint, not purely a content-change
+  record, so an operator may want a fresh one to promote even when
+  nothing new was synced. The Content View detail page's button (renamed
+  from "Publish" to "Create new version") always sends `force: true`;
+  the promote-triggered auto-publish path (`promote_environment`'s
+  publish-if-needed-then-promote-latest) is unaffected and still only
+  cuts a version when content actually changed.
+
 ## [0.27.0] - 2026-08-14
 
 ### Added: promote a specific content view version from its version list, with live-package counts

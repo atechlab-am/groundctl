@@ -385,6 +385,14 @@ class ContentViewVersionRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PublishRequest(BaseModel):
+    # False (default): only cut a new version if content actually changed
+    # since the latest one. True: always cut a new version — a version is
+    # also a promotion checkpoint, not purely a content-change record, so
+    # an operator may want a fresh one to promote even with nothing new.
+    force: bool = False
+
+
 class PublishResponse(BaseModel):
     content_view_version: ContentViewVersionRead
     version_cut: bool

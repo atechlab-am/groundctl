@@ -244,6 +244,36 @@ def test_publish_content_view_idempotent_when_unchanged(client, operator_token, 
     assert r2.json()["content_view_version"]["version"] == 1
 
 
+def test_publish_content_view_force_cuts_new_version_even_when_unchanged(client, operator_token, mock_aptly):
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    repo = _create_repo(client, operator_token, "publish-force-repo")
+    cv = client.post(
+        "/content-views",
+        json={"name": "publish-force-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+
+    r1 = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
+    assert r1.status_code == 201, r1.text
+    assert r1.json()["version_cut"] is True
+    assert r1.json()["content_view_version"]["version"] == 1
+
+    # No repository content changed at all — a plain publish would be a
+    # no-op (see test_publish_content_view_idempotent_when_unchanged
+    # above), but force=True must cut version 2 anyway.
+    r2 = client.post(
+        f"/content-views/{cv['id']}/publish", json={"force": True}, headers=auth_headers(operator_token)
+    )
+    assert r2.status_code == 201, r2.text
+    assert r2.json()["version_cut"] is True
+    assert r2.json()["content_view_version"]["version"] == 2
+
+    versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
+    assert [v["version"] for v in versions_r.json()] == [2, 1]
+
+
 def test_publish_content_view_as_viewer_forbidden(client, operator_token, viewer_token):
     repo = _create_repo(client, operator_token, "publish-repo3")
     cv = client.post(

@@ -30,6 +30,7 @@ from app.schemas import (
     ContentViewFilterRead,
     ContentViewRead,
     ContentViewVersionRead,
+    PublishRequest,
     PublishResponse,
 )
 
@@ -337,12 +338,19 @@ def create_content_view_filter(
 
 
 def do_publish(
-    content_view: ContentView, db: Session, aptly: AptlyClient, user: User
+    content_view: ContentView, db: Session, aptly: AptlyClient, user: User, force: bool = False
 ) -> tuple[ContentViewVersion, bool]:
     """Cut a new ContentViewVersion if any member repository's package
     content has changed since the latest version; otherwise return the
-    existing latest version unchanged. Never touches any LifecycleEnvironment
-    — see do_promote in lifecycle_environments.py for that half.
+    existing latest version unchanged — unless force=True, which always
+    cuts a new version (new number, new snapshots, new published_at) even
+    when content_hash is identical to the latest version. A version is
+    also a promotion checkpoint, not purely a content-change record: an
+    operator may want a version they can promote to one environment today
+    that's distinct from whatever's already promoted elsewhere, even with
+    nothing new to snapshot (matches Satellite's own "Publish New Version"
+    always being available). Never touches any LifecycleEnvironment — see
+    do_promote in lifecycle_environments.py for that half.
     """
     repos = _content_view_repositories(db, content_view.id)
     if not repos:
@@ -373,7 +381,7 @@ def do_publish(
         .limit(1)
     ).scalar_one_or_none()
 
-    if latest is not None and latest.content_hash == content_hash:
+    if not force and latest is not None and latest.content_hash == content_hash:
         return latest, False
 
     next_version = 1 if latest is None else latest.version + 1
@@ -446,7 +454,11 @@ def do_publish(
             action=AuditAction.cut_snapshot,
             resource_type="content_view",
             resource_id=str(content_view.id),
-            detail={"version": next_version, "snapshot_count": len(snapshots)},
+            detail={
+                "version": next_version,
+                "snapshot_count": len(snapshots),
+                "forced": force and latest is not None and latest.content_hash == content_hash,
+            },
         )
     )
     db.commit()
@@ -457,11 +469,13 @@ def do_publish(
 @router.post("/{content_view_id}/publish", response_model=PublishResponse, status_code=status.HTTP_201_CREATED)
 def publish_content_view(
     content_view_id: uuid.UUID,
+    payload: PublishRequest | None = None,
     db: Session = Depends(get_db),
     aptly: AptlyClient = Depends(get_aptly_client),
     current_user: User = Depends(require_role(Role.operator)),
 ):
     content_view = _get_content_view_or_404(db, content_view_id)
 
-    version, cut = do_publish(content_view, db, aptly, current_user)
+    force = payload.force if payload is not None else False
+    version, cut = do_publish(content_view, db, aptly, current_user, force=force)
     return PublishResponse(content_view_version=ContentViewVersionRead.model_validate(version), version_cut=cut)
