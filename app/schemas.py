@@ -187,9 +187,17 @@ class RepositoryRead(BaseModel):
     # sync_repository job completes.
     size_bytes: int | None
     last_sync_job_id: uuid.UUID | None
+    # Whether the nightly scheduled sweep (scheduled_sync_all_repositories,
+    # app/tasks.py) includes this repository — defaults True on creation.
+    # Manual sync (POST .../sync) always works regardless of this flag.
+    auto_sync_enabled: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class RepositoryAutoSyncUpdate(BaseModel):
+    auto_sync_enabled: bool
 
 
 class RepositoryUpdate(BaseModel):

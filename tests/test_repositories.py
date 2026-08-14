@@ -148,6 +148,66 @@ def test_get_repository_not_found(client, viewer_token):
     assert r.status_code == 404, r.text
 
 
+def test_repository_auto_sync_enabled_by_default(client, operator_token):
+    r = client.post("/repositories", json=_repo_payload("auto-sync-default"), headers=auth_headers(operator_token))
+    assert r.status_code == 201, r.text
+    assert r.json()["auto_sync_enabled"] is True
+
+
+def test_update_repository_auto_sync_as_operator(client, operator_token):
+    client.post("/repositories", json=_repo_payload("auto-sync-repo"), headers=auth_headers(operator_token))
+    r = client.patch(
+        "/repositories/auto-sync-repo/auto-sync",
+        json={"auto_sync_enabled": False},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["auto_sync_enabled"] is False
+
+    r2 = client.get("/repositories/auto-sync-repo", headers=auth_headers(operator_token))
+    assert r2.json()["auto_sync_enabled"] is False
+
+
+def test_update_repository_auto_sync_as_viewer_forbidden(client, operator_token, viewer_token):
+    client.post("/repositories", json=_repo_payload("auto-sync-repo2"), headers=auth_headers(operator_token))
+    r = client.patch(
+        "/repositories/auto-sync-repo2/auto-sync",
+        json={"auto_sync_enabled": False},
+        headers=auth_headers(viewer_token),
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_update_repository_auto_sync_not_found(client, operator_token):
+    r = client.patch(
+        "/repositories/does-not-exist/auto-sync",
+        json={"auto_sync_enabled": False},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_scheduled_sync_all_repositories_skips_disabled(db_session, mock_aptly, operator_token, client):
+    from app.tasks import scheduled_sync_all_repositories
+
+    client.post("/repositories", json=_repo_payload("auto-sync-on"), headers=auth_headers(operator_token))
+    client.post(
+        "/repositories", json=_repo_payload("auto-sync-off", distribution="jammy"), headers=auth_headers(operator_token)
+    )
+    client.patch(
+        "/repositories/auto-sync-off/auto-sync",
+        json={"auto_sync_enabled": False},
+        headers=auth_headers(operator_token),
+    )
+
+    with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+        result = scheduled_sync_all_repositories()
+
+    assert "auto-sync-off" not in result
+    mock_aptly.sync_mirror.assert_any_call("auto-sync-on")
+    assert "auto-sync-off" not in [c.args[0] for c in mock_aptly.sync_mirror.call_args_list]
+
+
 def test_delete_repository_as_operator(client, operator_token):
     client.post("/repositories", json=_repo_payload("delete-repo"), headers=auth_headers(operator_token))
     with patch("app.tasks.delete_repository_task.delay") as mock_delay:

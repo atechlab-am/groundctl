@@ -28,6 +28,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { JobStatusIndicator } from "@/components/JobStatusIndicator";
 import { RoleGate } from "@/layout/RoleGate";
+import { useHasRole } from "@/auth/useHasRole";
 import {
   listRepositories,
   probeRepositoryArchive,
@@ -35,6 +36,7 @@ import {
   syncRepository,
   estimateRepositorySize,
   updateRepository,
+  updateRepositoryAutoSync,
   deleteRepository,
   type RepositoryRead,
 } from "@/api/repositories";
@@ -45,6 +47,7 @@ const DEFAULT_ARCHIVE_URL = "http://archive.ubuntu.com/ubuntu";
 
 export function RepositoriesPage() {
   const queryClient = useQueryClient();
+  const canOperate = useHasRole("operator");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [archiveUrl, setArchiveUrl] = useState(DEFAULT_ARCHIVE_URL);
   const [distributions, setDistributions] = useState<string[] | null>(null);
@@ -203,6 +206,16 @@ export function RepositoriesPage() {
     if (!confirm(`Delete repository "${repo.name}"? This removes the aptly mirror and cannot be undone.`)) return;
     deleteMutation.mutate(repo.name);
   }
+
+  const autoSyncMutation = useMutation({
+    mutationFn: (payload: { name: string; enabled: boolean }) =>
+      updateRepositoryAutoSync(payload.name, payload.enabled),
+    onSuccess: (_repo, payload) => {
+      toast.success(payload.enabled ? "Nightly auto-sync enabled" : "Nightly auto-sync disabled");
+      void queryClient.invalidateQueries({ queryKey: ["repositories"] });
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
 
   function handleProbe(e: React.FormEvent) {
     e.preventDefault();
@@ -392,6 +405,7 @@ export function RepositoriesPage() {
               <TableHead>Architectures</TableHead>
               <TableHead>Size</TableHead>
               <TableHead>Last synced</TableHead>
+              <TableHead>Nightly sync</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -428,6 +442,20 @@ export function RepositoriesPage() {
                     </Link>
                   ) : (
                     formatDateTime(repo.last_synced_at)
+                  )}
+                </TableCell>
+                <TableCell>
+                  {canOperate ? (
+                    <Checkbox
+                      checked={repo.auto_sync_enabled}
+                      disabled={autoSyncMutation.isPending && autoSyncMutation.variables?.name === repo.name}
+                      onCheckedChange={(checked) =>
+                        autoSyncMutation.mutate({ name: repo.name, enabled: checked === true })
+                      }
+                      aria-label={`Nightly auto-sync for ${repo.name}`}
+                    />
+                  ) : (
+                    <span className="text-sm text-muted-foreground">{repo.auto_sync_enabled ? "On" : "Off"}</span>
                   )}
                 </TableCell>
                 <TableCell className="text-right">

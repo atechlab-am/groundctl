@@ -869,10 +869,18 @@ def update_repository_task(self, job_id: str) -> str:
 
 @celery_app.task
 def scheduled_sync_all_repositories() -> str:
+    """Nightly sweep — only repositories with auto_sync_enabled=True (the
+    per-repository opt-out toggle, defaults True so existing behavior is
+    unchanged unless someone explicitly disables it). Manual syncs (POST
+    /repositories/{name}/sync) always work regardless of this flag — it
+    only gates this scheduled sweep.
+    """
     db = SessionLocal()
     aptly = get_aptly_client()
     try:
-        repositories = list(db.execute(select(Repository)).scalars())
+        repositories = list(
+            db.execute(select(Repository).where(Repository.auto_sync_enabled.is_(True))).scalars()
+        )
         errors = []
         for repository in repositories:
             try:

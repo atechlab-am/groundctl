@@ -20,7 +20,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { RoleGate } from "@/layout/RoleGate";
-import { getRepository, syncRepository, updateRepository, deleteRepository } from "@/api/repositories";
+import { useHasRole } from "@/auth/useHasRole";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  getRepository,
+  syncRepository,
+  updateRepository,
+  updateRepositoryAutoSync,
+  deleteRepository,
+} from "@/api/repositories";
 import { getJob, listJobs } from "@/api/jobs";
 import { formatDateTime, formatBytes } from "@/lib/format";
 import { errorMessage } from "@/lib/errors";
@@ -29,6 +37,7 @@ export function RepositoryDetailPage() {
   const { name } = useParams<{ name: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const canOperate = useHasRole("operator");
   const [editOpen, setEditOpen] = useState(false);
   const [editArchiveUrl, setEditArchiveUrl] = useState("");
   const [editDistribution, setEditDistribution] = useState("");
@@ -72,6 +81,15 @@ export function RepositoryDetailPage() {
       setActiveJobId(job.id);
       void queryClient.invalidateQueries({ queryKey: ["repository", name] });
       void queryClient.invalidateQueries({ queryKey: ["jobs", "repository"] });
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+
+  const autoSyncMutation = useMutation({
+    mutationFn: (enabled: boolean) => updateRepositoryAutoSync(name, enabled),
+    onSuccess: (_repo, enabled) => {
+      toast.success(enabled ? "Nightly auto-sync enabled" : "Nightly auto-sync disabled");
+      void queryClient.invalidateQueries({ queryKey: ["repository", name] });
     },
     onError: (err) => toast.error(errorMessage(err)),
   });
@@ -185,6 +203,28 @@ export function RepositoryDetailPage() {
               <InfoItem label="Size" value={formatBytes(repo.size_bytes)} />
               <InfoItem label="Created" value={formatDateTime(repo.created_at)} />
               <InfoItem label="Last synced" value={formatDateTime(repo.last_synced_at)} />
+              <InfoItem
+                label="Nightly auto-sync"
+                value={
+                  canOperate ? (
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        checked={repo.auto_sync_enabled}
+                        disabled={autoSyncMutation.isPending}
+                        onCheckedChange={(checked) => autoSyncMutation.mutate(checked === true)}
+                        aria-label="Nightly auto-sync"
+                      />
+                      <span className="text-sm font-normal text-muted-foreground">
+                        {repo.auto_sync_enabled ? "On" : "Off"}
+                      </span>
+                    </div>
+                  ) : repo.auto_sync_enabled ? (
+                    "On"
+                  ) : (
+                    "Off"
+                  )
+                }
+              />
             </div>
 
             {currentJob && currentJobId && (

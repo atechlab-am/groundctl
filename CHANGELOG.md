@@ -25,6 +25,42 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-08-13
+
+### Added: per-repository nightly auto-sync toggle
+
+- New `Repository.auto_sync_enabled` (migration `d84f2a6c1e9b`), defaults
+  `true` so existing/new repositories keep syncing on the nightly 3am
+  sweep (`scheduled_sync_all_repositories`, Celery Beat) unless explicitly
+  turned off — that sweep previously looped over every repository
+  unconditionally with no way to opt out. Manual sync (the Sync button /
+  `POST .../sync`) is unaffected either way, regardless of the flag.
+- New `PATCH /repositories/{name}/auto-sync` — lightweight, DB-only (no
+  aptly call), operator-role gated. Checkbox toggle on both the
+  Repositories list (new "Nightly sync" column) and the repository detail
+  page; viewers see a read-only On/Off instead of the checkbox.
+
+### Fixed: repository size always showed 0 / never updated after sync
+
+- `AptlyClient.get_mirror_size_bytes` summed each package's `Size` field
+  expecting a Python `int` — confirmed live against a real aptly 1.6.3
+  instance that `Size` is actually a JSON **string** (`"84924"`) in
+  `?format=details` responses. The type check silently rejected every
+  package's size, so this had been summing to 0 for every repository
+  since it was introduced, with no error surfaced anywhere. Now accepts
+  numeric strings too. New `tests/test_aptly_client.py` — the first direct
+  unit test of `AptlyClient`'s own parsing logic (every existing test only
+  mocked the method away entirely, which is exactly why this went
+  uncaught).
+- `AptlyClient.sync_mirror`/`delete_mirror` timeout raised from 30 minutes
+  to 6 hours — a real ~100GB first-run `jammy` sync legitimately took just
+  over 30 minutes and hit the old ceiling exactly at that mark. Both calls
+  always run inside an async Celery job with nobody waiting on the HTTP
+  response, so a generous timeout costs nothing except how long a
+  genuinely-stuck sync takes to report failure. Re-syncing after a timeout
+  is always safe either way — aptly's mirror sync is incremental, it never
+  re-downloads what it already has.
+
 ## [0.22.4] - 2026-08-13
 
 ### Fixed: `install.sh` failed on a real fresh-install run — redis and Node both broken

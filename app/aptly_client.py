@@ -131,21 +131,32 @@ class AptlyClient:
         Extended timeout: confirmed live against a real mirror with a full
         Ubuntu-scale package set — deleting checks/detaches pool references
         for every package the mirror holds, the same class of operation as
-        sync_mirror/publish_snapshot below, which already get this same
-        1800s override. The default 30s client timeout genuinely isn't
-        enough; this was surfaced as "aptly unreachable: DELETE
-        /api/mirrors/<name>: timed out" against a live instance — a
+        sync_mirror/publish_snapshot below. The default 30s client timeout
+        genuinely isn't enough; this was surfaced as "aptly unreachable:
+        DELETE /api/mirrors/<name>: timed out" against a live instance — a
         TransportError timeout, not aptly actually being unreachable.
+        Raised again to match sync_mirror's 6h ceiling — delete_mirror
+        always runs inside delete_repository_task (a Celery job, see
+        app/tasks.py), same no-one's-actually-waiting reasoning.
         """
         _validate_name(name)
-        self._request("DELETE", f"/api/mirrors/{name}", timeout=1800.0)
+        self._request("DELETE", f"/api/mirrors/{name}", timeout=21600.0)
 
     def sync_mirror(self, name: str) -> dict:
         _validate_name(name)
         # First-run syncs download real package files and can take many
         # minutes (docs/limitations.md) — much longer than the default
-        # client timeout used for quick metadata calls.
-        response = self._request("PUT", f"/api/mirrors/{name}", timeout=1800.0)
+        # client timeout used for quick metadata calls. Real case hit
+        # live: a full jammy mirror (~100GB) took just over 30 minutes and
+        # tripped the previous 1800s timeout exactly at that mark — the
+        # sync was genuinely still progressing, not stuck. sync_mirror
+        # always runs inside sync_repository_task (a Celery job, see
+        # app/tasks.py) with no HTTP client actually waiting on this call,
+        # so there's no real cost to a generous ceiling — 6h comfortably
+        # covers a much larger mirror on a slow connection without
+        # papering over an actually-hung aptly (which would eventually
+        # still time out and get reported, just later).
+        response = self._request("PUT", f"/api/mirrors/{name}", timeout=21600.0)
         return self._json_object_or_empty(response)
 
     def get_mirror_packages(self, name: str) -> list[dict]:
@@ -164,12 +175,26 @@ class AptlyClient:
         Repository.size_bytes. Missing/non-numeric Size on an individual
         package is treated as 0 rather than failing the whole sum — better
         an undercount than a 502 on an otherwise-successful sync.
+
+        Real bug found live: aptly's ?format=details response encodes Size
+        as a JSON STRING ("84924"), not a number — confirmed against a real
+        aptly 1.6.3 instance's actual output. The original `isinstance(size,
+        int)` check therefore rejected every package's size unconditionally
+        and this always summed to 0, silently, no error — every repo's
+        size_bytes has been wrong since this was written. Every other
+        control field this client reads (Version, Architecture, etc.) is
+        also a string in aptly's own output, for the same reason (it's
+        parsed straight from a .deb's plain-text control file) — Size is
+        the one field this code needs as a number, so it's the one that
+        needs converting.
         """
         total = 0
         for package in self.get_mirror_packages(name):
             size = package.get("Size")
             if isinstance(size, int):
                 total += size
+            elif isinstance(size, str) and size.isdigit():
+                total += int(size)
         return total
 
     # -- snapshots ------------------------------------------------------------

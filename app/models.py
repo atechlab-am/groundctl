@@ -201,6 +201,14 @@ class Repository(Base):
     last_sync_job_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("jobs.id", use_alter=True), nullable=True
     )
+    # Whether scheduled_sync_all_repositories (app/tasks.py, nightly via
+    # Celery Beat) includes this repository. Defaults true — a newly
+    # created repository is auto-synced nightly unless explicitly opted
+    # out, matching the behavior every repository already had before this
+    # column existed (the nightly sweep used to loop over ALL repositories
+    # unconditionally). Manual syncs (POST /repositories/{name}/sync) are
+    # unaffected either way — this only gates the scheduled sweep.
+    auto_sync_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False

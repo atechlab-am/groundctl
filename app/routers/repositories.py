@@ -24,6 +24,7 @@ from app.models import (
 from app.schemas import (
     APTLY_NAME_RE,
     JobRead,
+    RepositoryAutoSyncUpdate,
     RepositoryBatchCreate,
     RepositoryBatchCreateError,
     RepositoryBatchCreateResult,
@@ -267,6 +268,34 @@ def get_repository(
     going through the CLI or the database directly.
     """
     return _get_repository_or_404(db, name)
+
+
+@router.patch("/{name}/auto-sync", response_model=RepositoryRead)
+def update_repository_auto_sync(
+    name: str,
+    payload: RepositoryAutoSyncUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """Toggles whether the nightly scheduled sweep
+    (scheduled_sync_all_repositories, app/tasks.py) includes this
+    repository — DB-only, no aptly call, unlike the sync/edit/delete
+    endpoints above. Manual sync (POST .../sync) is unaffected either way.
+    """
+    repository = _get_repository_or_404(db, name)
+    repository.auto_sync_enabled = payload.auto_sync_enabled
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.update_repository,
+            resource_type="repository",
+            resource_id=repository.name,
+            detail={"auto_sync_enabled": payload.auto_sync_enabled},
+        )
+    )
+    db.commit()
+    db.refresh(repository)
+    return repository
 
 
 @router.delete("/{name}", response_model=JobRead, status_code=status.HTTP_201_CREATED)

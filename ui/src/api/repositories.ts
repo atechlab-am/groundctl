@@ -21,6 +21,9 @@ export interface RepositoryRead {
   // first successful sync completes.
   size_bytes: number | null;
   last_sync_job_id: string | null;
+  // Whether the nightly scheduled sweep includes this repository. Defaults
+  // true on creation — manual sync always works regardless of this flag.
+  auto_sync_enabled: boolean;
   created_at: string;
 }
 
@@ -40,6 +43,14 @@ export function createRepository(payload: RepositoryCreate): Promise<RepositoryR
 
 export function getRepository(name: string): Promise<RepositoryRead> {
   return api.get<RepositoryRead>(`/repositories/${encodeURIComponent(name)}`);
+}
+
+// DB-only toggle, no aptly call — unlike sync/edit/delete this is
+// synchronous and immediate, not a tracked Job.
+export function updateRepositoryAutoSync(name: string, autoSyncEnabled: boolean): Promise<RepositoryRead> {
+  return api.patch<RepositoryRead>(`/repositories/${encodeURIComponent(name)}/auto-sync`, {
+    auto_sync_enabled: autoSyncEnabled,
+  });
 }
 
 export interface RepositoryUpdate {
