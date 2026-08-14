@@ -699,7 +699,7 @@ def test_repository_health_status_stale_past_threshold(db_session, mock_aptly, a
 def test_update_repository_product_as_operator(client, operator_token):
     client.post("/repositories", json=_repo_payload("product-repo"), headers=auth_headers(operator_token))
     product_r = client.post(
-        "/products", json={"name": "Ubuntu 22.04"}, headers=auth_headers(operator_token)
+        "/products", json={"name": "ubuntu-22.04"}, headers=auth_headers(operator_token)
     )
     assert product_r.status_code == 201, product_r.text
     product_id = product_r.json()["id"]
@@ -745,7 +745,7 @@ def test_list_repositories_filter_by_product_id(client, operator_token):
     client.post("/repositories", json=_repo_payload("filter-a", "jammy-a"), headers=auth_headers(operator_token))
     client.post("/repositories", json=_repo_payload("filter-b", "jammy-b"), headers=auth_headers(operator_token))
     product_r = client.post(
-        "/products", json={"name": "Filter Product"}, headers=auth_headers(operator_token)
+        "/products", json={"name": "filter-product"}, headers=auth_headers(operator_token)
     )
     product_id = product_r.json()["id"]
     client.patch(

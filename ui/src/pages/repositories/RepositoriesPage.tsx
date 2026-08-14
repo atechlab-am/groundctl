@@ -798,8 +798,9 @@ export function RepositoriesPage() {
           <DialogHeader>
             <DialogTitle>Manage products</DialogTitle>
             <DialogDescription>
-              Products group related repositories (e.g. jammy + jammy-security + jammy-updates as "Ubuntu 22.04").
-              Purely organizational — deleting a product just ungroups its repositories.
+              Products group related repositories (e.g. jammy + jammy-security + jammy-updates as
+              "ubuntu-22.04"). Same name rules as a repository — letters, numbers, dots, underscores,
+              hyphens, no spaces. Purely organizational — deleting a product just ungroups its repositories.
             </DialogDescription>
           </DialogHeader>
           <div className="mt-4 flex flex-col gap-4">
@@ -866,7 +867,7 @@ export function RepositoriesPage() {
                   id="new-product-name"
                   value={newProductName}
                   onChange={(e) => setNewProductName(e.target.value)}
-                  placeholder="Ubuntu 22.04"
+                  placeholder="ubuntu-22.04"
                   required
                 />
               </div>

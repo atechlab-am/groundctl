@@ -46,8 +46,15 @@ router = APIRouter()
 def _repository_health_status(repository: Repository, stale_threshold_hours: int) -> str:
     if repository.last_synced_at is None:
         return "never_synced"
+    # >= , not >: a 0-hour threshold is meant as "flag as stale
+    # immediately" (used deliberately in tests, and a legitimate admin
+    # choice via Settings > System), but `age > timedelta(hours=0)` is
+    # false for a repository whose sync just committed in the same
+    # instant the health check runs — age can legitimately be
+    # timedelta(0) at that boundary. >= makes threshold=0 behave as
+    # "always stale once synced," matching the setting's own intent.
     age = datetime.now(timezone.utc) - repository.last_synced_at
-    if age > timedelta(hours=stale_threshold_hours):
+    if age >= timedelta(hours=stale_threshold_hours):
         return "stale"
     return "healthy"
 

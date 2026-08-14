@@ -19,6 +19,18 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
+    # Same autocommit_block requirement as every prior enum-value addition
+    # here (e.g. e7a3c15f9b2d) — must commit before any row can reference
+    # it. Missing this in the original version of this migration is why
+    # AuditLog inserts for create_product/update_product/delete_product
+    # failed with "invalid input value for enum audit_action" — the Python
+    # AuditAction enum gained the members but the Postgres enum type never
+    # did.
+    with op.get_context().autocommit_block():
+        op.execute("ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'create_product'")
+        op.execute("ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'update_product'")
+        op.execute("ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'delete_product'")
+
     op.create_table(
         'products',
         sa.Column('id', sa.UUID(), nullable=False),
