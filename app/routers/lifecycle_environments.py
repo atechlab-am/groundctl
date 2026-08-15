@@ -1,15 +1,25 @@
-import subprocess
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.apt_sources import export_gpg_public_key
 from app.aptly_client import AptlyClient, AptlyError, get_aptly_client
 from app.auth import require_role
 from app.config import settings
 from app.database import get_db
-from app.models import AuditAction, AuditLog, ContentView, ContentViewVersion, LifecycleEnvironment, Role, User
+from app.models import (
+    AuditAction,
+    AuditLog,
+    ContentView,
+    ContentViewVersion,
+    LifecycleEnvironment,
+    Role,
+    Server,
+    ServerBeaconState,
+    User,
+)
 from app.routers.content_views import do_publish
 from app.schemas import (
     LifecycleEnvironmentCreate,
@@ -24,6 +34,26 @@ router = APIRouter()
 
 def _sources_from_version(version: ContentViewVersion) -> list[tuple[str, str]]:
     return [(entry["snapshot_name"], entry["component"]) for entry in version.snapshots]
+
+
+def _bump_config_serial_for_environment_servers(db: Session, environment_id: uuid.UUID) -> None:
+    """A promote/rollback changes what's actually published at this
+    environment's publish_prefix even though no Server.environment_id
+    changed — every beacon-managed server currently assigned to this
+    environment needs to know its apt metadata is stale and re-run
+    `apt-get update`, same "pending reconciliation" signal
+    assign_server_environment (servers.py) already sets on reassignment.
+    Only touches servers that already have a ServerBeaconState row (i.e.
+    have checked in at least once) — an SSH-only server has nothing to
+    notify.
+    """
+    server_ids = db.execute(select(Server.id).where(Server.environment_id == environment_id)).scalars().all()
+    if not server_ids:
+        return
+    for state in db.execute(
+        select(ServerBeaconState).where(ServerBeaconState.server_id.in_(server_ids))
+    ).scalars():
+        state.config_serial += 1
 
 
 def _check_path_order(db: Session, environment: LifecycleEnvironment, version_id: uuid.UUID) -> None:
@@ -145,17 +175,13 @@ def get_environment_gpg_key(
     if environment.gpg_key_id is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="this environment has no signing key configured")
 
-    proc = subprocess.run(
-        ["gpg", "--export", "--armor", environment.gpg_key_id],
-        capture_output=True,
-        check=False,
-    )
-    if proc.returncode != 0 or not proc.stdout:
+    armored = export_gpg_public_key(environment.gpg_key_id)
+    if armored is None:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="failed to export configured GPG key — is it present in the server's keyring?",
         )
-    return Response(content=proc.stdout, media_type="application/pgp-keys")
+    return Response(content=armored, media_type="application/pgp-keys")
 
 
 @router.post("/{environment_id}/promote", response_model=PromoteResponse)
@@ -204,6 +230,7 @@ def promote_environment(
 
     from_version_id = environment.current_version_id
     environment.current_version_id = version.id
+    _bump_config_serial_for_environment_servers(db, environment.id)
     db.add(
         AuditLog(
             user_id=current_user.id,
@@ -272,6 +299,7 @@ def rollback_environment(
 
     from_version_id = environment.current_version_id
     environment.current_version_id = version.id
+    _bump_config_serial_for_environment_servers(db, environment.id)
     db.add(
         AuditLog(
             user_id=current_user.id,

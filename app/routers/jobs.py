@@ -11,6 +11,8 @@ from app.database import get_db
 from app.models import (
     AuditAction,
     AuditLog,
+    BeaconAction,
+    BeaconActionStatus,
     HostGroup,
     Job,
     JobServer,
@@ -20,6 +22,7 @@ from app.models import (
     LifecycleEnvironment,
     Role,
     Server,
+    ServerLifecycleState,
     User,
 )
 from app.schemas import (
@@ -34,6 +37,7 @@ from app.tasks import (
     bootstrap_task,
     bulk_apply_updates_task,
     gather_facts_task,
+    install_beacon_task,
     manage_package_task,
     run_command_task,
 )
@@ -172,6 +176,36 @@ def trigger_bootstrap(
         audit_action=AuditAction.trigger_bootstrap,
     )
     bootstrap_task.delay(str(job.id))
+    return _job_with_server_ids(db, job)
+
+
+@router.post("/install-beacon/{server_id}", response_model=JobRead, status_code=status.HTTP_201_CREATED)
+def trigger_install_beacon(
+    server_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """Rolls the Beacon agent out to an already-bootstrapped host via the
+    SSH access already in place (ROADMAP.md Phase 9) — the token is minted
+    server-side inside install_beacon_task, not here, so it never touches
+    an HTTP response the way POST /servers/{id}/beacon-token's does.
+    """
+    server = db.get(Server, server_id)
+    if server is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server not found")
+    if server.lifecycle_state == ServerLifecycleState.decommissioned:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is decommissioned")
+
+    job = _create_job_with_targets(
+        db,
+        JobType.install_beacon,
+        JobTargetType.server,
+        [server],
+        server_id=server.id,
+        current_user=current_user,
+        audit_action=AuditAction.trigger_install_beacon,
+    )
+    install_beacon_task.delay(str(job.id))
     return _job_with_server_ids(db, job)
 
 
@@ -327,8 +361,23 @@ def cancel_job(
             celery_app.control.revoke(job.celery_task_id, terminate=True, signal="SIGTERM")
         job.log_output = "cancelled by user"
 
+    # Mirrors the SSH path's "can't cancel what's already running" limit —
+    # only pending (not yet delivered) BeaconAction rows can be pulled
+    # back; one already handed to a beacon in a checkin response may
+    # still execute and report, but its outcome no longer matters since
+    # the Job below is being force-closed regardless.
+    now = datetime.now(timezone.utc)
+    for action in db.execute(
+        select(BeaconAction).where(
+            BeaconAction.job_id == job.id,
+            BeaconAction.status == BeaconActionStatus.pending,
+        )
+    ).scalars():
+        action.status = BeaconActionStatus.cancelled
+        action.resolved_at = now
+
     job.status = JobStatus.failed
-    job.finished_at = datetime.now(timezone.utc)
+    job.finished_at = now
     db.commit()
     db.refresh(job)
     return _job_with_server_ids(db, job)

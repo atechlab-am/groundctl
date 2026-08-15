@@ -92,3 +92,52 @@ export function assignServerEnvironment(
     reason: reason || undefined,
   });
 }
+
+// --- Beacon ------------------------------------------------------------
+
+export interface BeaconStateRead {
+  server_id: string;
+  config_serial: number;
+  applied_config_serial: number | null;
+  pending_reconciliation: boolean;
+  last_checkin_at: string | null;
+  last_apply_status: string | null;
+  last_apply_detail: string | null;
+  last_facts_pushed_at: string | null;
+  agent_version: string | null;
+}
+
+export interface BeaconTokenRead {
+  id: string;
+  server_id: string;
+  name: string | null;
+  expires_at: string | null;
+  revoked: boolean;
+  last_used_at: string | null;
+  created_at: string;
+}
+
+export interface BeaconTokenCreateResponse extends BeaconTokenRead {
+  // Raw token — present only in the response to issueBeaconToken, never
+  // again afterward (listBeaconTokens never includes it).
+  token: string;
+}
+
+// 404s if the server has never checked in (not beacon-managed) — callers
+// should treat that as "no beacon" rather than a real error, same as
+// getLatestServerFacts before any facts exist.
+export function getBeaconState(serverId: string): Promise<BeaconStateRead> {
+  return api.get<BeaconStateRead>(`/servers/${serverId}/beacon-state`);
+}
+
+export function issueBeaconToken(serverId: string, name?: string): Promise<BeaconTokenCreateResponse> {
+  return api.post<BeaconTokenCreateResponse>(`/servers/${serverId}/beacon-token`, { name: name || undefined });
+}
+
+export function listBeaconTokens(serverId: string): Promise<BeaconTokenRead[]> {
+  return api.get<BeaconTokenRead[]>(`/servers/${serverId}/beacon-tokens`);
+}
+
+export function revokeBeaconToken(serverId: string, tokenId: string): Promise<BeaconTokenRead> {
+  return api.post<BeaconTokenRead>(`/servers/${serverId}/beacon-tokens/${tokenId}/revoke`);
+}

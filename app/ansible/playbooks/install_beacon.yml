@@ -1,0 +1,59 @@
+---
+- name: Install groundctl Beacon agent on an existing content host
+  hosts: all
+  become: true
+  tasks:
+    - name: Fetch the beacon agent from the primary
+      ansible.builtin.get_url:
+        url: "{{ groundctl_api_base_url }}/api/beacon/agent"
+        dest: /usr/local/bin/groundctl-beacon
+        mode: "0755"
+        # This host already trusts the primary's TLS (bootstrap_client.yml
+        # installs the CA cert when self-signed) — no separate flag needed.
+
+    - name: Ensure /etc/groundctl exists
+      ansible.builtin.file:
+        path: /etc/groundctl
+        state: directory
+        mode: "0755"
+
+    # no_log: true — groundctl_beacon_token is the one real secret this
+    # playbook handles. Minted server-side by install_beacon_task (never
+    # passed through extra_vars in plaintext form that would land in
+    # Job.log_output — the token value itself is only ever referenced via
+    # this templated file content, and no_log suppresses Ansible's own
+    # echoing of module args/results for this task).
+    - name: Write /etc/groundctl/beacon.conf
+      no_log: true
+      ansible.builtin.copy:
+        dest: /etc/groundctl/beacon.conf
+        content: |
+          GROUNDCTL_API_BASE_URL={{ groundctl_api_base_url }}
+          GROUNDCTL_BEACON_TOKEN={{ groundctl_beacon_token }}
+        mode: "0600"
+
+    - name: Fetch the beacon systemd service unit
+      ansible.builtin.get_url:
+        url: "{{ groundctl_api_base_url }}/api/beacon/systemd-service"
+        dest: /etc/systemd/system/groundctl-beacon.service
+        mode: "0644"
+
+    - name: Fetch the beacon systemd timer unit
+      ansible.builtin.get_url:
+        url: "{{ groundctl_api_base_url }}/api/beacon/systemd-timer"
+        dest: /etc/systemd/system/groundctl-beacon.timer
+        mode: "0644"
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Enable and start the beacon timer
+      ansible.builtin.systemd:
+        name: groundctl-beacon.timer
+        enabled: true
+        state: started
+
+    - name: Run one immediate checkin
+      ansible.builtin.command: /usr/local/bin/groundctl-beacon --once --config /etc/groundctl/beacon.conf
+      changed_when: true

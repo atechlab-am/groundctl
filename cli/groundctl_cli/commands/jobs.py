@@ -1,5 +1,6 @@
-"""groundctl job list|show|trigger-bootstrap|apply-updates|gather-facts|
-bulk-apply-updates|run-command|manage-package|cancel
+"""groundctl job list|show|trigger-bootstrap|trigger-install-beacon|
+apply-updates|gather-facts|bulk-apply-updates|run-command|manage-package|
+cancel
 
 Maps to /jobs/*. apply-updates and gather-facts take environment_id as a
 query param on the backend (not a body field) — preserved here as a Typer
@@ -29,7 +30,9 @@ def _target_selector(host_group_id: uuid.UUID | None, server_id: list[uuid.UUID]
 def list_jobs(
     ctx: typer.Context,
     job_type: str = typer.Option(
-        None, "--job-type", help="bootstrap|apply_updates|gather_facts|bulk_apply_updates|run_command|manage_package"
+        None,
+        "--job-type",
+        help="bootstrap|apply_updates|gather_facts|bulk_apply_updates|run_command|manage_package|install_beacon",
     ),
     status: str = typer.Option(None, "--status", help="pending|running|success|failed"),
     environment_id: uuid.UUID = typer.Option(None, "--environment-id"),
@@ -77,6 +80,21 @@ def trigger_bootstrap(
     output = get_output(ctx)
     with authed_client() as client:
         response = client.post(f"/jobs/bootstrap/{server_id}")
+    render_item(response.json(), output=output)
+
+
+@app.command("trigger-install-beacon")
+def trigger_install_beacon(
+    ctx: typer.Context,
+    server_id: uuid.UUID = typer.Argument(..., help="Already-bootstrapped server to install the Beacon agent on."),
+) -> None:
+    """Roll the Beacon agent out to an existing host over SSH. Mints a new
+    BeaconToken server-side (see `groundctl server beacon-token list` to
+    see it afterward — the raw value is never returned by this command,
+    it's delivered directly to the host)."""
+    output = get_output(ctx)
+    with authed_client() as client:
+        response = client.post(f"/jobs/install-beacon/{server_id}")
     render_item(response.json(), output=output)
 
 

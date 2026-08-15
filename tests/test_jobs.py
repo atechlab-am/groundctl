@@ -184,6 +184,60 @@ def test_trigger_bootstrap_server_not_found(client, operator_token):
 
 
 # ---------------------------------------------------------------------------
+# POST /jobs/install-beacon/{server_id}
+# ---------------------------------------------------------------------------
+
+
+def test_trigger_install_beacon_as_operator(client, operator_token):
+    env = _make_environment(client, operator_token, "30")
+    server = _create_server(client, operator_token, env, "jobhost30.example.com", "10.1.0.40")
+
+    with patch("app.routers.jobs.install_beacon_task.delay") as mock_delay:
+        r = client.post(f"/jobs/install-beacon/{server['id']}", headers=auth_headers(operator_token))
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["job_type"] == "install_beacon"
+        assert body["status"] == "pending"
+        assert body["target_type"] == "server"
+        assert body["server_id"] == server["id"]
+        assert body["server_ids"] == [server["id"]]
+        mock_delay.assert_called_once_with(str(body["id"]))
+
+
+def test_trigger_install_beacon_as_viewer_forbidden(client, operator_token, viewer_token):
+    env = _make_environment(client, operator_token, "31")
+    server = _create_server(client, operator_token, env, "jobhost31.example.com", "10.1.0.41")
+
+    with patch("app.routers.jobs.install_beacon_task.delay") as mock_delay:
+        r = client.post(f"/jobs/install-beacon/{server['id']}", headers=auth_headers(viewer_token))
+        assert r.status_code == 403, r.text
+        mock_delay.assert_not_called()
+
+
+def test_trigger_install_beacon_server_not_found(client, operator_token):
+    with patch("app.routers.jobs.install_beacon_task.delay") as mock_delay:
+        r = client.post(
+            "/jobs/install-beacon/00000000-0000-0000-0000-000000000000", headers=auth_headers(operator_token)
+        )
+        assert r.status_code == 404, r.text
+        mock_delay.assert_not_called()
+
+
+def test_trigger_install_beacon_decommissioned_rejected(client, operator_token):
+    env = _make_environment(client, operator_token, "32")
+    server = _create_server(client, operator_token, env, "jobhost32.example.com", "10.1.0.42")
+    decommission_r = client.post(
+        f"/servers/{server['id']}/decommission", headers=auth_headers(operator_token)
+    )
+    assert decommission_r.status_code == 200, decommission_r.text
+
+    with patch("app.routers.jobs.install_beacon_task.delay") as mock_delay:
+        r = client.post(f"/jobs/install-beacon/{server['id']}", headers=auth_headers(operator_token))
+        assert r.status_code == 409, r.text
+        mock_delay.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # POST /jobs/apply-updates
 # ---------------------------------------------------------------------------
 

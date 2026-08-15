@@ -2,7 +2,7 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import redis
@@ -24,8 +24,17 @@ from app.config import settings
 from app.database import SessionLocal
 from app.limiter import limiter
 from app.logging_config import configure_logging, correlation_id_var
-from app.metrics import ACTIVE_SERVERS, REQUEST_DURATION, REQUESTS_TOTAL, UNREACHABLE_SERVERS, registry
-from app.models import Job, JobStatus, Server, ServerStatus
+from app.metrics import (
+    ACTIVE_SERVERS,
+    BEACON_CHECKED_IN_RECENTLY,
+    BEACON_ENABLED_SERVERS,
+    BEACON_PENDING_RECONCILIATION,
+    REQUEST_DURATION,
+    REQUESTS_TOTAL,
+    UNREACHABLE_SERVERS,
+    registry,
+)
+from app.models import BeaconToken, Job, JobStatus, Server, ServerBeaconState, ServerStatus
 from app.routers import (
     activation_keys,
     audit_logs,
@@ -263,6 +272,37 @@ def metrics():
         )
         UNREACHABLE_SERVERS.set(
             db.execute(select(func.count()).select_from(Server).where(Server.status == ServerStatus.unreachable)).scalar()
+        )
+
+        # A server is "beacon-enabled" if it has at least one non-revoked
+        # token — distinct.count() rather than counting BeaconToken rows,
+        # since one server can hold several tokens (rotation).
+        BEACON_ENABLED_SERVERS.set(
+            db.execute(
+                select(func.count(func.distinct(BeaconToken.server_id))).where(BeaconToken.revoked.is_(False))
+            ).scalar()
+        )
+        recent_threshold = datetime.now(timezone.utc) - timedelta(seconds=600)
+        BEACON_CHECKED_IN_RECENTLY.set(
+            db.execute(
+                select(func.count())
+                .select_from(ServerBeaconState)
+                .where(ServerBeaconState.last_checkin_at >= recent_threshold)
+            ).scalar()
+        )
+        # applied_config_serial IS NULL, not just "!=", for a server that
+        # has never successfully reconciled at all — SQL NULL != int
+        # evaluates to NULL (excluded by WHERE), not TRUE, so a plain !=
+        # would silently miss every never-reconciled host.
+        BEACON_PENDING_RECONCILIATION.set(
+            db.execute(
+                select(func.count())
+                .select_from(ServerBeaconState)
+                .where(
+                    ServerBeaconState.applied_config_serial.is_(None)
+                    | (ServerBeaconState.config_serial != ServerBeaconState.applied_config_serial)
+                )
+            ).scalar()
         )
     finally:
         db.close()

@@ -1,5 +1,6 @@
 import hashlib
 import secrets
+import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
@@ -155,6 +156,29 @@ def consume_refresh_token(db: Session, raw_token: str) -> User:
 # endpoint anywhere in app/routers/beacon.py accepts a server_id parameter
 # of any kind; identity always comes from the token, never the request.
 # ---------------------------------------------------------------------------
+
+
+def mint_beacon_token(db: Session, server: Server, name: str | None, created_by_user_id: uuid.UUID | None) -> tuple[BeaconToken, str]:
+    """Mints a new BeaconToken and returns (row, raw_token) — the raw
+    value is never stored, only its hash, and this is the only moment it
+    exists in plaintext. Shared by servers.py's POST
+    /{server_id}/beacon-token (operator-initiated) and install_beacon_task
+    (server-initiated, as part of an SSH-rollout job) so token minting has
+    exactly one implementation rather than two copies that could drift.
+    Caller is responsible for the AuditLog row and commit — the audit
+    detail differs slightly between the two call sites (one has a human
+    actor, the other doesn't).
+    """
+    raw = secrets.token_urlsafe(32)
+    beacon_token = BeaconToken(
+        server_id=server.id,
+        token_hash=hash_opaque_token(raw),
+        name=name,
+        created_by_user_id=created_by_user_id,
+    )
+    db.add(beacon_token)
+    db.flush()
+    return beacon_token, raw
 
 
 def get_current_beacon_server(

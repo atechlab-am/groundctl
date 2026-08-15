@@ -25,6 +25,91 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-08-16
+
+### Added: Beacon local reconciliation and facts push (Phase 9 / Beacon, parts 3-4)
+
+- The agent (`beacon/groundctl_beacon.py`) now does real local
+  reconciliation, not just checkin logging: writes the current apt source
+  line + keyring, removes every other `groundctl-*` file it finds via its
+  own local directory glob (hardcoded two-directory, one-prefix
+  allowlist — the server never tells it which filenames to delete, since
+  that would mean tracking per-host disk state server-side), runs
+  `apt-get update` with a bounded local retry (3 attempts), and reports
+  the outcome via new `POST /api/beacon/report`. A failed reconciliation
+  does not advance `applied_config_serial`, so the host stays visibly
+  "pending" until a future checkin succeeds.
+- `promote_environment`/`rollback_environment` now bump `config_serial`
+  for every beacon-managed server in the affected environment — a
+  content-view-version switch means those hosts should re-run
+  `apt-get update` even though their source line itself didn't change.
+- New `app.apt_sources.export_gpg_public_key`, shared between the
+  existing `GET /lifecycle-environments/{id}/gpg-key` endpoint and the
+  checkin response's `gpg_public_key` field, instead of two copies of the
+  same `gpg --export --armor` subprocess call.
+- New `POST /api/beacon/facts` — full facts push (packages, disk,
+  services), writing the same `ComplianceRecord`/`ServerFact` rows
+  `gather_facts_task` already writes. New `source` column on both tables
+  (`"ssh"` default, `"beacon"` here) — every existing consumer
+  (`do_check_compliance`, `GET /servers/{id}/facts`, the weekly scan)
+  works unchanged, since none of them filter or branch on how a row was
+  gathered. Push cadence is ~6h, tracked separately from the 5-minute
+  checkin interval; the existing weekly SSH-based compliance scan keeps
+  running unconditionally on every host regardless of beacon status.
+- New fleet-health Prometheus gauges: `groundctl_beacon_enabled_servers`,
+  `groundctl_beacon_checked_in_recently`,
+  `groundctl_beacon_pending_reconciliation`.
+- Dispatched actions (beacon-executed apply-updates) and the install
+  rollout (install script, SSH-triggered fleet install job, `.deb`
+  packaging) are not built yet — see `ROADMAP.md` Phase 9 for what's left.
+
+## [0.33.0] - 2026-08-16
+
+### Added: Beacon dispatched actions and install rollout (Phase 9 / Beacon, parts 5-6)
+
+- `POST /jobs/apply-updates` and the bulk variant now pick beacon vs. SSH
+  transport per target server: a server with an active `BeaconToken` gets
+  a new `BeaconAction` row queued instead of an Ansible run, picked up on
+  its next checkin and resolved via `POST /api/beacon/report`. A Job with
+  any beacon-dispatched targets stays `running` (a new `"pending_beacon"`
+  sentinel status) until every dispatched action reaches a terminal
+  state, then closes automatically — `failed`/`timed_out` fails the Job,
+  otherwise it succeeds.
+- New scheduled task (`scheduled_timeout_stale_beacon_actions`, every 5
+  minutes) marks any `BeaconAction` stuck `pending`/`delivered` for more
+  than 30 minutes as `timed_out` and finalizes its Job — closes the "Job
+  hangs forever if a beacon goes dark mid-dispatch" gap.
+- `POST /jobs/{id}/cancel` now also cancels any still-`pending` (not yet
+  delivered) `BeaconAction` for that job.
+- `beacon/groundctl_beacon.py` now executes dispatched actions from its
+  checkin response (`apply_updates` today) and reports each outcome back
+  with its `action_id`; it also pushes facts via `POST /api/beacon/facts`
+  when the checkin requests it, closing the last gap from 0.32.0's facts
+  push.
+- New install rollout: `GET /api/beacon/agent` serves the agent file
+  itself; `GET /api/beacon/install-script?token=...` (modeled on
+  `enrollment.get_enrollment_script`) generates a self-contained install
+  script for an already-registered host; `POST
+  /jobs/install-beacon/{server_id}` (new `install_beacon` Job type) rolls
+  Beacon out to an existing fleet over SSH, minting its `BeaconToken`
+  server-side inside the Celery task (new shared `app.auth.mint_beacon_token`,
+  also now used by `POST /servers/{id}/beacon-token`) and delivering it via
+  `ansible.builtin.copy` with `no_log: true`, never through `extra_vars`.
+- `.deb` packaging remains unimplemented — lowest-priority polish item,
+  not required for either install path above. Phase 9 is otherwise
+  complete; see `ROADMAP.md`.
+- New `GET /servers/{id}/beacon-state` (viewer-gated) — the first
+  operator-facing read endpoint for `ServerBeaconState`; previously only
+  written, never read outside the beacon's own checkin. Returns a
+  computed `pending_reconciliation` boolean using the same NULL-safe
+  comparison as the Prometheus gauge.
+- Web UI: server detail page gained a "Beacon" tab (reconciliation state,
+  token issue/list/revoke) and an "Install Beacon" action; a
+  pending-reconciliation badge shows next to the existing status badges.
+  Job trigger dialog now offers `install_beacon`.
+- CLI: `groundctl server assign-environment`, `beacon-state`,
+  `beacon-token issue/list/revoke`, and `groundctl job trigger-install-beacon`.
+
 ## [0.31.0] - 2026-08-16
 
 ### Added: Beacon identity and checkin protocol (Phase 9 / Beacon, part 2)

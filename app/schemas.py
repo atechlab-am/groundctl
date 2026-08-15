@@ -562,6 +562,9 @@ class ServerFactRead(BaseModel):
     uptime_seconds: int | None
     disk: list[dict]
     services: list[dict]
+    # "ssh" or "beacon" — which collection path produced this row. See
+    # ServerFact.source's comment.
+    source: str
     gathered_at: datetime
 
     model_config = {"from_attributes": True}
@@ -736,6 +739,25 @@ class BeaconTokenRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class BeaconStateRead(BaseModel):
+    server_id: uuid.UUID
+    config_serial: int
+    applied_config_serial: int | None
+    # True when config_serial != applied_config_serial (or the server has
+    # never reconciled at all) — the same NULL-safe comparison
+    # app/metrics.py's groundctl_beacon_pending_reconciliation gauge uses,
+    # computed here so API/UI/CLI consumers don't each have to reimplement
+    # the NULL-safety themselves.
+    pending_reconciliation: bool
+    last_checkin_at: datetime | None
+    last_apply_status: str | None
+    last_apply_detail: str | None
+    last_facts_pushed_at: datetime | None
+    agent_version: str | None
+
+    model_config = {"from_attributes": True}
+
+
 class BeaconCheckinRequest(BaseModel):
     agent_version: str
     os_distribution: str | None = None
@@ -779,20 +801,42 @@ class BeaconCheckinResponse(BaseModel):
     # Armored, so the beacon can install/rotate its own keyring file.
     # None when the environment is unsigned ([trusted=yes]).
     gpg_public_key: str | None
-    # Filenames (groundctl-*.list / groundctl-*.gpg / groundctl-*.asc) the
-    # beacon should remove — anything matching the groundctl-<name> prefix
-    # that is NOT this checkin's own apt_source/keyring filename. Enforces
-    # the "exactly one groundctl-managed environment at a time" rule
-    # beacon-side, same as bootstrap_client.yml's replace-in-place fix.
-    stale_source_filenames: list[str]
     checkin_interval_seconds: int
     facts_requested: bool
     actions: list[BeaconAction]
 
 
-# BeaconFactsRequest/Response, BeaconReportRequest/Response land with
-# Phase C/D (docs/beacon.md, ROADMAP.md Phase 9) — not defined yet since
-# nothing in this phase constructs or validates them.
+class BeaconReportRequest(BaseModel):
+    config_serial: int
+    outcome: Literal["success", "failed", "no_change"]
+    # Capped server-side (see app/routers/beacon.py) — free-form apt
+    # output/error text, not meant to be unbounded.
+    detail: str | None = None
+    action_id: uuid.UUID | None = None
+
+
+class BeaconReportResponse(BaseModel):
+    accepted: bool
+
+
+class BeaconFactsRequest(BaseModel):
+    os_distribution: str | None = None
+    os_version: str | None = None
+    kernel: str | None = None
+    uptime_seconds: int | None = None
+    disk: list[dict] = Field(default_factory=list)
+    services: list[dict] = Field(default_factory=list)
+    # [{"name": str, "version": str | None, "arch": str | None}, ...] —
+    # same shape ComplianceRecord.installed_packages already stores from
+    # the SSH path (gather_facts_task), so do_check_compliance and every
+    # other consumer works unchanged regardless of which path wrote it.
+    installed_packages: list[dict] = Field(default_factory=list)
+
+
+class BeaconFactsResponse(BaseModel):
+    accepted: bool
+    compliance_record_id: uuid.UUID
+    server_fact_id: uuid.UUID
 
 
 # ---------------------------------------------------------------------------

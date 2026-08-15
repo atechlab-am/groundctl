@@ -22,3 +22,19 @@ APTLY_DISK_USAGE_BYTES = Gauge("groundctl_aptly_disk_usage_bytes", "Bytes used o
 APTLY_DISK_USAGE_PERCENT = Gauge(
     "groundctl_aptly_disk_usage_percent", "Percent used on the aptly data volume", registry=registry
 )
+# ROADMAP.md Phase 9 — fleet-level Beacon health, computed live at scrape
+# time in app/main.py's /metrics endpoint, same pattern as
+# ACTIVE_SERVERS/UNREACHABLE_SERVERS above.
+BEACON_ENABLED_SERVERS = Gauge(
+    "groundctl_beacon_enabled_servers", "Servers with at least one non-revoked BeaconToken", registry=registry
+)
+BEACON_CHECKED_IN_RECENTLY = Gauge(
+    "groundctl_beacon_checked_in_recently",
+    "Beacon-enabled servers whose last checkin was within 2x the checkin interval (10 min)",
+    registry=registry,
+)
+BEACON_PENDING_RECONCILIATION = Gauge(
+    "groundctl_beacon_pending_reconciliation",
+    "Beacon-enabled servers where config_serial != applied_config_serial",
+    registry=registry,
+)

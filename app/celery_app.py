@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from celery import Celery
 from celery.schedules import crontab
 
@@ -52,6 +54,13 @@ celery_app.conf.update(
         "flag-stale-relays-daily": {
             "task": "app.tasks.scheduled_flag_stale_relays",
             "schedule": crontab(hour=5, minute=30),
+        },
+        # Every 5 minutes, not daily — a 30-minute BeaconAction timeout
+        # (ROADMAP.md Phase 9) needs a sweep frequent enough that "stuck"
+        # actually means ~30-35 minutes, not up to 24h.
+        "timeout-stale-beacon-actions": {
+            "task": "app.tasks.scheduled_timeout_stale_beacon_actions",
+            "schedule": timedelta(minutes=5),
         },
         "purge-audit-logs-daily": {
             "task": "app.tasks.scheduled_purge_audit_logs",

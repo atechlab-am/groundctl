@@ -1,11 +1,10 @@
-import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import hash_opaque_token, require_role
+from app.auth import mint_beacon_token, require_role
 from app.database import get_db
 from app.models import (
     AuditAction,
@@ -22,6 +21,7 @@ from app.models import (
     User,
 )
 from app.schemas import (
+    BeaconStateRead,
     BeaconTokenCreate,
     BeaconTokenCreateResponse,
     BeaconTokenRead,
@@ -258,6 +258,42 @@ def assign_server_environment(
     return server
 
 
+@router.get("/{server_id}/beacon-state", response_model=BeaconStateRead)
+def get_server_beacon_state(
+    server_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.viewer)),
+):
+    """Read-only view of ServerBeaconState — the same NULL-safe pending-
+    reconciliation signal app.metrics.py's groundctl_beacon_pending_reconciliation
+    gauge computes fleet-wide, exposed here per-server for the UI/CLI.
+    404 both when the server doesn't exist and when it exists but has
+    never checked in (no ServerBeaconState row yet, i.e. not beacon-managed)
+    — same "nothing to show" semantics as GET /servers/{id}/facts before
+    any facts have been gathered.
+    """
+    server = db.get(Server, server_id)
+    if server is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server not found")
+
+    state = db.get(ServerBeaconState, server_id)
+    if state is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server has no beacon state — not beacon-managed")
+
+    pending = state.applied_config_serial is None or state.config_serial != state.applied_config_serial
+    return BeaconStateRead(
+        server_id=state.server_id,
+        config_serial=state.config_serial,
+        applied_config_serial=state.applied_config_serial,
+        pending_reconciliation=pending,
+        last_checkin_at=state.last_checkin_at,
+        last_apply_status=state.last_apply_status,
+        last_apply_detail=state.last_apply_detail,
+        last_facts_pushed_at=state.last_facts_pushed_at,
+        agent_version=state.agent_version,
+    )
+
+
 @router.post("/{server_id}/beacon-token", response_model=BeaconTokenCreateResponse, status_code=status.HTTP_201_CREATED)
 def issue_beacon_token(
     server_id: uuid.UUID,
@@ -278,15 +314,7 @@ def issue_beacon_token(
     if server.lifecycle_state == ServerLifecycleState.decommissioned:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is decommissioned")
 
-    token = secrets.token_urlsafe(32)
-    beacon_token = BeaconToken(
-        server_id=server.id,
-        token_hash=hash_opaque_token(token),
-        name=payload.name,
-        created_by_user_id=current_user.id,
-    )
-    db.add(beacon_token)
-    db.flush()
+    beacon_token, token = mint_beacon_token(db, server, payload.name, current_user.id)
     db.add(
         AuditLog(
             user_id=current_user.id,

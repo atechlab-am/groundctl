@@ -8,7 +8,7 @@ from typing import Callable, TypeGuard
 
 import redis
 from celery.exceptions import MaxRetriesExceededError
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.ansible_runner_utils import (
@@ -19,6 +19,7 @@ from app.ansible_runner_utils import (
 )
 from app.apt_sources import resolve_environment_components
 from app.aptly_client import AptlyError, get_aptly_client
+from app.auth import mint_beacon_token
 from app.celery_app import celery_app
 from app.config import settings
 from app.database import SessionLocal
@@ -28,6 +29,9 @@ from app.metrics import APTLY_DISK_USAGE_BYTES, APTLY_DISK_USAGE_PERCENT, JOBS_T
 from app.models import (
     AuditAction,
     AuditLog,
+    BeaconAction,
+    BeaconActionStatus,
+    BeaconToken,
     ComplianceRecord,
     ContentView,
     ContentViewRepository,
@@ -98,6 +102,86 @@ def _job_server_ids(job_id: str) -> list[str]:
 def _job_servers(db: Session, job: Job) -> list[Server]:
     ids = [row.server_id for row in db.execute(select(JobServer).where(JobServer.job_id == job.id)).scalars()]
     return list(db.execute(select(Server).where(Server.id.in_(ids))).scalars())
+
+
+def _split_ssh_and_beacon_targets(db: Session, servers: list[Server]) -> tuple[list[Server], list[Server]]:
+    """A server with at least one active (non-revoked) BeaconToken gets
+    its work dispatched via the beacon checkin/actions channel instead of
+    an Ansible playbook run — see apply_updates_task/bulk_apply_updates_task.
+    Same trigger endpoint either way (POST /jobs/apply-updates); this is
+    the one place that decides transport per-server.
+    """
+    if not servers:
+        return [], []
+    server_ids = [s.id for s in servers]
+    beacon_server_ids = set(
+        db.execute(
+            select(BeaconToken.server_id).where(
+                BeaconToken.server_id.in_(server_ids), BeaconToken.revoked.is_(False)
+            )
+        ).scalars()
+    )
+    ssh_servers = [s for s in servers if s.id not in beacon_server_ids]
+    beacon_servers = [s for s in servers if s.id in beacon_server_ids]
+    return ssh_servers, beacon_servers
+
+
+def _dispatch_beacon_actions(
+    db: Session, job: Job, beacon_servers: list[Server], action_type: str, params: dict
+) -> None:
+    """Queues one BeaconAction per target — picked up by that server's
+    next checkin (app/routers/beacon.py), resolved later via
+    POST /api/beacon/report. Does not touch Job.status; the caller
+    decides whether the Job can close immediately (no beacon targets) or
+    must wait (see apply_updates_task's docstring).
+    """
+    for server in beacon_servers:
+        db.add(BeaconAction(server_id=server.id, job_id=job.id, type=action_type, params=params))
+    db.commit()
+
+
+def _job_is_resolvable(db: Session, job_id: uuid.UUID) -> bool:
+    """True once every BeaconAction dispatched for this job has reached a
+    terminal state (succeeded/failed/cancelled/timed_out) — pending/
+    delivered rows mean the job must stay running. Called from both
+    POST /api/beacon/report (a report may be the last outstanding action)
+    and the timeout sweep (a sweep may be what finally resolves it).
+    """
+    outstanding = db.execute(
+        select(func.count())
+        .select_from(BeaconAction)
+        .where(
+            BeaconAction.job_id == job_id,
+            BeaconAction.status.in_([BeaconActionStatus.pending, BeaconActionStatus.delivered]),
+        )
+    ).scalar()
+    return outstanding == 0
+
+
+def _finalize_job_if_resolvable(db: Session, job_id: uuid.UUID) -> None:
+    """Closes a Job whose SSH portion (if any) already finished and whose
+    beacon portion has now fully resolved — called after a /report or a
+    timeout marks the last outstanding BeaconAction. A Job with NO beacon
+    targets never reaches this function at all (it closes synchronously
+    inside _run_locked_job/_run_locked_job_multi, same as always); this
+    only applies to jobs that had at least one beacon-dispatched target.
+    """
+    job = db.get(Job, job_id)
+    if job is None or job.status != JobStatus.running:
+        return
+    if not _job_is_resolvable(db, job_id):
+        return
+
+    any_beacon_failure = db.execute(
+        select(func.count())
+        .select_from(BeaconAction)
+        .where(
+            BeaconAction.job_id == job_id,
+            BeaconAction.status.in_([BeaconActionStatus.failed, BeaconActionStatus.timed_out]),
+        )
+    ).scalar()
+    final_status = JobStatus.failed if any_beacon_failure else JobStatus.success
+    _mark_job(db, job, final_status, job.log_output or "beacon-dispatched action(s) resolved")
 
 
 def _update_checkin_and_reachability(db: Session, servers: list[Server], ansible_status: str) -> None:
@@ -309,6 +393,17 @@ def _run_locked_job(self, job_id: str, lock_key: str, work: Callable[[Session, J
 
         try:
             ansible_status, log_output = work(db, job)
+            # "pending_beacon" is a sentinel (ROADMAP.md Phase 9), not a
+            # real ansible_status — set by apply_updates_task's work()
+            # when the job has beacon-dispatched targets still awaiting
+            # POST /api/beacon/report or the timeout sweep. The Job stays
+            # `running` (already set above); _finalize_job_if_resolvable
+            # closes it later from whichever of those two paths resolves
+            # the last outstanding BeaconAction.
+            if ansible_status == "pending_beacon":
+                job.log_output = log_output
+                db.commit()
+                return ansible_status
             _mark_job(
                 db, job, JobStatus.success if ansible_status == "successful" else JobStatus.failed, log_output
             )
@@ -365,6 +460,12 @@ def _run_locked_job_multi(self, job_id: str, server_ids: list[str], work: Callab
                 locks.append(lock)
 
             ansible_status, log_output = work(db, job)
+            if ansible_status == "pending_beacon":
+                # See _run_locked_job's identical branch — job stays
+                # `running`, closed later by _finalize_job_if_resolvable.
+                job.log_output = log_output
+                db.commit()
+                return ansible_status
             _mark_job(
                 db, job, JobStatus.success if ansible_status == "successful" else JobStatus.failed, log_output
             )
@@ -446,16 +547,48 @@ def bootstrap_task(self, job_id: str) -> str:
 
 @celery_app.task(bind=True, autoretry_for=(AnsibleUnreachableError,), retry_backoff=True, max_retries=3)
 def apply_updates_task(self, job_id: str) -> str:
+    """ROADMAP.md Phase 9: same trigger (POST /jobs/apply-updates), two
+    transports chosen per-server. A server with an active BeaconToken
+    gets its apt-get update/upgrade queued as a BeaconAction, picked up
+    on that host's own next checkin, instead of an Ansible playbook run
+    — everyone else goes through the SSH path exactly as before.
+
+    If ANY target is beacon-dispatched, this Job cannot close
+    synchronously (the beacon may not check in for up to
+    checkin_interval_seconds) — it stays `running`, closed later by
+    _finalize_job_if_resolvable once every dispatched BeaconAction has
+    resolved via POST /api/beacon/report or the timeout sweep. A Job
+    with ONLY SSH targets behaves exactly as it always has: closes
+    synchronously when the playbook run returns.
+    """
+
     def work(db: Session, job: Job) -> tuple[str, str]:
         servers = list(db.execute(select(Server).where(Server.environment_id == job.environment_id)).scalars())
+        ssh_servers, beacon_servers = _split_ssh_and_beacon_targets(db, servers)
+
+        if beacon_servers:
+            _dispatch_beacon_actions(db, job, beacon_servers, "apply_updates", {})
+
+        if not ssh_servers:
+            # Every target was beacon-dispatched — nothing to run over SSH
+            # at all. Job stays running until those resolve.
+            return "pending_beacon", f"dispatched to {len(beacon_servers)} beacon-managed server(s), awaiting checkin"
+
         ansible_status, log_output, _facts = run_playbook(
             "apply_updates.yml",
-            servers,
+            ssh_servers,
             {},
             on_progress=_make_progress_callback(db, job),
-            ssh_proxy_by_hostname=_relay_proxy_for_servers(db, servers),
+            ssh_proxy_by_hostname=_relay_proxy_for_servers(db, ssh_servers),
         )
-        _update_checkin_and_reachability(db, servers, ansible_status)
+        _update_checkin_and_reachability(db, ssh_servers, ansible_status)
+
+        if beacon_servers:
+            # Mixed target set — the SSH portion is done, but the job as
+            # a whole isn't; beacon targets are still outstanding.
+            suffix = f" (+ {len(beacon_servers)} beacon-managed server(s) dispatched, awaiting checkin)"
+            return "pending_beacon", log_output + suffix
+
         return ansible_status, log_output
 
     job_row = SessionLocal()
@@ -489,7 +622,7 @@ def gather_facts_task(self, job_id: str) -> str:
                 for name, entries in packages_dict.items()
                 for entry in entries
             ]
-            db.add(ComplianceRecord(server_id=server.id, installed_packages=installed))
+            db.add(ComplianceRecord(server_id=server.id, installed_packages=installed, source="ssh"))
 
             # ansible.builtin.setup's output keys are all "ansible_"-prefixed
             # (ansible_distribution, ansible_kernel, etc.) — unlike
@@ -519,6 +652,7 @@ def gather_facts_task(self, job_id: str) -> str:
                     uptime_seconds=facts.get("ansible_uptime_seconds"),
                     disk=disk,
                     services=services,
+                    source="ssh",
                 )
             )
 
@@ -535,16 +669,37 @@ def gather_facts_task(self, job_id: str) -> str:
 
 @celery_app.task(bind=True, autoretry_for=(AnsibleUnreachableError,), retry_backoff=True, max_retries=3)
 def bulk_apply_updates_task(self, job_id: str) -> str:
+    """Same beacon-vs-SSH split as apply_updates_task above — see its
+    docstring. server_ids passed to _run_locked_job_multi still covers
+    the FULL target set (beacon-managed servers included): the Redis
+    lock is cheap, released as soon as work() returns, and correctly
+    prevents a concurrent SSH job from racing a server that's also about
+    to receive a beacon-dispatched action.
+    """
+
     def work(db: Session, job: Job) -> tuple[str, str]:
         servers = _job_servers(db, job)
+        ssh_servers, beacon_servers = _split_ssh_and_beacon_targets(db, servers)
+
+        if beacon_servers:
+            _dispatch_beacon_actions(db, job, beacon_servers, "apply_updates", {})
+
+        if not ssh_servers:
+            return "pending_beacon", f"dispatched to {len(beacon_servers)} beacon-managed server(s), awaiting checkin"
+
         ansible_status, log_output, _facts = run_playbook(
             "apply_updates.yml",
-            servers,
+            ssh_servers,
             {},
             on_progress=_make_progress_callback(db, job),
-            ssh_proxy_by_hostname=_relay_proxy_for_servers(db, servers),
+            ssh_proxy_by_hostname=_relay_proxy_for_servers(db, ssh_servers),
         )
-        _update_checkin_and_reachability(db, servers, ansible_status)
+        _update_checkin_and_reachability(db, ssh_servers, ansible_status)
+
+        if beacon_servers:
+            suffix = f" (+ {len(beacon_servers)} beacon-managed server(s) dispatched, awaiting checkin)"
+            return "pending_beacon", log_output + suffix
+
         return ansible_status, log_output
 
     server_ids = _job_server_ids(job_id)
@@ -596,6 +751,60 @@ def manage_package_task(self, job_id: str) -> str:
             "manage_package.yml",
             [server],
             {"groundctl_package_name": package_name, "groundctl_package_state": package_state},
+            on_progress=_make_progress_callback(db, job),
+            ssh_proxy_by_hostname=_relay_proxy_for_servers(db, [server]),
+        )
+        _update_checkin_and_reachability(db, [server], ansible_status)
+        return ansible_status, log_output
+
+    job_row = SessionLocal()
+    try:
+        server_id = _get_job_or_raise(job_row, job_id).server_id
+    finally:
+        job_row.close()
+    return _run_locked_job(self, job_id, f"groundctl:lock:server:{server_id}", work)
+
+
+@celery_app.task(bind=True, autoretry_for=(AnsibleUnreachableError,), retry_backoff=True, max_retries=3)
+def install_beacon_task(self, job_id: str) -> str:
+    """ROADMAP.md Phase 9 install rollout: rolls the Beacon agent out to an
+    ALREADY-bootstrapped host via the SSH access already in place — a new
+    dedicated job type, not folded into bootstrap_task, since not every
+    host gets a beacon (it's optional) and a host can be bootstrapped long
+    before an operator decides to add one.
+
+    The BeaconToken is minted HERE, server-side, inside the task — never
+    upfront in the router — and delivered to the host via
+    install_beacon.yml's no_log: true copy task, never through extra_vars
+    (which lands verbatim in Job.log_output). Reuses mint_beacon_token
+    (app/auth.py) rather than duplicating servers.py's issue_beacon_token
+    mint-and-audit logic.
+    """
+
+    def work(db: Session, job: Job) -> tuple[str, str]:
+        server = db.get(Server, job.server_id)
+        if server is None:
+            raise ValueError(f"job {job.id} references a server that no longer exists")
+
+        beacon_token, raw_token = mint_beacon_token(db, server, "install-beacon job", job.created_by_user_id)
+        db.add(
+            AuditLog(
+                user_id=job.created_by_user_id,
+                action=AuditAction.issue_beacon_token,
+                resource_type="server",
+                resource_id=str(server.id),
+                detail={"beacon_token_id": str(beacon_token.id), "name": beacon_token.name},
+            )
+        )
+        db.commit()
+
+        ansible_status, log_output, _facts = run_playbook(
+            "install_beacon.yml",
+            [server],
+            {
+                "groundctl_api_base_url": settings.groundctl_api_base_url,
+                "groundctl_beacon_token": raw_token,
+            },
             on_progress=_make_progress_callback(db, job),
             ssh_proxy_by_hostname=_relay_proxy_for_servers(db, [server]),
         )
@@ -980,6 +1189,40 @@ def scheduled_flag_stale_servers() -> str:
             )
         db.commit()
         return f"flagged {len(stale)} stale servers (threshold {stale_checkin_hours}h)"
+    finally:
+        db.close()
+
+
+@celery_app.task
+def scheduled_timeout_stale_beacon_actions() -> str:
+    """Closes the "Job hangs forever if a beacon goes dark mid-dispatch"
+    gap (user-confirmed, ROADMAP.md Phase 9): a BeaconAction stuck in
+    pending/delivered for more than 30 minutes (six missed 5-minute
+    checkins — generous enough to survive one bad poll without being a
+    genuine hang) is marked timed_out, and _finalize_job_if_resolvable is
+    called for its parent Job so a beacon that's gone dark doesn't leave
+    the Job running indefinitely.
+    """
+    db = SessionLocal()
+    try:
+        threshold = datetime.now(timezone.utc) - timedelta(minutes=30)
+        stale = list(
+            db.execute(
+                select(BeaconAction).where(
+                    BeaconAction.status.in_([BeaconActionStatus.pending, BeaconActionStatus.delivered]),
+                    BeaconAction.created_at < threshold,
+                )
+            ).scalars()
+        )
+        job_ids = {action.job_id for action in stale}
+        now = datetime.now(timezone.utc)
+        for action in stale:
+            action.status = BeaconActionStatus.timed_out
+            action.resolved_at = now
+        db.commit()
+        for job_id in job_ids:
+            _finalize_job_if_resolvable(db, job_id)
+        return f"timed out {len(stale)} stale beacon action(s) across {len(job_ids)} job(s)"
     finally:
         db.close()
 

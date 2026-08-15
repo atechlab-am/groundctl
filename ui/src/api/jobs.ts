@@ -9,7 +9,8 @@ export type JobType =
   | "manage_package"
   | "sync_repository"
   | "update_repository"
-  | "delete_repository";
+  | "delete_repository"
+  | "install_beacon";
 
 export type JobStatus = "pending" | "running" | "success" | "failed";
 export type JobTargetType = "server" | "environment" | "host_group" | "adhoc" | "repository";
@@ -68,6 +69,13 @@ export function getJob(jobId: string): Promise<JobRead> {
 
 export function triggerBootstrap(serverId: string): Promise<JobRead> {
   return api.post<JobRead>(`/jobs/bootstrap/${serverId}`);
+}
+
+// Mints a new BeaconToken server-side and delivers it over the SSH access
+// already in place — see api/servers.ts's issueBeaconToken for the
+// operator-facing token-mint endpoint used when installing manually instead.
+export function triggerInstallBeacon(serverId: string): Promise<JobRead> {
+  return api.post<JobRead>(`/jobs/install-beacon/${serverId}`);
 }
 
 // environment_id is a query param, not a body field (see

@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useHasRole } from "@/auth/useHasRole";
 import {
   triggerBootstrap,
+  triggerInstallBeacon,
   triggerApplyUpdates,
   triggerGatherFacts,
   triggerBulkApplyUpdates,
@@ -25,6 +26,7 @@ type TriggerableJobType = JobType;
 
 const ALL_TYPES: TriggerableJobType[] = [
   "bootstrap",
+  "install_beacon",
   "apply_updates",
   "gather_facts",
   "bulk_apply_updates",
@@ -63,6 +65,8 @@ export function TriggerJobDialog({ onDone }: { onDone: () => void }) {
       switch (jobType) {
         case "bootstrap":
           return triggerBootstrap(serverId);
+        case "install_beacon":
+          return triggerInstallBeacon(serverId);
         case "apply_updates":
           return triggerApplyUpdates(environmentId);
         case "gather_facts":
@@ -128,7 +132,7 @@ export function TriggerJobDialog({ onDone }: { onDone: () => void }) {
           </Select>
         </div>
 
-        {(jobType === "bootstrap" || jobType === "manage_package") && (
+        {(jobType === "bootstrap" || jobType === "manage_package" || jobType === "install_beacon") && (
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="job-server-id">Server ID</Label>
             <Input id="job-server-id" value={serverId} onChange={(e) => setServerId(e.target.value)} required />

@@ -58,6 +58,7 @@ class JobType(str, enum.Enum):
     sync_repository = "sync_repository"
     delete_repository = "delete_repository"
     update_repository = "update_repository"
+    install_beacon = "install_beacon"
 
 
 class JobTargetType(str, enum.Enum):
@@ -151,6 +152,7 @@ class AuditAction(str, enum.Enum):
     assign_server_environment = "assign_server_environment"
     issue_beacon_token = "issue_beacon_token"
     revoke_beacon_token = "revoke_beacon_token"
+    trigger_install_beacon = "trigger_install_beacon"
 
 
 class User(Base):
@@ -551,6 +553,13 @@ class ComplianceRecord(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     server_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("servers.id"), nullable=False)
     installed_packages: Mapped[list] = mapped_column(JSON, nullable=False)
+    # "ssh" (default, gather_facts_task over Ansible) or "beacon"
+    # (POST /api/beacon/facts) — the two paths write into this same table,
+    # this is the only thing distinguishing which one produced a given
+    # row. See ROADMAP.md Phase 9: both keep running unconditionally
+    # (no skip-logic when a server has a beacon), so mixed-source history
+    # for one server is expected, not an error case.
+    source: Mapped[str] = mapped_column(String, nullable=False, default="ssh", server_default="ssh")
     gathered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
 
@@ -770,10 +779,65 @@ class ServerBeaconState(Base):
     last_apply_status: Mapped[str | None] = mapped_column(String, nullable=True)
     last_apply_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     agent_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Drives checkin's facts_requested field (app/routers/beacon.py) — a
+    # full POST /api/beacon/facts push is due when this is None (never
+    # pushed) or older than the facts-push interval (6h). Set only by the
+    # facts endpoint itself, never by checkin.
+    last_facts_pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
+
+
+class BeaconActionStatus(str, enum.Enum):
+    pending = "pending"
+    delivered = "delivered"
+    succeeded = "succeeded"
+    failed = "failed"
+    cancelled = "cancelled"
+    timed_out = "timed_out"
+
+
+class BeaconAction(Base):
+    """A real DB row backing one entry in a beacon's checkin `actions` list
+    (ROADMAP.md Phase 9) — the beacon-channel equivalent of an Ansible
+    playbook run against one server. Created by apply_updates_task/
+    bulk_apply_updates_task (app/tasks.py) for every target server that
+    has an active BeaconToken, instead of that server going through
+    run_playbook() over SSH. One Job can have a mix of SSH-executed
+    targets (handled synchronously inside the Celery task, same as
+    always) and beacon-dispatched targets (rows here, resolved
+    asynchronously whenever that host's next checkin picks up the
+    action and later reports back) — see apply_updates_task's own
+    docstring for how the Job's terminal status waits for both.
+
+    status transitions: pending -> delivered (first checkin that returns
+    this action) -> succeeded/failed (POST /api/beacon/report with this
+    action's id) OR pending -> cancelled (POST /jobs/{id}/cancel, before
+    delivery only — matches the SSH path's own "can't cancel what's
+    already running" limit) OR pending/delivered -> timed_out
+    (scheduled_timeout_beacon_actions sweep, ROADMAP.md Phase 9 — a
+    dispatched action nobody ever reports back on must not hang a Job
+    forever).
+    """
+
+    __tablename__ = "beacon_actions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    server_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("servers.id"), nullable=False, index=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id"), nullable=False, index=True)
+    # e.g. "apply_updates" — enum-scoped on the beacon's own side too (it
+    # never executes a free-form command string), mirroring
+    # manage_package_task's PackageAction-derived-not-client-supplied shape.
+    type: Mapped[str] = mapped_column(String, nullable=False)
+    params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[BeaconActionStatus] = mapped_column(
+        Enum(BeaconActionStatus, name="beacon_action_status"), nullable=False, default=BeaconActionStatus.pending
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ServerFact(Base):
@@ -795,6 +859,9 @@ class ServerFact(Base):
     disk: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     # [{"name": "nginx", "state": "running", "status": "enabled"}, ...]
     services: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # "ssh" (default) or "beacon" — see ComplianceRecord.source's comment,
+    # same reasoning applies here.
+    source: Mapped[str] = mapped_column(String, nullable=False, default="ssh", server_default="ssh")
     gathered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
     __table_args__ = (Index("ix_server_facts_server_id_gathered_at", "server_id", "gathered_at"),)

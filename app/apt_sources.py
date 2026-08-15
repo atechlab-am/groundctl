@@ -14,6 +14,7 @@ beacon in particular ships this string verbatim rather than being handed
 publish_prefix/release/components to concatenate itself.
 """
 
+import subprocess
 from dataclasses import dataclass
 
 
@@ -56,6 +57,27 @@ def render_apt_source(
 
     contents = f"deb [trusted=yes] {base} {release} {components_str}\n"
     return AptSource(filename=filename, contents=contents, keyring_filename=None)
+
+
+def export_gpg_public_key(gpg_key_id: str) -> str | None:
+    """Exports an ASCII-armored public key from the PRIMARY's own local
+    GPG keyring — same subprocess call
+    lifecycle_environments.get_environment_gpg_key already makes (kept in
+    that router too, unchanged, for its own GET .../gpg-key endpoint;
+    this is the shared implementation both it and beacon.py's checkin now
+    call instead of two copies of the same subprocess.run). Returns None
+    on any failure (key not present, gpg not installed, non-zero exit) —
+    callers treat that as "couldn't get the key," same posture as the
+    existing endpoint's 502.
+    """
+    proc = subprocess.run(
+        ["gpg", "--export", "--armor", gpg_key_id],
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    return proc.stdout.decode("utf-8")
 
 
 def resolve_environment_components(environment_current_version_snapshots: list[dict] | None) -> list[str]:

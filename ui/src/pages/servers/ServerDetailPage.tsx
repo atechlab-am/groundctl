@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, PowerOff, MapPin, Route, ShieldCheck } from "lucide-react";
+import { ArrowLeft, PowerOff, MapPin, Route, ShieldCheck, Radio, Trash2, Copy } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryState } from "@/components/QueryState";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -30,9 +30,13 @@ import {
   decommissionServer,
   assignServerSite,
   assignServerEnvironment,
+  getBeaconState,
+  listBeaconTokens,
+  issueBeaconToken,
+  revokeBeaconToken,
 } from "@/api/servers";
 import { listLifecycleEnvironments } from "@/api/environments";
-import { listJobs } from "@/api/jobs";
+import { listJobs, triggerInstallBeacon } from "@/api/jobs";
 import { checkServerCompliance } from "@/api/compliance";
 import { errorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
@@ -119,6 +123,44 @@ export function ServerDetailPage() {
     onSuccess: (result) => {
       const outdated = result.drift.filter((d) => d.status === "outdated").length;
       toast.success(outdated > 0 ? `${outdated} outdated package(s) found` : "All packages up to date");
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+
+  const beaconStateQuery = useQuery({
+    queryKey: ["beacon-state", serverId],
+    queryFn: () => getBeaconState(serverId),
+    retry: false,
+  });
+  const beaconTokensQuery = useQuery({
+    queryKey: ["beacon-tokens", serverId],
+    queryFn: () => listBeaconTokens(serverId),
+  });
+
+  const [issuedToken, setIssuedToken] = useState<string | null>(null);
+  const [tokenNameInput, setTokenNameInput] = useState("");
+  const issueTokenMutation = useMutation({
+    mutationFn: () => issueBeaconToken(serverId, tokenNameInput || undefined),
+    onSuccess: (result) => {
+      setIssuedToken(result.token);
+      setTokenNameInput("");
+      void queryClient.invalidateQueries({ queryKey: ["beacon-tokens", serverId] });
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+  const revokeTokenMutation = useMutation({
+    mutationFn: (tokenId: string) => revokeBeaconToken(serverId, tokenId),
+    onSuccess: () => {
+      toast.success("Token revoked");
+      void queryClient.invalidateQueries({ queryKey: ["beacon-tokens", serverId] });
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+  const installBeaconMutation = useMutation({
+    mutationFn: () => triggerInstallBeacon(serverId),
+    onSuccess: (job) => {
+      toast.success("Beacon install job triggered");
+      navigate(`/jobs/${job.id}`);
     },
     onError: (err) => toast.error(errorMessage(err)),
   });
@@ -223,6 +265,17 @@ export function ServerDetailPage() {
                         </DialogFooter>
                       </DialogContent>
                     </Dialog>
+                    {!beaconStateQuery.data && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={installBeaconMutation.isPending}
+                        onClick={() => installBeaconMutation.mutate()}
+                      >
+                        <Radio className="h-4 w-4" />
+                        Install Beacon
+                      </Button>
+                    )}
                     {serverQuery.data.lifecycle_state === "active" && (
                       <Button
                         variant="destructive"
@@ -245,6 +298,12 @@ export function ServerDetailPage() {
               <StatusBadge value={serverQuery.data.status} />
               <StatusBadge value={serverQuery.data.lifecycle_state} />
               <Badge variant="outline">SSH: {serverQuery.data.ssh_user}</Badge>
+              {beaconStateQuery.data && (
+                <Badge variant={beaconStateQuery.data.pending_reconciliation ? "warning" : "success"}>
+                  <Radio className="h-3 w-3" />
+                  {beaconStateQuery.data.pending_reconciliation ? "Beacon: pending reconciliation" : "Beacon: in sync"}
+                </Badge>
+              )}
             </div>
 
             <Tabs defaultValue="facts">
@@ -252,6 +311,7 @@ export function ServerDetailPage() {
                 <TabsTrigger value="facts">Facts</TabsTrigger>
                 <TabsTrigger value="history">Facts history</TabsTrigger>
                 <TabsTrigger value="jobs">Jobs</TabsTrigger>
+                <TabsTrigger value="beacon">Beacon</TabsTrigger>
               </TabsList>
 
               <TabsContent value="facts">
@@ -321,6 +381,140 @@ export function ServerDetailPage() {
                     ))}
                   </ul>
                 </QueryState>
+              </TabsContent>
+
+              <TabsContent value="beacon">
+                <Card>
+                  <CardContent className="flex flex-col gap-6 p-5">
+                    {beaconStateQuery.isLoading ? (
+                      <p className="text-sm text-muted-foreground">Loading…</p>
+                    ) : beaconStateQuery.isError ? (
+                      <p className="text-sm text-muted-foreground">
+                        This server isn't beacon-managed yet — install Beacon to enable pull-based checkins.
+                      </p>
+                    ) : beaconStateQuery.data ? (
+                      <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
+                        <FactItem label="Config serial" value={String(beaconStateQuery.data.config_serial)} />
+                        <FactItem
+                          label="Applied serial"
+                          value={
+                            beaconStateQuery.data.applied_config_serial === null
+                              ? "never"
+                              : String(beaconStateQuery.data.applied_config_serial)
+                          }
+                        />
+                        <FactItem label="Last checkin" value={formatDateTime(beaconStateQuery.data.last_checkin_at)} />
+                        <FactItem label="Last apply" value={beaconStateQuery.data.last_apply_status ?? "—"} />
+                        <FactItem label="Agent version" value={beaconStateQuery.data.agent_version ?? "—"} />
+                        <FactItem
+                          label="Last facts push"
+                          value={formatDateTime(beaconStateQuery.data.last_facts_pushed_at)}
+                        />
+                      </div>
+                    ) : null}
+
+                    <div>
+                      <div className="mb-2 flex items-center justify-between">
+                        <Label className="text-sm">Tokens</Label>
+                        <RoleGate minRole="operator">
+                          <Dialog
+                            onOpenChange={(open) => {
+                              if (!open) setIssuedToken(null);
+                            }}
+                          >
+                            <DialogTrigger asChild>
+                              <Button variant="outline" size="sm">
+                                Issue token
+                              </Button>
+                            </DialogTrigger>
+                            <DialogContent>
+                              <DialogHeader>
+                                <DialogTitle>Issue Beacon token</DialogTitle>
+                                <DialogDescription>
+                                  Shown once — copy it now. Groundctl only ever stores its hash.
+                                </DialogDescription>
+                              </DialogHeader>
+                              {issuedToken ? (
+                                <div className="mt-4 flex flex-col gap-2">
+                                  <div className="flex items-center gap-2 rounded-md border bg-muted p-2 font-mono text-xs break-all">
+                                    {issuedToken}
+                                  </div>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => {
+                                      void navigator.clipboard.writeText(issuedToken);
+                                      toast.success("Copied to clipboard");
+                                    }}
+                                  >
+                                    <Copy className="h-4 w-4" />
+                                    Copy
+                                  </Button>
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="mt-4 flex flex-col gap-1.5">
+                                    <Label htmlFor="beacon-token-name">Name (optional)</Label>
+                                    <Input
+                                      id="beacon-token-name"
+                                      value={tokenNameInput}
+                                      onChange={(e) => setTokenNameInput(e.target.value)}
+                                    />
+                                  </div>
+                                  <DialogFooter className="mt-6">
+                                    <Button
+                                      disabled={issueTokenMutation.isPending}
+                                      onClick={() => issueTokenMutation.mutate()}
+                                    >
+                                      {issueTokenMutation.isPending ? "Issuing…" : "Issue"}
+                                    </Button>
+                                  </DialogFooter>
+                                </>
+                              )}
+                            </DialogContent>
+                          </Dialog>
+                        </RoleGate>
+                      </div>
+                      <QueryState
+                        isLoading={beaconTokensQuery.isLoading}
+                        isError={beaconTokensQuery.isError}
+                        error={beaconTokensQuery.error}
+                        isEmpty={beaconTokensQuery.data?.length === 0}
+                        emptyMessage="No tokens issued yet."
+                      >
+                        <ul className="flex flex-col divide-y rounded-lg border">
+                          {beaconTokensQuery.data?.map((token) => (
+                            <li key={token.id} className="flex items-center justify-between px-4 py-2 text-sm">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{token.name ?? "(unnamed)"}</span>
+                                {token.revoked && <Badge variant="destructive">Revoked</Badge>}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-muted-foreground">
+                                  last used {formatDateTime(token.last_used_at)}
+                                </span>
+                                {!token.revoked && (
+                                  <RoleGate minRole="operator">
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      disabled={revokeTokenMutation.isPending}
+                                      onClick={() => {
+                                        if (confirm("Revoke this Beacon token?")) revokeTokenMutation.mutate(token.id);
+                                      }}
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                  </RoleGate>
+                                )}
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </QueryState>
+                    </div>
+                  </CardContent>
+                </Card>
               </TabsContent>
             </Tabs>
           </>
