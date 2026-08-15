@@ -151,6 +151,9 @@ class GroundctlClient:
     def put(self, path: str, *, json: object = None, params: dict | None = None) -> httpx.Response:
         return self.request("PUT", path, json=json, params=params)
 
+    def patch(self, path: str, *, json: object = None, params: dict | None = None) -> httpx.Response:
+        return self.request("PATCH", path, json=json, params=params)
+
     def close(self) -> None:
         self._http.close()
 

@@ -382,9 +382,18 @@ class ContentViewVersionRead(BaseModel):
     # Total packages across this version's final (post-filter) snapshots —
     # null only for versions cut before this field existed.
     package_count: int | None
+    # Free-text, operator-settable via PATCH /content-view-versions/{id} —
+    # never at publish time. The version NUMBER is the canonical,
+    # immutable identifier; this is annotation only (matches Satellite:
+    # versions are numbered, not renamed).
+    description: str | None
     published_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ContentViewVersionUpdate(BaseModel):
+    description: str | None = None
 
 
 class PublishRequest(BaseModel):

@@ -30,6 +30,7 @@ from app.schemas import (
     ContentViewFilterRead,
     ContentViewRead,
     ContentViewVersionRead,
+    ContentViewVersionUpdate,
     PublishRequest,
     PublishResponse,
 )
@@ -275,6 +276,41 @@ def list_content_view_versions(
             .offset(offset)
         ).scalars()
     )
+
+
+@router.patch("/{content_view_id}/versions/{version_id}", response_model=ContentViewVersionRead)
+def update_content_view_version(
+    content_view_id: uuid.UUID,
+    version_id: uuid.UUID,
+    payload: ContentViewVersionUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """Sets an operator-facing description on an already-published version
+    — annotation only. The version NUMBER stays the canonical, immutable
+    identifier (matches Satellite: versions are numbered, never renamed).
+    Never touches snapshots/content_hash/package_count, all of which stay
+    write-once at publish time.
+    """
+    _get_content_view_or_404(db, content_view_id)
+
+    version = db.get(ContentViewVersion, version_id)
+    if version is None or version.content_view_id != content_view_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view version not found")
+
+    version.description = payload.description
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.update_content_view_version,
+            resource_type="content_view_version",
+            resource_id=str(version.id),
+            detail={"version": version.version, "description": payload.description},
+        )
+    )
+    db.commit()
+    db.refresh(version)
+    return version
 
 
 @router.get("/{content_view_id}/filters", response_model=list[ContentViewFilterRead])

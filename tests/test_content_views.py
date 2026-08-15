@@ -356,6 +356,129 @@ def test_publish_content_view_no_repositories_422(client, operator_token, db_ses
     assert r.status_code == 422, r.text
 
 
+# ---------------------------------------------------------------------------
+# PATCH /content-views/{id}/versions/{version_id}
+# ---------------------------------------------------------------------------
+
+
+def test_set_version_description_as_operator(client, operator_token):
+    repo = _create_repo(client, operator_token, "desc-repo")
+    cv = client.post(
+        "/content-views",
+        json={"name": "desc-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+    assert version["description"] is None
+
+    r = client.patch(
+        f"/content-views/{cv['id']}/versions/{version['id']}",
+        json={"description": "Approved for prod rollout 2026-08"},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["description"] == "Approved for prod rollout 2026-08"
+    # Version number, snapshots, content_hash all untouched — annotation only.
+    assert body["version"] == version["version"]
+    assert body["content_hash"] == version["content_hash"]
+
+    # Persisted, not just echoed back.
+    versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
+    assert versions_r.json()[0]["description"] == "Approved for prod rollout 2026-08"
+
+
+def test_set_version_description_can_be_cleared(client, operator_token):
+    repo = _create_repo(client, operator_token, "desc-clear-repo")
+    cv = client.post(
+        "/content-views",
+        json={"name": "desc-clear-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+
+    client.patch(
+        f"/content-views/{cv['id']}/versions/{version['id']}",
+        json={"description": "temporary note"},
+        headers=auth_headers(operator_token),
+    )
+    r = client.patch(
+        f"/content-views/{cv['id']}/versions/{version['id']}",
+        json={"description": None},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["description"] is None
+
+
+def test_set_version_description_as_viewer_forbidden(client, operator_token, viewer_token):
+    repo = _create_repo(client, operator_token, "desc-viewer-repo")
+    cv = client.post(
+        "/content-views",
+        json={"name": "desc-viewer-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+
+    r = client.patch(
+        f"/content-views/{cv['id']}/versions/{version['id']}",
+        json={"description": "should not work"},
+        headers=auth_headers(viewer_token),
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_set_version_description_content_view_not_found(client, operator_token):
+    r = client.patch(
+        "/content-views/00000000-0000-0000-0000-000000000000/versions/00000000-0000-0000-0000-000000000000",
+        json={"description": "x"},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_set_version_description_version_not_found(client, operator_token):
+    repo = _create_repo(client, operator_token, "desc-404-repo")
+    cv = client.post(
+        "/content-views",
+        json={"name": "desc-404-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+
+    r = client.patch(
+        f"/content-views/{cv['id']}/versions/00000000-0000-0000-0000-000000000000",
+        json={"description": "x"},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_set_version_description_wrong_content_view_404s(client, operator_token):
+    """A version belonging to content-view A must not be editable by
+    addressing it through content-view B's URL — same isolation pattern
+    used elsewhere (e.g. filters, beacon tokens)."""
+    repo_a = _create_repo(client, operator_token, "desc-cv-a-repo")
+    repo_b = _create_repo(client, operator_token, "desc-cv-b-repo")
+    cv_a = client.post(
+        "/content-views",
+        json={"name": "desc-cv-a", "repository_ids": [repo_a["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+    cv_b = client.post(
+        "/content-views",
+        json={"name": "desc-cv-b", "repository_ids": [repo_b["id"]]},
+        headers=auth_headers(operator_token),
+    ).json()
+    version_a = client.get(f"/content-views/{cv_a['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+
+    r = client.patch(
+        f"/content-views/{cv_b['id']}/versions/{version_a['id']}",
+        json={"description": "should not apply"},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
 def test_list_content_views_as_viewer(client, operator_token, viewer_token):
     repo = _create_repo(client, operator_token, "list-cv-repo")
     client.post(

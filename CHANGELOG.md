@@ -25,6 +25,22 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-08-16
+
+### Added: content view version descriptions
+
+- New `PATCH /content-views/{id}/versions/{version_id}` — sets or clears
+  a free-text description on an already-published version. Annotation
+  only, matching Satellite: the version NUMBER stays the canonical,
+  immutable identifier (never renamed), `snapshots`/`content_hash`/
+  `package_count` stay write-once at publish time. Deliberately not part
+  of `PublishRequest` — publishing can return an existing unchanged
+  version on a no-op (nothing changed since the last cut), which would
+  make "set the description" ambiguous with "describe what I just cut."
+- Web UI: version history rows in the content view detail page gained an
+  "Edit" action (description shown inline once set). CLI:
+  `groundctl content-view set-version-description`.
+
 ## [0.32.0] - 2026-08-16
 
 ### Added: Beacon local reconciliation and facts push (Phase 9 / Beacon, parts 3-4)

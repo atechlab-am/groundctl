@@ -1,4 +1,5 @@
-"""groundctl content-view create|publish|add-filter|versions
+"""groundctl content-view create|publish|add-filter|versions|
+set-version-description
 
 LIMITATION (matches a known backend gap, also hit by the web UI): there is
 no GET list/detail endpoint for content views on the backend
@@ -93,3 +94,22 @@ def versions(
             f"/content-views/{content_view_id}/versions", params={"limit": limit, "offset": offset}
         )
     render_list(response.json(), output=output)
+
+
+@app.command("set-version-description")
+def set_version_description(
+    ctx: typer.Context,
+    content_view_id: uuid.UUID = typer.Argument(..., help="Content view UUID."),
+    version_id: uuid.UUID = typer.Argument(..., help="Content view version UUID (see `versions`)."),
+    description: str = typer.Option(
+        None, "--description", help="Omit to clear the description. The version NUMBER is unaffected — annotation only."
+    ),
+) -> None:
+    """Set or clear a version's description. Doesn't rename or renumber
+    the version — matches Satellite, where versions are numbered, never
+    renamed, only annotated."""
+    output = get_output(ctx)
+    payload = {"description": description}
+    with authed_client() as client:
+        response = client.patch(f"/content-views/{content_view_id}/versions/{version_id}", json=payload)
+    render_item(response.json(), output=output)

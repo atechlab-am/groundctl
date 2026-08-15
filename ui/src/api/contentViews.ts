@@ -33,6 +33,10 @@ export interface ContentViewVersionRead {
   // Total packages across this version's final (post-filter) snapshots —
   // null only for versions cut before this field existed.
   package_count: number | null;
+  // Operator-settable via updateContentViewVersion — annotation only, the
+  // version NUMBER stays canonical (matches Satellite: versions are
+  // numbered, never renamed, only described).
+  description: string | null;
   published_at: string;
 }
 
@@ -105,4 +109,14 @@ export function deleteContentViewFilter(contentViewId: string, filterId: string)
 // a content-change record.
 export function publishContentView(contentViewId: string, force = false): Promise<PublishResponse> {
   return api.post<PublishResponse>(`/content-views/${contentViewId}/publish`, { force });
+}
+
+export function updateContentViewVersion(
+  contentViewId: string,
+  versionId: string,
+  description: string | null,
+): Promise<ContentViewVersionRead> {
+  return api.patch<ContentViewVersionRead>(`/content-views/${contentViewId}/versions/${versionId}`, {
+    description,
+  });
 }

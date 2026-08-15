@@ -2,13 +2,14 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, Plus, Rocket, Trash2, UploadCloud } from "lucide-react";
+import { ArrowLeft, Pencil, Plus, Rocket, Trash2, UploadCloud } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryState } from "@/components/QueryState";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
@@ -28,6 +29,7 @@ import {
   deleteContentViewFilter,
   deleteContentView,
   publishContentView,
+  updateContentViewVersion,
   type ContentViewVersionRead,
   type FilterType,
 } from "@/api/contentViews";
@@ -154,6 +156,25 @@ export function ContentViewDetailPage() {
     }
     setPromoteError(null);
     promoteMutation.mutate();
+  }
+
+  const [editingVersion, setEditingVersion] = useState<ContentViewVersionRead | null>(null);
+  const [editVersionDescription, setEditVersionDescription] = useState("");
+
+  const updateVersionMutation = useMutation({
+    mutationFn: () =>
+      updateContentViewVersion(contentViewId, editingVersion!.id, editVersionDescription || null),
+    onSuccess: () => {
+      toast.success(`Updated version ${editingVersion!.version}`);
+      setEditingVersion(null);
+      void queryClient.invalidateQueries({ queryKey: ["content-view-versions", contentViewId] });
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+
+  function openEditVersion(version: ContentViewVersionRead) {
+    setEditingVersion(version);
+    setEditVersionDescription(version.description ?? "");
   }
 
   function handleAddFilter(e: FormEvent) {
@@ -346,6 +367,15 @@ export function ContentViewDetailPage() {
                                   variant="outline"
                                   size="sm"
                                   className="h-7 gap-1.5 px-2 text-xs"
+                                  onClick={() => openEditVersion(v)}
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                  Edit
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 gap-1.5 px-2 text-xs"
                                   onClick={() => openPromote(v)}
                                 >
                                   <Rocket className="h-3.5 w-3.5" />
@@ -354,6 +384,7 @@ export function ContentViewDetailPage() {
                               </RoleGate>
                             </div>
                           </div>
+                          {v.description && <p className="mt-1 text-xs text-muted-foreground">{v.description}</p>}
                           <div className="mt-2 flex flex-wrap gap-1">
                             {v.snapshots.map((s) => (
                               <Badge key={`${s.repository_id}-${s.component}`} variant="outline">
@@ -426,6 +457,41 @@ export function ContentViewDetailPage() {
               </Button>
               <Button type="submit" disabled={promoteMutation.isPending || environmentsQuery.data?.length === 0}>
                 {promoteMutation.isPending ? "Promoting…" : "Promote"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={editingVersion !== null} onOpenChange={(open) => !open && setEditingVersion(null)}>
+        <DialogContent>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              updateVersionMutation.mutate();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>Edit version {editingVersion?.version}</DialogTitle>
+              <DialogDescription>
+                Annotation only — the version number stays the permanent identifier.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-4 flex flex-col gap-1.5">
+              <Label htmlFor="version-description">Description</Label>
+              <Textarea
+                id="version-description"
+                value={editVersionDescription}
+                onChange={(e) => setEditVersionDescription(e.target.value)}
+                placeholder="Optional"
+              />
+            </div>
+            <DialogFooter className="mt-6">
+              <Button type="button" variant="outline" onClick={() => setEditingVersion(null)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={updateVersionMutation.isPending}>
+                {updateVersionMutation.isPending ? "Saving…" : "Save"}
               </Button>
             </DialogFooter>
           </form>

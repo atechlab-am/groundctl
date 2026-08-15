@@ -153,6 +153,7 @@ class AuditAction(str, enum.Enum):
     issue_beacon_token = "issue_beacon_token"
     revoke_beacon_token = "revoke_beacon_token"
     trigger_install_beacon = "trigger_install_beacon"
+    update_content_view_version = "update_content_view_version"
 
 
 class User(Base):
@@ -393,6 +394,13 @@ class ContentViewVersion(Base):
     # content hash. Nullable only for rows written before this column
     # existed; every version cut going forward always sets it.
     package_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Free-text, operator-settable via PATCH /content-view-versions/{id} —
+    # never at publish time (do_publish can return an existing unchanged
+    # version on a no-op publish, which would make "set the description"
+    # ambiguous with "describe the version I just cut"). The version
+    # NUMBER stays the canonical, immutable identifier (matches Satellite:
+    # versions are numbered, not renamed — only annotated).
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
