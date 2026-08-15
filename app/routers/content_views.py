@@ -19,6 +19,9 @@ from app.models import (
     Erratum,
     ErratumPackage,
     FilterType,
+    Job,
+    JobTargetType,
+    JobType,
     LifecycleEnvironment,
     Repository,
     Role,
@@ -31,6 +34,8 @@ from app.schemas import (
     ContentViewRead,
     ContentViewVersionRead,
     ContentViewVersionUpdate,
+    JobRead,
+    PublishAndPromoteRequest,
     PublishRequest,
     PublishResponse,
 )
@@ -528,3 +533,67 @@ def publish_content_view(
     force = payload.force if payload is not None else False
     version, cut = do_publish(content_view, db, aptly, current_user, force=force)
     return PublishResponse(content_view_version=ContentViewVersionRead.model_validate(version), version_cut=cut)
+
+
+@router.post(
+    "/{content_view_id}/publish-and-promote", response_model=JobRead, status_code=status.HTTP_201_CREATED
+)
+def trigger_publish_and_promote(
+    content_view_id: uuid.UUID,
+    payload: PublishAndPromoteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """Cuts a new version (with an optional description) and immediately
+    promotes it to an environment, as ONE tracked Job — the combined
+    "create version + promote" popup's backing endpoint. Unlike
+    POST /{content_view_id}/publish and POST /lifecycle-environments/
+    {id}/promote (both still synchronous, unchanged), aptly's
+    publish/switch-publish call can genuinely run long (see
+    aptly_client.py's 1800s timeouts) — same "long-running work belongs
+    in a Job" rule as every other job-backed endpoint, now applied here
+    too, but ONLY for this new combined flow. The plain publish/promote
+    buttons keep their existing synchronous behavior.
+    """
+    # Deferred import: app.tasks imports do_publish/do_promote from this
+    # module and lifecycle_environments.py, so importing app.tasks at
+    # module load time here would be circular (same pattern
+    # repositories.py's sync_repository endpoint already uses).
+    from app.tasks import publish_and_promote_task
+
+    content_view = _get_content_view_or_404(db, content_view_id)
+
+    environment = db.get(LifecycleEnvironment, payload.environment_id)
+    if environment is None or environment.content_view_id != content_view.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="lifecycle environment not found for this content view",
+        )
+
+    job = Job(
+        job_type=JobType.publish_and_promote,
+        target_type=JobTargetType.environment,
+        environment_id=environment.id,
+        created_by_user_id=current_user.id,
+    )
+    db.add(job)
+    db.flush()
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.trigger_publish_and_promote,
+            resource_type="job",
+            resource_id=str(job.id),
+            detail={
+                "content_view_id": str(content_view.id),
+                "environment_id": str(environment.id),
+                "force": payload.force,
+                "description": payload.description,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(job)
+
+    publish_and_promote_task.delay(str(job.id))
+    return job

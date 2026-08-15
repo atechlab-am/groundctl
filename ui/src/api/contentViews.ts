@@ -1,4 +1,5 @@
 import { api } from "./client";
+import type { JobRead } from "./jobs";
 
 export type FilterType = "include" | "exclude" | "errata_since";
 
@@ -119,4 +120,21 @@ export function updateContentViewVersion(
   return api.patch<ContentViewVersionRead>(`/content-views/${contentViewId}/versions/${versionId}`, {
     description,
   });
+}
+
+export interface PublishAndPromoteRequest {
+  environment_id: string;
+  force?: boolean;
+  description?: string | null;
+}
+
+// Cuts a new version (with an optional description) and promotes it to
+// an environment in ONE tracked Job — unlike publishContentView/
+// promoteEnvironment above (both synchronous), this returns immediately
+// with a Job the caller should navigate to and poll (see JobDetailPage).
+export function publishAndPromoteContentView(
+  contentViewId: string,
+  payload: PublishAndPromoteRequest,
+): Promise<JobRead> {
+  return api.post<JobRead>(`/content-views/${contentViewId}/publish-and-promote`, payload);
 }

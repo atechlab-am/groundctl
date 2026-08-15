@@ -8,6 +8,7 @@ from typing import Callable, TypeGuard
 
 import redis
 from celery.exceptions import MaxRetriesExceededError
+from fastapi import HTTPException
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
@@ -48,8 +49,11 @@ from app.models import (
     ServerLifecycleState,
     ServerStatus,
     SiteEnvironment,
+    User,
 )
 from app.routers.compliance import ComplianceDataNotReadyError, do_check_compliance
+from app.routers.content_views import do_publish
+from app.routers.lifecycle_environments import do_promote
 from app.routers.repositories import do_sync_repository
 from app.version_check import refresh_version_check
 from app.webhooks import send_webhook
@@ -817,6 +821,96 @@ def install_beacon_task(self, job_id: str) -> str:
     finally:
         job_row.close()
     return _run_locked_job(self, job_id, f"groundctl:lock:server:{server_id}", work)
+
+
+@celery_app.task(bind=True)
+def publish_and_promote_task(self, job_id: str) -> str:
+    """Backs the content view detail page's combined "create version +
+    promote" popup — cuts a new version (do_publish, same one
+    POST /{content_view_id}/publish uses), applies the operator-supplied
+    description to it, then promotes it to the chosen environment
+    (do_promote, same one POST /{environment_id}/promote uses), all as
+    ONE tracked Job. Both publish and promote are aptly calls that can
+    genuinely run long (aptly_client.py's 1800s timeouts) — this is the
+    ONLY publish/promote path that's a Job; the plain publish/promote
+    endpoints stay synchronous, unchanged (see trigger_publish_and_promote's
+    docstring for why only this combined flow gets the async treatment).
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(Job, uuid.UUID(job_id))
+        if job is None:
+            return "job not found"
+
+        job.celery_task_id = self.request.id
+        job.status = JobStatus.running
+        job.started_at = datetime.now(timezone.utc)
+        db.commit()
+
+        audit = db.execute(
+            select(AuditLog).where(
+                AuditLog.resource_id == str(job.id), AuditLog.action == AuditAction.trigger_publish_and_promote
+            )
+        ).scalar_one()
+        if audit.detail is None:
+            raise ValueError(f"audit log for job {job.id} is missing its publish-and-promote detail")
+        content_view_id = uuid.UUID(audit.detail["content_view_id"])
+        force = audit.detail["force"]
+        description = audit.detail["description"]
+
+        environment = db.get(LifecycleEnvironment, job.environment_id)
+        if environment is None:
+            _mark_job(db, job, JobStatus.failed, f"environment {job.environment_id} no longer exists")
+            return "environment not found"
+
+        content_view = db.get(ContentView, content_view_id)
+        if content_view is None:
+            _mark_job(db, job, JobStatus.failed, f"content view {content_view_id} no longer exists")
+            return "content view not found"
+
+        lock = _acquire_lock(f"groundctl:lock:environment:{environment.id}")
+        if lock is None:
+            _mark_job(
+                db, job, JobStatus.failed,
+                "another job is already running against this environment — retry once it completes",
+            )
+            return "lock contention"
+
+        aptly = get_aptly_client()
+        try:
+            user = db.get(User, job.created_by_user_id)
+            if user is None:
+                raise ValueError(f"job {job.id}'s creating user no longer exists")
+
+            job.log_output = f"publishing new version of {content_view.name}…"
+            db.commit()
+            version, cut = do_publish(content_view, db, aptly, user, force=force)
+            if description is not None:
+                version.description = description
+                db.commit()
+
+            job.log_output = (
+                f"{'cut' if cut else 'reused'} version {version.version}"
+                f" — promoting to {environment.name}…"
+            )
+            db.commit()
+            do_promote(environment, version, db, aptly, user)
+
+            _mark_job(
+                db, job, JobStatus.success,
+                f"version {version.version} of {content_view.name} promoted to {environment.name}",
+            )
+            return "successful"
+        except (AptlyError, HTTPException) as exc:
+            db.rollback()
+            job = _get_job_or_raise(db, job_id)
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            _mark_job(db, job, JobStatus.failed, str(detail))
+            return "failed"
+        finally:
+            lock.release()
+    finally:
+        db.close()
 
 
 @celery_app.task(bind=True)

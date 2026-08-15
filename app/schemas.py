@@ -409,6 +409,16 @@ class PublishResponse(BaseModel):
     version_cut: bool
 
 
+class PublishAndPromoteRequest(BaseModel):
+    environment_id: uuid.UUID
+    # Same semantics as PublishRequest.force.
+    force: bool = False
+    # Applied to the version once cut — same annotation-only field as
+    # PATCH /content-views/{id}/versions/{version_id}, just set in one
+    # step instead of a separate call after the fact.
+    description: str | None = None
+
+
 # A package name or a simple wildcard/regex pattern, per aptly's query
 # grammar this eventually feeds (see AptlyClient.create_filtered_snapshot).
 # Deliberately more permissive than validate_aptly_name (needs to allow *,

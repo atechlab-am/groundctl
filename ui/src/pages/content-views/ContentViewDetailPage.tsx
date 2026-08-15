@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dialog,
@@ -29,6 +30,7 @@ import {
   deleteContentViewFilter,
   deleteContentView,
   publishContentView,
+  publishAndPromoteContentView,
   updateContentViewVersion,
   type ContentViewVersionRead,
   type FilterType,
@@ -101,17 +103,83 @@ export function ContentViewDetailPage() {
     onError: (err) => toast.error(errorMessage(err)),
   });
 
-  // Always force=true — "Create new version" always cuts one, even with
-  // nothing changed since the latest (a version doubles as a promotion
-  // checkpoint, not purely a content-change record).
-  const publishMutation = useMutation({
-    mutationFn: () => publishContentView(contentViewId, true),
-    onSuccess: (result) => {
-      toast.success(`Created version ${result.content_view_version.version}`);
-      void queryClient.invalidateQueries({ queryKey: ["content-view-versions", contentViewId] });
-    },
-    onError: (err) => toast.error(errorMessage(err)),
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createDescription, setCreateDescription] = useState("");
+  const [createPromoteNow, setCreatePromoteNow] = useState(false);
+  const [createEnvironmentId, setCreateEnvironmentId] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  const environmentsForCreateQuery = useQuery({
+    queryKey: ["lifecycle-environments", "content-view", contentViewId],
+    queryFn: () => listLifecycleEnvironments({ content_view_id: contentViewId, limit: 100 }),
+    enabled: createDialogOpen && createPromoteNow,
   });
+
+  // Always cuts a new version, even with nothing changed since the latest
+  // (a version doubles as a promotion checkpoint, not purely a
+  // content-change record) — matches the old one-click button's behavior.
+  //
+  // Two different backends depending on whether "promote now" is checked:
+  // promoting means a real aptly publish/switch-publish call that can run
+  // long, so that path goes through publishAndPromoteContentView (a
+  // tracked Job — navigates to its status page). Just creating a version
+  // with no promote is exactly as fast as it always was, so it stays on
+  // the plain synchronous publishContentView, with the description
+  // applied via a follow-up PATCH (no combined "publish with description,
+  // don't promote" endpoint exists — see PATCH .../versions/{id}'s own
+  // docstring for why description-setting is deliberately separate from
+  // publish).
+  const createVersionMutation = useMutation({
+    mutationFn: async () => {
+      if (createPromoteNow) {
+        const job = await publishAndPromoteContentView(contentViewId, {
+          environment_id: createEnvironmentId,
+          force: true,
+          description: createDescription || null,
+        });
+        return { kind: "job" as const, job };
+      }
+      const result = await publishContentView(contentViewId, true);
+      if (createDescription) {
+        await updateContentViewVersion(contentViewId, result.content_view_version.id, createDescription);
+      }
+      return { kind: "version" as const, version: result.content_view_version };
+    },
+    onSuccess: (result) => {
+      setCreateDialogOpen(false);
+      setCreateDescription("");
+      setCreatePromoteNow(false);
+      setCreateEnvironmentId("");
+      setCreateError(null);
+      if (result.kind === "job") {
+        toast.success("Version creation + promotion started");
+        void queryClient.invalidateQueries({ queryKey: ["content-view-versions", contentViewId] });
+        navigate(`/jobs/${result.job.id}`);
+      } else {
+        toast.success(`Created version ${result.version.version}`);
+        void queryClient.invalidateQueries({ queryKey: ["content-view-versions", contentViewId] });
+      }
+    },
+    onError: (err) => setCreateError(errorMessage(err)),
+  });
+
+  function openCreateVersion() {
+    setCreateDescription("");
+    setCreatePromoteNow(false);
+    setCreateEnvironmentId("");
+    setCreateError(null);
+    setCreateDialogOpen(true);
+  }
+
+  function handleCreateVersion(e: FormEvent) {
+    e.preventDefault();
+    if (createPromoteNow && !createEnvironmentId) {
+      setCreateError("select an environment to promote to");
+      return;
+    }
+    setCreateError(null);
+    createVersionMutation.mutate();
+  }
 
   const deleteViewMutation = useMutation({
     mutationFn: () => deleteContentView(contentViewId),
@@ -211,9 +279,9 @@ export function ContentViewDetailPage() {
               actions={
                 <RoleGate minRole="operator">
                   <div className="flex gap-2">
-                    <Button size="sm" onClick={() => publishMutation.mutate()} disabled={publishMutation.isPending}>
+                    <Button size="sm" onClick={openCreateVersion}>
                       <UploadCloud className="h-4 w-4" />
-                      {publishMutation.isPending ? "Creating…" : "Create new version"}
+                      Create new version
                     </Button>
                     <Button
                       variant="destructive"
@@ -492,6 +560,83 @@ export function ContentViewDetailPage() {
               </Button>
               <Button type="submit" disabled={updateVersionMutation.isPending}>
                 {updateVersionMutation.isPending ? "Saving…" : "Save"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+        <DialogContent>
+          <form onSubmit={handleCreateVersion}>
+            <DialogHeader>
+              <DialogTitle>Create new version</DialogTitle>
+              <DialogDescription>
+                Cuts a new version from the member repositories' current content. Optionally promote it to an
+                environment right away — that runs as a tracked job you can follow from the Jobs page.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-4 flex flex-col gap-4">
+              {createError && <p className="text-sm text-destructive">{createError}</p>}
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="create-version-description">Description</Label>
+                <Textarea
+                  id="create-version-description"
+                  value={createDescription}
+                  onChange={(e) => setCreateDescription(e.target.value)}
+                  placeholder="Optional"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="create-promote-now"
+                  checked={createPromoteNow}
+                  onCheckedChange={(checked) => setCreatePromoteNow(checked === true)}
+                />
+                <Label htmlFor="create-promote-now" className="cursor-pointer font-normal">
+                  Promote to an environment now
+                </Label>
+              </div>
+              {createPromoteNow && (
+                <div className="flex flex-col gap-1.5">
+                  <Label>Environment</Label>
+                  {environmentsForCreateQuery.data?.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No lifecycle environments use this content view yet.
+                    </p>
+                  ) : (
+                    <Select value={createEnvironmentId} onValueChange={setCreateEnvironmentId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select an environment" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {environmentsForCreateQuery.data?.map((env) => (
+                          <SelectItem key={env.id} value={env.id}>
+                            {env.name} ({env.path_name}, position {env.position})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
+              )}
+            </div>
+            <DialogFooter className="mt-6">
+              <Button type="button" variant="outline" onClick={() => setCreateDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={
+                  createVersionMutation.isPending ||
+                  (createPromoteNow && environmentsForCreateQuery.data?.length === 0)
+                }
+              >
+                {createVersionMutation.isPending
+                  ? "Creating…"
+                  : createPromoteNow
+                    ? "Create & promote"
+                    : "Create"}
               </Button>
             </DialogFooter>
           </form>

@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { RoleGate } from "@/layout/RoleGate";
+import { JobProgressBar, elapsed, useNow } from "@/components/JobProgressBar";
 import { getJob, cancelJob } from "@/api/jobs";
 import { errorMessage } from "@/lib/errors";
 import { formatDateTime, titleCase } from "@/lib/format";
@@ -41,6 +42,8 @@ export function JobDetailPage() {
 
   const job = jobQuery.data;
   const canCancel = job && (job.status === "pending" || job.status === "running");
+  const inProgress = job?.status === "pending" || job?.status === "running";
+  const now = useNow(inProgress ?? false);
 
   return (
     <div>
@@ -78,6 +81,15 @@ export function JobDetailPage() {
               <InfoItem label="Started" value={formatDateTime(job.started_at)} />
               <InfoItem label="Finished" value={formatDateTime(job.finished_at)} />
             </div>
+
+            {inProgress && (
+              <div className="mb-6 flex flex-col gap-1.5">
+                <p className="text-xs text-muted-foreground">
+                  {job.status === "pending" ? "waiting to start…" : `running… ${elapsed(job.started_at, now)}`}
+                </p>
+                <JobProgressBar job={job} now={now} />
+              </div>
+            )}
 
             {job.server_ids.length > 0 && (
               <Card className="mb-6">

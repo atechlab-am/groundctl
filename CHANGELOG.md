@@ -25,6 +25,33 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-08-16
+
+### Added: combined create-version-and-promote job, job progress bars
+
+- New `POST /content-views/{id}/publish-and-promote` — cuts a version
+  (with an optional description) and promotes it to an environment as
+  ONE tracked `Job` (new `JobType.publish_and_promote`). Unlike
+  `POST /{id}/publish` and `POST /lifecycle-environments/{id}/promote`
+  (both still synchronous, unchanged), this is the first publish/promote
+  path backed by a `Job` — aptly's publish/switch-publish call can
+  genuinely run long (see `aptly_client.py`'s 1800s timeouts), the same
+  "long-running work belongs in a Job" rule every other job-backed
+  endpoint already follows. `do_promote` extracted out of
+  `promote_environment` into a reusable function (mirrors `do_publish`)
+  so the task and the existing synchronous endpoint share one
+  implementation.
+- Web UI: the content view detail page's "Create new version" button now
+  opens a dialog — description field, and an optional "promote to an
+  environment now" checkbox that, when checked, creates the job above and
+  navigates straight to its status page.
+- New `JobProgressBar` component (extracted from the existing
+  `JobStatusIndicator`) — an estimated-progress fill based on the
+  average duration of that job type's past successful runs (falls back
+  to an indeterminate animation with no history), now also shown on the
+  job detail page itself, not just the compact indicator.
+- CLI: `groundctl content-view publish-and-promote`.
+
 ## [0.34.0] - 2026-08-16
 
 ### Added: content view version descriptions

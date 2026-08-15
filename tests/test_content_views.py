@@ -479,6 +479,206 @@ def test_set_version_description_wrong_content_view_404s(client, operator_token)
     assert r.status_code == 404, r.text
 
 
+# ---------------------------------------------------------------------------
+# POST /content-views/{id}/publish-and-promote
+# ---------------------------------------------------------------------------
+
+
+def _create_env(client, operator_token, cv, name="env", path_name="path", position=0, publish_prefix="prefix"):
+    r = client.post(
+        "/lifecycle-environments",
+        json={
+            "name": name,
+            "path_name": path_name,
+            "position": position,
+            "content_view_id": cv["id"],
+            "distro": "ubuntu",
+            "release": "jammy",
+            "publish_prefix": publish_prefix,
+            "allow_unsigned": True,
+        },
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_trigger_publish_and_promote_creates_job(client, operator_token, mock_aptly):
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    mock_aptly.publish_exists.return_value = False
+    repo = _create_repo(client, operator_token, "pp-repo1")
+    cv = client.post(
+        "/content-views", json={"name": "pp-cv1", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    env = _create_env(client, operator_token, cv, "pp-env1", "pp-path1", 0, "pp-prefix1")
+
+    from unittest.mock import patch
+
+    with patch("app.tasks.publish_and_promote_task.delay") as mock_delay:
+        r = client.post(
+            f"/content-views/{cv['id']}/publish-and-promote",
+            json={"environment_id": env["id"], "description": "release candidate"},
+            headers=auth_headers(operator_token),
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["job_type"] == "publish_and_promote"
+        assert body["status"] == "pending"
+        assert body["target_type"] == "environment"
+        assert body["environment_id"] == env["id"]
+        mock_delay.assert_called_once_with(str(body["id"]))
+
+
+def test_trigger_publish_and_promote_as_viewer_forbidden(client, operator_token, viewer_token, mock_aptly):
+    mock_aptly.get_mirror_packages.return_value = []
+    repo = _create_repo(client, operator_token, "pp-repo2")
+    cv = client.post(
+        "/content-views", json={"name": "pp-cv2", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    env = _create_env(client, operator_token, cv, "pp-env2", "pp-path2", 0, "pp-prefix2")
+
+    from unittest.mock import patch
+
+    with patch("app.tasks.publish_and_promote_task.delay") as mock_delay:
+        r = client.post(
+            f"/content-views/{cv['id']}/publish-and-promote",
+            json={"environment_id": env["id"]},
+            headers=auth_headers(viewer_token),
+        )
+        assert r.status_code == 403, r.text
+        mock_delay.assert_not_called()
+
+
+def test_trigger_publish_and_promote_content_view_not_found(client, operator_token):
+    r = client.post(
+        "/content-views/00000000-0000-0000-0000-000000000000/publish-and-promote",
+        json={"environment_id": "00000000-0000-0000-0000-000000000000"},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_trigger_publish_and_promote_environment_wrong_content_view_404s(client, operator_token, mock_aptly):
+    """An environment belonging to content-view A can't be targeted via
+    content-view B's URL — same isolation pattern as
+    test_set_version_description_wrong_content_view_404s."""
+    mock_aptly.get_mirror_packages.return_value = []
+    repo_a = _create_repo(client, operator_token, "pp-repo3a")
+    repo_b = _create_repo(client, operator_token, "pp-repo3b")
+    cv_a = client.post(
+        "/content-views", json={"name": "pp-cv3a", "repository_ids": [repo_a["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    cv_b = client.post(
+        "/content-views", json={"name": "pp-cv3b", "repository_ids": [repo_b["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    env_b = _create_env(client, operator_token, cv_b, "pp-env3b", "pp-path3b", 0, "pp-prefix3b")
+
+    r = client.post(
+        f"/content-views/{cv_a['id']}/publish-and-promote",
+        json={"environment_id": env_b["id"]},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_publish_and_promote_task_cuts_version_sets_description_and_promotes(client, operator_token, mock_aptly):
+    """Calls publish_and_promote_task directly (real task body, not
+    .delay) — same pattern used throughout tests/test_beacon.py for
+    Celery tasks with no live worker in the test environment.
+    """
+    from unittest.mock import patch
+
+    from app.tasks import publish_and_promote_task
+
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    mock_aptly.publish_exists.return_value = False
+    repo = _create_repo(client, operator_token, "pp-repo4")
+    cv = client.post(
+        "/content-views", json={"name": "pp-cv4", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    env = _create_env(client, operator_token, cv, "pp-env4", "pp-path4", 0, "pp-prefix4")
+
+    with patch("app.tasks.publish_and_promote_task.delay"):
+        job_r = client.post(
+            f"/content-views/{cv['id']}/publish-and-promote",
+            json={"environment_id": env["id"], "force": True, "description": "annotated at publish time"},
+            headers=auth_headers(operator_token),
+        )
+    job_id = job_r.json()["id"]
+
+    # get_aptly_client() is called directly inside the task body (not via
+    # FastAPI DI), so the client fixture's app.dependency_overrides mock
+    # never applies here — same reason sync_repository_task's own direct-
+    # call tests (if any existed) would need this too. Patch the factory
+    # function itself so the task picks up the same mock_aptly the HTTP
+    # calls above already used.
+    with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+        publish_and_promote_task(job_id)
+
+    job_after = client.get(f"/jobs/{job_id}", headers=auth_headers(operator_token))
+    assert job_after.json()["status"] == "success"
+
+    versions = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()
+    newest = versions[0]
+    assert newest["description"] == "annotated at publish time"
+
+    envs_after = client.get(
+        "/lifecycle-environments", params={"content_view_id": cv["id"]}, headers=auth_headers(operator_token)
+    ).json()
+    env_after = next(e for e in envs_after if e["id"] == env["id"])
+    assert env_after["current_version_id"] == newest["id"]
+    mock_aptly.publish_snapshot.assert_called_once()
+
+
+def test_publish_and_promote_task_fails_job_on_path_order_violation(client, operator_token, mock_aptly):
+    """do_promote's _check_path_order raises HTTPException (409), not
+    AptlyError — proves the task's except clause actually catches both,
+    not just aptly failures.
+    """
+    from unittest.mock import patch
+
+    from app.tasks import publish_and_promote_task
+
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    mock_aptly.publish_exists.return_value = False
+    repo = _create_repo(client, operator_token, "pp-repo5")
+    cv = client.post(
+        "/content-views", json={"name": "pp-cv5", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    dev = _create_env(client, operator_token, cv, "pp-dev5", "pp-path5", 0, "pp-dev5-prefix")
+    staging = _create_env(client, operator_token, cv, "pp-staging5", "pp-path5", 1, "pp-staging5-prefix")
+
+    # staging is position 1 in the path but dev (position 0) has never been
+    # promoted to anything — staging must be rejected.
+    with patch("app.tasks.publish_and_promote_task.delay"):
+        job_r = client.post(
+            f"/content-views/{cv['id']}/publish-and-promote",
+            json={"environment_id": staging["id"]},
+            headers=auth_headers(operator_token),
+        )
+    job_id = job_r.json()["id"]
+
+    with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+        publish_and_promote_task(job_id)
+
+    job_after = client.get(f"/jobs/{job_id}", headers=auth_headers(operator_token))
+    assert job_after.json()["status"] == "failed"
+    assert "dev5" in job_after.json()["log_output"] or "position" in job_after.json()["log_output"]
+
+    # dev being untouched confirms staging's promotion never applied.
+    envs_after = client.get(
+        "/lifecycle-environments", params={"content_view_id": cv["id"]}, headers=auth_headers(operator_token)
+    ).json()
+    dev_after = next(e for e in envs_after if e["id"] == dev["id"])
+    assert dev_after["current_version_id"] is None
+
+
 def test_list_content_views_as_viewer(client, operator_token, viewer_token):
     repo = _create_repo(client, operator_token, "list-cv-repo")
     client.post(

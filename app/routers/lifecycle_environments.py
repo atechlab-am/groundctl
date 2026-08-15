@@ -184,6 +184,48 @@ def get_environment_gpg_key(
     return Response(content=armored, media_type="application/pgp-keys")
 
 
+def do_promote(
+    environment: LifecycleEnvironment, version: ContentViewVersion, db: Session, aptly: AptlyClient, user: User
+) -> LifecycleEnvironment:
+    """Points environment.publish_prefix at `version` via aptly's
+    publish/switch-publish call, bumps beacon config_serial for any
+    beacon-managed server currently assigned to this environment, and
+    writes the AuditAction.switch_publish row. Shared by
+    POST /{environment_id}/promote (synchronous, unchanged) and
+    publish_and_promote_task (app/tasks.py, ROADMAP-adjacent new
+    combined-job flow) — one implementation of "what promoting actually
+    does" rather than two copies that could drift.
+    """
+    _check_path_order(db, environment, version.id)
+
+    sources = _sources_from_version(version)
+    already_published = aptly.publish_exists(environment.publish_prefix)
+    if already_published:
+        aptly.switch_publish(
+            environment.publish_prefix, environment.release, sources, gpg_key_id=environment.gpg_key_id
+        )
+    else:
+        aptly.publish_snapshot(
+            environment.publish_prefix, environment.release, sources, gpg_key_id=environment.gpg_key_id
+        )
+
+    from_version_id = environment.current_version_id
+    environment.current_version_id = version.id
+    _bump_config_serial_for_environment_servers(db, environment.id)
+    db.add(
+        AuditLog(
+            user_id=user.id,
+            action=AuditAction.switch_publish,
+            resource_type="lifecycle_environment",
+            resource_id=str(environment.id),
+            detail={"content_view_version_id": str(version.id), "from_version_id": str(from_version_id) if from_version_id else None},
+        )
+    )
+    db.commit()
+    db.refresh(environment)
+    return environment
+
+
 @router.post("/{environment_id}/promote", response_model=PromoteResponse)
 def promote_environment(
     environment_id: uuid.UUID,
@@ -212,40 +254,14 @@ def promote_environment(
         # preserves v0's "first promote call cuts+publishes" convenience.
         version, _cut = do_publish(content_view, db, aptly, current_user)
 
-    _check_path_order(db, environment, version.id)
-
-    sources = _sources_from_version(version)
     try:
-        already_published = aptly.publish_exists(environment.publish_prefix)
-        if already_published:
-            aptly.switch_publish(
-                environment.publish_prefix, environment.release, sources, gpg_key_id=environment.gpg_key_id
-            )
-        else:
-            aptly.publish_snapshot(
-                environment.publish_prefix, environment.release, sources, gpg_key_id=environment.gpg_key_id
-            )
+        environment = do_promote(environment, version, db, aptly, current_user)
     except AptlyError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
-    from_version_id = environment.current_version_id
-    environment.current_version_id = version.id
-    _bump_config_serial_for_environment_servers(db, environment.id)
-    db.add(
-        AuditLog(
-            user_id=current_user.id,
-            action=AuditAction.switch_publish,
-            resource_type="lifecycle_environment",
-            resource_id=str(environment.id),
-            detail={"content_view_version_id": str(version.id), "from_version_id": str(from_version_id) if from_version_id else None},
-        )
-    )
-    db.commit()
-    db.refresh(environment)
-
     return PromoteResponse(
         id=environment.id,
-        current_version_id=environment.current_version_id,
+        current_version_id=version.id,
         publish_prefix=environment.publish_prefix,
         published_url=f"{settings.published_repo_base_url}/{environment.publish_prefix}/",
     )

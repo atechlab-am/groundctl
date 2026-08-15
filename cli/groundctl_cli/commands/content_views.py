@@ -1,5 +1,5 @@
-"""groundctl content-view create|publish|add-filter|versions|
-set-version-description
+"""groundctl content-view create|publish|publish-and-promote|add-filter|
+versions|set-version-description
 
 LIMITATION (matches a known backend gap, also hit by the web UI): there is
 no GET list/detail endpoint for content views on the backend
@@ -58,6 +58,26 @@ def publish(
     output = get_output(ctx)
     with authed_client() as client:
         response = client.post(f"/content-views/{content_view_id}/publish")
+    render_item(response.json(), output=output)
+
+
+@app.command("publish-and-promote")
+def publish_and_promote(
+    ctx: typer.Context,
+    content_view_id: uuid.UUID = typer.Argument(..., help="Content view UUID."),
+    environment_id: uuid.UUID = typer.Option(..., "--environment-id", help="Environment to promote the new version to."),
+    description: str = typer.Option(None, "--description", help="Optional, applied to the version once cut."),
+    force: bool = typer.Option(True, "--force/--no-force", help="Always cut a new version, even if unchanged since the last one."),
+) -> None:
+    """Cut a new version and promote it to an environment as ONE tracked
+    Job — unlike `publish` (synchronous), this returns immediately; poll
+    with `groundctl job show <id>`. Prefer this over `publish` +
+    `groundctl environment promote` when you also want to promote, since
+    aptly's publish/switch-publish call can run long."""
+    output = get_output(ctx)
+    payload = {"environment_id": str(environment_id), "force": force, "description": description}
+    with authed_client() as client:
+        response = client.post(f"/content-views/{content_view_id}/publish-and-promote", json=payload)
     render_item(response.json(), output=output)
 
 

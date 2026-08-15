@@ -59,6 +59,7 @@ class JobType(str, enum.Enum):
     delete_repository = "delete_repository"
     update_repository = "update_repository"
     install_beacon = "install_beacon"
+    publish_and_promote = "publish_and_promote"
 
 
 class JobTargetType(str, enum.Enum):
@@ -154,6 +155,7 @@ class AuditAction(str, enum.Enum):
     revoke_beacon_token = "revoke_beacon_token"
     trigger_install_beacon = "trigger_install_beacon"
     update_content_view_version = "update_content_view_version"
+    trigger_publish_and_promote = "trigger_publish_and_promote"
 
 
 class User(Base):
