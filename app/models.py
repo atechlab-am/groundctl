@@ -148,6 +148,7 @@ class AuditAction(str, enum.Enum):
     create_product = "create_product"
     update_product = "update_product"
     delete_product = "delete_product"
+    assign_server_environment = "assign_server_environment"
 
 
 class User(Base):
@@ -434,6 +435,12 @@ class Server(Base):
     hostname: Mapped[str] = mapped_column(String, nullable=False)
     ip_address: Mapped[str] = mapped_column(String, nullable=False)
     ssh_user: Mapped[str] = mapped_column(String, nullable=False)
+    # Set at creation/self-registration; changed afterward only via the
+    # deliberate POST /servers/{id}/assign-environment action (never by
+    # re-registration — see enrollment.py). A server belongs to exactly one
+    # environment at a time; bootstrap_client.yml enforces that on the host
+    # side too, replacing (not adding to) its groundctl-managed apt source
+    # whenever this changes.
     environment_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("lifecycle_environments.id"), nullable=False
     )

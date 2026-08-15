@@ -77,3 +77,18 @@ export function decommissionServer(serverId: string): Promise<ServerRead> {
 export function assignServerSite(serverId: string, siteId: string | null): Promise<ServerRead> {
   return api.post<ServerRead>(`/servers/${serverId}/assign-site`, undefined, { site_id: siteId ?? undefined });
 }
+
+// Changing this alone doesn't move any packages — the host only actually
+// starts pulling from the new environment once it re-bootstraps (see
+// triggerBootstrap in api/jobs.ts) or, once deployed, its next beacon
+// checkin.
+export function assignServerEnvironment(
+  serverId: string,
+  environmentId: string,
+  reason?: string,
+): Promise<ServerRead> {
+  return api.post<ServerRead>(`/servers/${serverId}/assign-environment`, {
+    environment_id: environmentId,
+    reason: reason || undefined,
+  });
+}

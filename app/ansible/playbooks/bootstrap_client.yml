@@ -91,17 +91,41 @@
         mode: "0644"
       notify: Update CA certificates
 
-    # Additive: filename is derived from the environment name
-    # (groundctl-<environment_name>.list), not a single fixed groundctl.list.
-    # Bootstrapping the same host against a second environment writes a
-    # second, independent file rather than overwriting the first — a host
-    # can end up trusting multiple groundctl-managed environments at once.
-    # Re-running bootstrap against the SAME environment still fully
-    # overwrites that one file (idempotent), which is correct: it's the
-    # single source of truth for that environment's entry.
-    #
-    # /etc/apt/sources.list itself, and any of the host's own sources, are
-    # never touched.
+    # A content host belongs to exactly one lifecycle environment at a time
+    # (Server.environment_id) — replace-in-place, not additive: before
+    # writing this environment's file, remove every OTHER
+    # groundctl-*.list/.asc/.gpg file already on the host. Without this, a
+    # host reassigned from one environment to another (POST
+    # /servers/{id}/assign-environment) would keep trusting its old
+    # environment's repo indefinitely, silently defeating the point of
+    # reassignment. glob-based removal, scoped strictly to the
+    # groundctl-<name> prefix this same playbook owns — never touches
+    # /etc/apt/sources.list itself or any of the host's own sources.
+    - name: Find this host's existing groundctl-managed apt source files
+      become: true
+      ansible.builtin.find:
+        paths:
+          - /etc/apt/sources.list.d
+          - /etc/apt/keyrings
+        patterns: "groundctl-*"
+      register: groundctl_existing_source_files
+
+    - name: Remove groundctl-managed files belonging to a DIFFERENT environment
+      become: true
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ groundctl_existing_source_files.files }}"
+      # Plain string prefix check on the basename, not a regex — environment
+      # names are restricted to [a-zA-Z0-9._-] (validate_aptly_name) but
+      # CAN contain literal "." characters, which a regex search() would
+      # treat as "match any character" instead of a literal dot.
+      when: not (item.path | basename).startswith('groundctl-' + environment_name + '.')
+
+    # Filename is derived from the environment name
+    # (groundctl-<environment_name>.list) so it's obviously scoped to this
+    # one environment. /etc/apt/sources.list itself, and any of the host's
+    # own sources, are never touched.
     #
     # Components come from the environment's mirror components, never
     # hardcoded to "main" (see CLAUDE.md known-bad-patterns).

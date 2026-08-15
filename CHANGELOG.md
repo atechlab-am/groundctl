@@ -25,6 +25,32 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-15
+
+### Added: server environment reassignment (Phase 9 / Beacon, part 1)
+
+- New `POST /servers/{id}/assign-environment` — the first real, deliberate
+  way to change which lifecycle environment an existing server belongs
+  to. Previously `Server.environment_id` was set once at
+  creation/self-registration and never touched again anywhere in the
+  codebase — there was no bug to fix here, the endpoint genuinely didn't
+  exist. Operator-gated, blocked on a decommissioned server, idempotent
+  no-op if already assigned, audited via new `AuditAction.assign_server_environment`
+  with from/to environment ids+names+reason.
+- `bootstrap_client.yml` changed from purely-additive to replace-in-place:
+  a content host now trusts exactly one groundctl-managed environment at
+  a time. Before writing the new `groundctl-<env>.list`, a re-bootstrap
+  now removes every other `groundctl-*` source/keyring file already on
+  the host — without this, a reassigned server would keep silently
+  trusting its old environment's repo alongside the new one, defeating
+  the entire point of reassignment.
+- This is Phase 9 (see `ROADMAP.md`) of a larger planned addition —
+  **Beacon**, an optional pull-based host agent — but the reassignment
+  endpoint above is fully useful standalone today via a manual
+  `POST /jobs/bootstrap/{id}` re-run; the remaining Beacon work (agent
+  checkin, local reconciliation with no SSH round-trip, facts/telemetry
+  push, dispatched apply-updates actions) lands in later releases.
+
 ## [0.29.0] - 2026-08-15
 
 ### Added: content views auto-publish version 1 on creation, and can be named with a description

@@ -2,14 +2,16 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, PowerOff, MapPin, ShieldCheck } from "lucide-react";
+import { ArrowLeft, PowerOff, MapPin, Route, ShieldCheck } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryState } from "@/components/QueryState";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -21,7 +23,15 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { RoleGate } from "@/layout/RoleGate";
-import { getServer, getLatestServerFacts, getServerFactsHistory, decommissionServer, assignServerSite } from "@/api/servers";
+import {
+  getServer,
+  getLatestServerFacts,
+  getServerFactsHistory,
+  decommissionServer,
+  assignServerSite,
+  assignServerEnvironment,
+} from "@/api/servers";
+import { listLifecycleEnvironments } from "@/api/environments";
 import { listJobs } from "@/api/jobs";
 import { checkServerCompliance } from "@/api/compliance";
 import { errorMessage } from "@/lib/errors";
@@ -43,10 +53,18 @@ export function ServerDetailPage() {
   const queryClient = useQueryClient();
   const [siteDialogOpen, setSiteDialogOpen] = useState(false);
   const [siteId, setSiteId] = useState("");
+  const [envDialogOpen, setEnvDialogOpen] = useState(false);
+  const [targetEnvironmentId, setTargetEnvironmentId] = useState("");
+  const [envReason, setEnvReason] = useState("");
 
   if (!serverId) return null;
 
   const serverQuery = useQuery({ queryKey: ["server", serverId], queryFn: () => getServer(serverId) });
+  const environmentsQuery = useQuery({
+    queryKey: ["lifecycle-environments"],
+    queryFn: () => listLifecycleEnvironments({ limit: 100 }),
+    enabled: envDialogOpen,
+  });
   const factsQuery = useQuery({
     queryKey: ["server-facts", serverId],
     queryFn: () => getLatestServerFacts(serverId),
@@ -78,6 +96,20 @@ export function ServerDetailPage() {
       void queryClient.invalidateQueries({ queryKey: ["server", serverId] });
       setSiteDialogOpen(false);
       setSiteId("");
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+
+  const assignEnvironmentMutation = useMutation({
+    mutationFn: () => assignServerEnvironment(serverId, targetEnvironmentId, envReason || undefined),
+    onSuccess: () => {
+      toast.success(
+        "Environment updated — the host picks up the new apt source on its next bootstrap or beacon checkin",
+      );
+      void queryClient.invalidateQueries({ queryKey: ["server", serverId] });
+      setEnvDialogOpen(false);
+      setTargetEnvironmentId("");
+      setEnvReason("");
     },
     onError: (err) => toast.error(errorMessage(err)),
   });
@@ -137,6 +169,56 @@ export function ServerDetailPage() {
                             onClick={() => assignSiteMutation.mutate(siteId || null)}
                           >
                             Save
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+                    <Dialog open={envDialogOpen} onOpenChange={setEnvDialogOpen}>
+                      <DialogTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          <Route className="h-4 w-4" />
+                          Assign environment
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent>
+                        <DialogHeader>
+                          <DialogTitle>Assign environment</DialogTitle>
+                          <DialogDescription>
+                            Changing this alone doesn't move any packages — the host only starts pulling from the
+                            new environment once it re-bootstraps or, once deployed, its next beacon checkin.
+                          </DialogDescription>
+                        </DialogHeader>
+                        <div className="mt-4 flex flex-col gap-4">
+                          <div className="flex flex-col gap-1.5">
+                            <Label>Environment</Label>
+                            <Select value={targetEnvironmentId} onValueChange={setTargetEnvironmentId}>
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select an environment" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {environmentsQuery.data?.map((env) => (
+                                  <SelectItem key={env.id} value={env.id}>
+                                    {env.name} ({env.path_name}, position {env.position})
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <Label htmlFor="env-reassign-reason">Reason (optional)</Label>
+                            <Input
+                              id="env-reassign-reason"
+                              value={envReason}
+                              onChange={(e) => setEnvReason(e.target.value)}
+                            />
+                          </div>
+                        </div>
+                        <DialogFooter className="mt-6">
+                          <Button
+                            disabled={assignEnvironmentMutation.isPending || !targetEnvironmentId}
+                            onClick={() => assignEnvironmentMutation.mutate()}
+                          >
+                            {assignEnvironmentMutation.isPending ? "Saving…" : "Save"}
                           </Button>
                         </DialogFooter>
                       </DialogContent>

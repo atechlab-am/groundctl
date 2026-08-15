@@ -549,6 +549,11 @@ class ServerRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ServerEnvironmentAssign(BaseModel):
+    environment_id: uuid.UUID
+    reason: str | None = None
+
+
 class ServerFactRead(BaseModel):
     server_id: uuid.UUID
     os_distribution: str | None

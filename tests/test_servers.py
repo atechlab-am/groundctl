@@ -372,3 +372,93 @@ def test_assign_server_site_not_found_site(client, operator_token):
         headers=auth_headers(operator_token),
     )
     assert r.status_code == 404, r.text
+
+
+def test_assign_server_environment_as_operator(client, operator_token):
+    env_a = _make_environment(client, operator_token, "19a")
+    env_b = _make_environment(client, operator_token, "19b")
+    server = client.post(
+        "/servers", json=_server_payload(env_a, "host19.example.com", "10.0.0.30"), headers=auth_headers(operator_token)
+    ).json()
+
+    r = client.post(
+        f"/servers/{server['id']}/assign-environment",
+        json={"environment_id": env_b["id"], "reason": "moving to staging"},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["environment_id"] == env_b["id"]
+
+    get_r = client.get(f"/servers/{server['id']}", headers=auth_headers(operator_token))
+    assert get_r.json()["environment_id"] == env_b["id"]
+
+
+def test_assign_server_environment_idempotent_same_environment(client, operator_token):
+    env = _make_environment(client, operator_token, "20")
+    server = client.post(
+        "/servers", json=_server_payload(env, "host20.example.com", "10.0.0.31"), headers=auth_headers(operator_token)
+    ).json()
+
+    r = client.post(
+        f"/servers/{server['id']}/assign-environment",
+        json={"environment_id": env["id"]},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["environment_id"] == env["id"]
+
+
+def test_assign_server_environment_as_viewer_forbidden(client, operator_token, viewer_token):
+    env_a = _make_environment(client, operator_token, "21a")
+    env_b = _make_environment(client, operator_token, "21b")
+    server = client.post(
+        "/servers", json=_server_payload(env_a, "host21.example.com", "10.0.0.32"), headers=auth_headers(operator_token)
+    ).json()
+
+    r = client.post(
+        f"/servers/{server['id']}/assign-environment",
+        json={"environment_id": env_b["id"]},
+        headers=auth_headers(viewer_token),
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_assign_server_environment_not_found_server(client, operator_token):
+    env = _make_environment(client, operator_token, "22")
+    r = client.post(
+        "/servers/00000000-0000-0000-0000-000000000000/assign-environment",
+        json={"environment_id": env["id"]},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_assign_server_environment_not_found_environment(client, operator_token):
+    env = _make_environment(client, operator_token, "23")
+    server = client.post(
+        "/servers", json=_server_payload(env, "host23.example.com", "10.0.0.33"), headers=auth_headers(operator_token)
+    ).json()
+
+    r = client.post(
+        f"/servers/{server['id']}/assign-environment",
+        json={"environment_id": "00000000-0000-0000-0000-000000000000"},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_assign_server_environment_decommissioned_rejected(client, operator_token):
+    env_a = _make_environment(client, operator_token, "24a")
+    env_b = _make_environment(client, operator_token, "24b")
+    server = client.post(
+        "/servers", json=_server_payload(env_a, "host24.example.com", "10.0.0.34"), headers=auth_headers(operator_token)
+    ).json()
+
+    client.post(f"/servers/{server['id']}/decommission", headers=auth_headers(operator_token))
+
+    r = client.post(
+        f"/servers/{server['id']}/assign-environment",
+        json={"environment_id": env_b["id"]},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 409, r.text

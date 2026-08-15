@@ -18,7 +18,7 @@ from app.models import (
     Site,
     User,
 )
-from app.schemas import ServerCreate, ServerFactRead, ServerRead
+from app.schemas import ServerCreate, ServerEnvironmentAssign, ServerFactRead, ServerRead
 
 router = APIRouter()
 
@@ -180,6 +180,57 @@ def assign_server_site(
             resource_type="server",
             resource_id=str(server.id),
             detail={"site_id": str(site_id) if site_id else None},
+        )
+    )
+    db.commit()
+    db.refresh(server)
+    return server
+
+
+@router.post("/{server_id}/assign-environment", response_model=ServerRead)
+def assign_server_environment(
+    server_id: uuid.UUID,
+    payload: ServerEnvironmentAssign,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """The deliberate, human-driven action that changes which lifecycle
+    environment a server belongs to — see the comment on
+    Server.environment_id and enrollment.py's re-registration note, which
+    both point here. Changing the DB row alone doesn't move any packages;
+    the host only actually starts pulling from the new environment once
+    it re-bootstraps (POST /jobs/bootstrap/{id}, which now replaces rather
+    than adds to its groundctl-managed apt source — see
+    bootstrap_client.yml) or, once deployed, its next beacon checkin.
+    """
+    server = db.get(Server, server_id)
+    if server is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server not found")
+    if server.lifecycle_state == ServerLifecycleState.decommissioned:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is decommissioned")
+
+    new_environment = db.get(LifecycleEnvironment, payload.environment_id)
+    if new_environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="environment not found")
+
+    if server.environment_id == payload.environment_id:
+        return server
+
+    old_environment = db.get(LifecycleEnvironment, server.environment_id)
+    server.environment_id = payload.environment_id
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.assign_server_environment,
+            resource_type="server",
+            resource_id=str(server.id),
+            detail={
+                "from_environment_id": str(old_environment.id) if old_environment else None,
+                "from_environment_name": old_environment.name if old_environment else None,
+                "to_environment_id": str(new_environment.id),
+                "to_environment_name": new_environment.name,
+                "reason": payload.reason,
+            },
         )
     )
     db.commit()
