@@ -17,6 +17,7 @@ from app.ansible_runner_utils import (
     run_playbook,
     run_playbook_against_inventory,
 )
+from app.apt_sources import resolve_environment_components
 from app.aptly_client import AptlyError, get_aptly_client
 from app.celery_app import celery_app
 from app.config import settings
@@ -123,12 +124,16 @@ def _relay_is_usable(relay: Relay | None, db: Session) -> TypeGuard[Relay]:
     return relay.last_sync_time >= threshold
 
 
-def _resolve_published_base_url(db: Session, server: Server) -> str:
+def resolve_published_base_url(db: Session, server: Server) -> str:
     """Site-aware bootstrap URL resolution with fallback (ROADMAP Phase 5
     items 6/7). If the server has a site with a healthy, non-stale relay,
     use the relay's own published-repo URL; otherwise fall back to the
     primary's settings.published_repo_base_url. This is a real, exercised
     fallback path — not documentation-only — every bootstrap goes through it.
+
+    Public (no leading underscore) — also imported by
+    app/routers/beacon.py's checkin handler (ROADMAP Phase 9), which needs
+    the exact same relay-aware URL resolution bootstrap_task uses.
     """
     if server.site_id is not None:
         relay = db.execute(select(Relay).where(Relay.site_id == server.site_id)).scalar_one_or_none()
@@ -148,7 +153,7 @@ def _relay_proxy_for_servers(db: Session, servers: list[Server]) -> dict[str, st
     9): for each target server whose site has a healthy, non-stale relay,
     route its SSH connection through that relay. Servers with no site, or
     whose site's relay is missing/unhealthy/stale, are left direct — same
-    fallback posture as _resolve_published_base_url.
+    fallback posture as resolve_published_base_url.
     """
     site_ids = {s.site_id for s in servers if s.site_id is not None}
     if not site_ids:
@@ -391,17 +396,12 @@ def bootstrap_task(self, job_id: str) -> str:
         if environment is None:
             raise ValueError(f"server {server.id}'s environment no longer exists")
 
-        components: list[str] = ["main"]
-        if environment.current_version_id is not None:
-            version = db.get(ContentViewVersion, environment.current_version_id)
-            if version is not None:
-                seen = set()
-                components = []
-                for entry in version.snapshots:
-                    component = entry["component"]
-                    if component not in seen:
-                        seen.add(component)
-                        components.append(component)
+        version = (
+            db.get(ContentViewVersion, environment.current_version_id)
+            if environment.current_version_id is not None
+            else None
+        )
+        components = resolve_environment_components(version.snapshots if version is not None else None)
 
         # Generated but NOT yet assigned to server.ssh_key_path — this run's
         # bootstrap connection must still use the server's existing key
@@ -411,7 +411,7 @@ def bootstrap_task(self, job_id: str) -> str:
         new_host_key = _generate_host_ssh_key(server)
 
         extra_vars = {
-            "published_repo_base_url": _resolve_published_base_url(db, server),
+            "published_repo_base_url": resolve_published_base_url(db, server),
             "publish_prefix": environment.publish_prefix,
             "release": environment.release,
             "components": components,
@@ -1054,7 +1054,7 @@ def scheduled_flag_stale_relays() -> str:
     """Daily relay staleness sweep, mirrors scheduled_flag_stale_servers.
     A relay whose last_sync_time exceeds relay_stale_threshold_hours is
     flagged stale — bootstrap/job-routing fallback to the primary then
-    kicks in automatically (see _resolve_published_base_url /
+    kicks in automatically (see resolve_published_base_url /
     _relay_proxy_for_servers), so this is about visibility, not the
     fallback mechanism itself (which doesn't depend on this task running).
     """

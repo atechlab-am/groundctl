@@ -1,0 +1,22 @@
+[Unit]
+Description=groundctl Beacon agent (one checkin)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/groundctl-beacon --once --config /etc/groundctl/beacon.conf
+
+# Runs on the MANAGED CONTENT HOST, not the primary — installed by
+# beacon/install script (ROADMAP.md Phase 9), unrelated to
+# groundctl-worker.service.template/groundctl-beat.service.template,
+# which run on the primary itself. Root is required: reconciling
+# /etc/apt/sources.list.d and /etc/apt/keyrings (Phase C onward) needs
+# root, and this unit intentionally runs the SAME way every checkin —
+# no persistent daemon, no long-lived process to crash or leak memory.
+# Triggered on the interval by the paired .timer unit, not by
+# WantedBy=multi-user.target directly.
+
+[Install]
+WantedBy=multi-user.target

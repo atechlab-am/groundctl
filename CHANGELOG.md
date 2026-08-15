@@ -25,6 +25,56 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-16
+
+### Added: Beacon identity and checkin protocol (Phase 9 / Beacon, part 2)
+
+- New `BeaconToken` model — a per-server credential for the optional
+  Beacon agent, deliberately separate from `ActivationKey` (which is
+  fleet-wide/multi-use/pre-shared by design; a beacon credential needs to
+  be the opposite: bound to exactly one server, individually revocable).
+  Same SHA-256 hash-only storage posture as `ActivationKey`/`RefreshToken`
+  — the three now share one canonical `app.auth.hash_opaque_token`
+  instead of each defining their own hasher. Non-expiring, cut off only
+  by explicit revocation. `POST /servers/{id}/beacon-token` (issue,
+  operator-only, returns the raw token exactly once),
+  `GET /servers/{id}/beacon-tokens` (list metadata, never the hash),
+  `POST /servers/{id}/beacon-tokens/{token_id}/revoke`.
+- New `get_current_beacon_server` auth dependency (`app/auth.py`) — a
+  second, deliberate non-JWT auth path (`HTTPBearer`, not
+  `OAuth2PasswordBearer`) for the agent, mirroring `enrollment.py`'s
+  existing "isolated, prominently-commented auth exception" precedent. No
+  beacon endpoint anywhere accepts a `server_id` parameter — identity
+  always comes from the presented token, never the request.
+- New `POST /api/beacon/checkin` (`app/routers/beacon.py`) — the agent's
+  combined poll. Returns a desired-state document (environment info, a
+  server-side-rendered apt source line, a config serial) and makes
+  `Server.last_seen_at` a genuine heartbeat for beacon-managed hosts
+  (previously true only for SSH-triggered activity). New
+  `ServerBeaconState` tracks `config_serial`/`applied_config_serial` — an
+  explicit "pending reconciliation" signal, bumped by
+  `POST /servers/{id}/assign-environment` when a beacon-enabled server is
+  reassigned.
+- New `app/apt_sources.py` — the single canonical apt-source-line
+  renderer, now shared by both `bootstrap_task` (SSH path) and the
+  checkin endpoint, instead of the SSH path's Jinja template and the
+  agent's response format inevitably drifting into two divergent
+  implementations of the same injection-sensitive string.
+- New single-file, stdlib-only agent (`beacon/groundctl_beacon.py`, no
+  build step or third-party dependencies) implementing checkin-only mode
+  today, plus `groundctl-beacon.service`/`.timer` systemd units (a
+  `oneshot` service on a 5-minute timer, not a persistent daemon — matches
+  the agent's "no long-lived state" design). See `docs/beacon.md` for the
+  full non-goals list (no arbitrary command execution, no general
+  configuration management, no unattended `apt-get upgrade` — only what
+  groundctl explicitly dispatches).
+- Local `sources.list` reconciliation, facts/telemetry push, and
+  dispatched actions (e.g. beacon-executed apply-updates) are not built
+  yet — see `ROADMAP.md` Phase 9 for what's left. The checkin response
+  already carries the fields those will need (`stale_source_filenames`,
+  `gpg_public_key`, `facts_requested`, `actions`) so adding them later
+  won't be a breaking response-shape change.
+
 ## [0.30.0] - 2026-08-15
 
 ### Added: server environment reassignment (Phase 9 / Beacon, part 1)

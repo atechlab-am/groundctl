@@ -149,6 +149,8 @@ class AuditAction(str, enum.Enum):
     update_product = "update_product"
     delete_product = "delete_product"
     assign_server_environment = "assign_server_environment"
+    issue_beacon_token = "issue_beacon_token"
+    revoke_beacon_token = "revoke_beacon_token"
 
 
 class User(Base):
@@ -453,8 +455,12 @@ class Server(Base):
         default=ServerLifecycleState.active,
     )
     # Set by any job that completes successfully against this server (see
-    # tasks.py's _update_checkin_and_reachability) or by self-registration.
-    # Not a heartbeat — only updated by groundctl-triggered activity.
+    # tasks.py's _update_checkin_and_reachability), by self-registration, or
+    # by a Beacon checkin (app/routers/beacon.py). For an SSH-only host
+    # this still isn't a heartbeat — only groundctl-triggered activity
+    # updates it. For a beacon-managed host it genuinely IS a heartbeat: the
+    # agent checks in on its own schedule (~5min) independent of whether any
+    # job has run.
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # NULL means this Server was created via the human-authenticated
     # POST /servers. Set means it self-registered via an activation key —
@@ -464,7 +470,7 @@ class Server(Base):
     )
     # Nullable — most servers may have no site/relay and are served directly
     # by the primary. When set, bootstrap and job-execution routing resolve
-    # this server's site's Relay (see tasks.py's _resolve_published_base_url
+    # this server's site's Relay (see tasks.py's resolve_published_base_url
     # / _relay_proxy_for_servers), falling back to the primary if the relay
     # is missing, unhealthy, or stale.
     site_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("sites.id"), nullable=True)
@@ -684,6 +690,90 @@ class ActivationKey(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class BeaconToken(Base):
+    """Per-server credential for the Beacon agent (see ROADMAP.md Phase 9)
+    — deliberately NOT an extension of ActivationKey. ActivationKey is
+    fleet-wide/multi-use/pre-shared by design; a beacon credential must be
+    the opposite: bound to exactly one Server, individually revocable.
+    Overloading ActivationKey here would mean one leaked key could
+    impersonate any host in the fleet.
+
+    Only a hash of the token is stored (same posture as ActivationKey/
+    RefreshToken/User.hashed_password, via app.auth.hash_opaque_token);
+    the raw token is returned exactly once, at issuance
+    (POST /servers/{id}/beacon-token), and never again.
+
+    Non-expiring by design (expires_at nullable, no default TTL applied
+    anywhere) — an auto-expiring token would mean a silently-dead host
+    with no self-recovery path. Cut off only by explicit revocation
+    (revoked flag, never a delete — same posture as ActivationKey.revoked).
+
+    Multiple non-revoked tokens per server are allowed (no unique
+    constraint on server_id) — enables rotation without a downtime
+    window: issue a new one, redeploy the agent's config, revoke the old.
+    """
+
+    __tablename__ = "beacon_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    server_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("servers.id"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    # Optional operator-facing label, e.g. "reissued after rebuild" — purely
+    # descriptive, never used in auth logic.
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # The real heartbeat for this credential — updated on every successful
+    # checkin (get_current_beacon_server). Distinct from Server.last_seen_at,
+    # which now also gets set on checkin but exists independently of any
+    # one token.
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class ServerBeaconState(Base):
+    """One row per beacon-enabled server — kept separate from Server itself
+    so the main servers table stays unpolluted for the SSH-only majority of
+    a fleet that never runs a beacon at all.
+
+    config_serial / applied_config_serial is an explicit "pending
+    reconciliation" signal (config_serial != applied_config_serial means
+    this host hasn't yet caught up to its latest desired state) — matches
+    this codebase's general preference for explicit state over inferred
+    state (see SiteEnvironment's docstring). Bumped by
+    POST /servers/{id}/assign-environment and by promote/rollback in
+    lifecycle_environments.py (a content-view-version switch means the
+    host should re-run `apt-get update` even though its source line
+    itself didn't change).
+
+    No per-checkin AuditLog row is written for this (would be 100k+ rows/
+    day at fleet scale) — last_checkin_at here covers observability;
+    AuditLog is reserved for real state transitions (reassignment applied,
+    dispatched-action outcomes).
+    """
+
+    __tablename__ = "server_beacon_state"
+
+    server_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("servers.id"), primary_key=True
+    )
+    config_serial: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    applied_config_serial: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_checkin_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_apply_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_apply_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
 
 
 class ServerFact(Base):

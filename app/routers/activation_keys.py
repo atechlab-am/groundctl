@@ -1,4 +1,3 @@
-import hashlib
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -7,21 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import require_role
+from app.auth import hash_opaque_token, require_role
 from app.database import get_db
 from app.instance_settings import get_effective_settings
 from app.models import ActivationKey, AuditAction, AuditLog, HostGroup, LifecycleEnvironment, Role, User
 from app.schemas import ActivationKeyCreate, ActivationKeyCreateResponse, ActivationKeyRead
 
 router = APIRouter()
-
-
-def _hash_token(token: str) -> str:
-    # SHA-256, not bcrypt: the token is a secrets.token_urlsafe(32)
-    # high-entropy random value, not a low-entropy human password — the
-    # threat model here is disclosure, not brute-force, so a fast hash
-    # for lookup-by-hash is correct (same posture as an API-key pattern).
-    return hashlib.sha256(token.encode()).hexdigest()
 
 
 @router.post("", response_model=ActivationKeyCreateResponse, status_code=status.HTTP_201_CREATED)
@@ -46,7 +37,7 @@ def create_activation_key(
     token = secrets.token_urlsafe(32)
     key = ActivationKey(
         name=payload.name,
-        token_hash=_hash_token(token),
+        token_hash=hash_opaque_token(token),
         environment_id=payload.environment_id,
         host_group_id=payload.host_group_id,
         tags=payload.tags,

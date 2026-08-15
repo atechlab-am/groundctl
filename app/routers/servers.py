@@ -1,24 +1,35 @@
+import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import require_role
+from app.auth import hash_opaque_token, require_role
 from app.database import get_db
 from app.models import (
     AuditAction,
     AuditLog,
+    BeaconToken,
     HostGroupServer,
     LifecycleEnvironment,
     Role,
     Server,
+    ServerBeaconState,
     ServerFact,
     ServerLifecycleState,
     Site,
     User,
 )
-from app.schemas import ServerCreate, ServerEnvironmentAssign, ServerFactRead, ServerRead
+from app.schemas import (
+    BeaconTokenCreate,
+    BeaconTokenCreateResponse,
+    BeaconTokenRead,
+    ServerCreate,
+    ServerEnvironmentAssign,
+    ServerFactRead,
+    ServerRead,
+)
 
 router = APIRouter()
 
@@ -218,6 +229,15 @@ def assign_server_environment(
 
     old_environment = db.get(LifecycleEnvironment, server.environment_id)
     server.environment_id = payload.environment_id
+
+    # Bump the pending-reconciliation signal only if this server already
+    # has a beacon state row — reassigning an SSH-only server (the common
+    # case until Beacon is fully rolled out) has no beacon to notify, so
+    # there's nothing to create a row for yet.
+    beacon_state = db.get(ServerBeaconState, server.id)
+    if beacon_state is not None:
+        beacon_state.config_serial += 1
+
     db.add(
         AuditLog(
             user_id=current_user.id,
@@ -236,3 +256,99 @@ def assign_server_environment(
     db.commit()
     db.refresh(server)
     return server
+
+
+@router.post("/{server_id}/beacon-token", response_model=BeaconTokenCreateResponse, status_code=status.HTTP_201_CREATED)
+def issue_beacon_token(
+    server_id: uuid.UUID,
+    payload: BeaconTokenCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """Mints a new credential for the Beacon agent (see ROADMAP.md Phase 9)
+    — a deliberate, explicit action, not something that happens
+    automatically at server creation or bootstrap, since the agent is
+    optional. Multiple non-revoked tokens per server are allowed
+    (rotation without downtime: issue new, redeploy, revoke old — see
+    revoke_beacon_token below).
+    """
+    server = db.get(Server, server_id)
+    if server is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server not found")
+    if server.lifecycle_state == ServerLifecycleState.decommissioned:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="server is decommissioned")
+
+    token = secrets.token_urlsafe(32)
+    beacon_token = BeaconToken(
+        server_id=server.id,
+        token_hash=hash_opaque_token(token),
+        name=payload.name,
+        created_by_user_id=current_user.id,
+    )
+    db.add(beacon_token)
+    db.flush()
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.issue_beacon_token,
+            resource_type="server",
+            resource_id=str(server.id),
+            # Never the token or its hash — only non-secret metadata.
+            detail={"beacon_token_id": str(beacon_token.id), "name": payload.name},
+        )
+    )
+    db.commit()
+    db.refresh(beacon_token)
+
+    return BeaconTokenCreateResponse(
+        id=beacon_token.id,
+        server_id=beacon_token.server_id,
+        name=beacon_token.name,
+        token=token,
+        expires_at=beacon_token.expires_at,
+    )
+
+
+@router.get("/{server_id}/beacon-tokens", response_model=list[BeaconTokenRead])
+def list_beacon_tokens(
+    server_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.viewer)),
+):
+    if db.get(Server, server_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server not found")
+
+    return list(
+        db.execute(
+            select(BeaconToken).where(BeaconToken.server_id == server_id).order_by(BeaconToken.created_at.desc())
+        ).scalars()
+    )
+
+
+@router.post("/{server_id}/beacon-tokens/{token_id}/revoke", response_model=BeaconTokenRead)
+def revoke_beacon_token(
+    server_id: uuid.UUID,
+    token_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    if db.get(Server, server_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="server not found")
+
+    beacon_token = db.get(BeaconToken, token_id)
+    if beacon_token is None or beacon_token.server_id != server_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="beacon token not found")
+
+    beacon_token.revoked = True
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.revoke_beacon_token,
+            resource_type="server",
+            resource_id=str(server_id),
+            detail={"beacon_token_id": str(beacon_token.id)},
+        )
+    )
+    db.commit()
+    db.refresh(beacon_token)
+    return beacon_token

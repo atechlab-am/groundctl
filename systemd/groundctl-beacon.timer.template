@@ -1,0 +1,16 @@
+[Unit]
+Description=Run groundctl Beacon checkin every 5 minutes
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+# Server-controlled cadence in principle (POST /api/beacon/checkin's
+# checkin_interval_seconds), but systemd timers are configured at install
+# time, not dynamically — 5 minutes matches the default the API returns
+# today. Re-running the install script after a server-side interval
+# change is how this stays in sync; there's no live-reload here.
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

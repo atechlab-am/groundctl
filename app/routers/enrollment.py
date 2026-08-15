@@ -6,11 +6,11 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth import hash_opaque_token
 from app.config import settings
 from app.database import get_db
 from app.limiter import limiter
 from app.models import ActivationKey, AuditAction, AuditLog, HostGroupServer, Server
-from app.routers.activation_keys import _hash_token
 from app.schemas import SelfRegisterRequest, SelfRegisterResponse
 
 router = APIRouter()
@@ -31,7 +31,7 @@ def register(
     db: Session = Depends(get_db),
 ):
     key = db.execute(
-        select(ActivationKey).where(ActivationKey.token_hash == _hash_token(payload.token))
+        select(ActivationKey).where(ActivationKey.token_hash == hash_opaque_token(payload.token))
     ).scalar_one_or_none()
     if key is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid activation key token")

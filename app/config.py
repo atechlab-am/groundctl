@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     webhook_secret: str | None = None
     # A relay whose last_sync_time exceeds this is considered stale for
     # bootstrap/job-routing fallback purposes (see tasks.py's
-    # _resolve_published_base_url / _relay_proxy_for_servers) and gets
+    # resolve_published_base_url / _relay_proxy_for_servers) and gets
     # flagged by the daily staleness sweep. Deliberately much shorter than
     # stale_checkin_hours (7 days) — a relay silently going stale for a
     # week means its whole site falls back to WAN traffic against the

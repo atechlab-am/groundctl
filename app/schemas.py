@@ -706,6 +706,96 @@ class SelfRegisterResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# beacon (see ROADMAP.md Phase 9 — optional pull-based host agent)
+# ---------------------------------------------------------------------------
+
+
+class BeaconTokenCreate(BaseModel):
+    name: str | None = None
+
+
+class BeaconTokenCreateResponse(BaseModel):
+    id: uuid.UUID
+    server_id: uuid.UUID
+    name: str | None
+    # Raw token — returned exactly once, here, and never again.
+    token: str
+    expires_at: datetime | None
+
+
+class BeaconTokenRead(BaseModel):
+    id: uuid.UUID
+    server_id: uuid.UUID
+    name: str | None
+    expires_at: datetime | None
+    revoked: bool
+    last_used_at: datetime | None
+    created_at: datetime
+
+    # token/token_hash deliberately absent — never serialized after creation.
+    model_config = {"from_attributes": True}
+
+
+class BeaconCheckinRequest(BaseModel):
+    agent_version: str
+    os_distribution: str | None = None
+    os_version: str | None = None
+    kernel: str | None = None
+    uptime_seconds: int | None = None
+    applied_config_serial: int | None = None
+
+
+class BeaconEnvironmentInfo(BaseModel):
+    id: uuid.UUID
+    name: str
+    release: str
+    publish_prefix: str
+    components: list[str]
+    gpg_key_id: str | None
+
+
+class BeaconAptSource(BaseModel):
+    # e.g. "groundctl-dev.list" — the ONLY file the beacon should ever
+    # write matching this exact name in /etc/apt/sources.list.d/.
+    filename: str
+    # Rendered server-side (see app/apt_sources.py) — the beacon writes
+    # this verbatim and never constructs a deb line itself.
+    contents: str
+    keyring_filename: str | None
+
+
+class BeaconAction(BaseModel):
+    id: uuid.UUID
+    type: str
+    params: dict
+
+
+class BeaconCheckinResponse(BaseModel):
+    server_id: uuid.UUID
+    hostname: str
+    config_serial: int
+    environment: BeaconEnvironmentInfo
+    apt_source: BeaconAptSource
+    # Armored, so the beacon can install/rotate its own keyring file.
+    # None when the environment is unsigned ([trusted=yes]).
+    gpg_public_key: str | None
+    # Filenames (groundctl-*.list / groundctl-*.gpg / groundctl-*.asc) the
+    # beacon should remove — anything matching the groundctl-<name> prefix
+    # that is NOT this checkin's own apt_source/keyring filename. Enforces
+    # the "exactly one groundctl-managed environment at a time" rule
+    # beacon-side, same as bootstrap_client.yml's replace-in-place fix.
+    stale_source_filenames: list[str]
+    checkin_interval_seconds: int
+    facts_requested: bool
+    actions: list[BeaconAction]
+
+
+# BeaconFactsRequest/Response, BeaconReportRequest/Response land with
+# Phase C/D (docs/beacon.md, ROADMAP.md Phase 9) — not defined yet since
+# nothing in this phase constructs or validates them.
+
+
+# ---------------------------------------------------------------------------
 # jobs
 # ---------------------------------------------------------------------------
 

@@ -30,6 +30,7 @@ from app.routers import (
     activation_keys,
     audit_logs,
     auth,
+    beacon,
     branding,
     compliance,
     content_views,
@@ -183,6 +184,11 @@ api_router.include_router(activation_keys.router, prefix="/activation-keys", tag
 # only unauthenticated router in the app — branding and version are too,
 # for their own reasons noted at each include_router call below.)
 api_router.include_router(enrollment.router, prefix="/enrollment", tags=["enrollment"])
+# Authenticated by a per-server BeaconToken (get_current_beacon_server),
+# NOT Depends(get_current_user) — a second, deliberate non-JWT auth path
+# for the optional Beacon agent. See app/routers/beacon.py's module
+# docstring and ROADMAP.md Phase 9.
+api_router.include_router(beacon.router, prefix="/beacon", tags=["beacon"])
 api_router.include_router(sites.router, prefix="/sites", tags=["sites"])
 api_router.include_router(audit_logs.router, prefix="/audit-logs", tags=["audit-logs"])
 # /api/docs, NOT /docs — that's FastAPI's own Swagger UI, unprefixed and
