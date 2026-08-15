@@ -50,6 +50,7 @@ def _read_content_view(db: Session, content_view: ContentView) -> ContentViewRea
     return ContentViewRead(
         id=content_view.id,
         name=content_view.name,
+        description=content_view.description,
         repository_ids=_content_view_repository_ids(db, content_view.id),
         created_at=content_view.created_at,
         updated_at=content_view.updated_at,
@@ -144,8 +145,18 @@ def _filter_to_aptly_query(db: Session, repo: Repository, content_filter: Conten
 def create_content_view(
     payload: ContentViewCreate,
     db: Session = Depends(get_db),
+    aptly: AptlyClient = Depends(get_aptly_client),
     current_user: User = Depends(require_role(Role.operator)),
 ):
+    """Cuts version 1 immediately, from the member repositories' current
+    package state, in the same request — matches Satellite, where a newly
+    created content view already has an initial version rather than
+    existing as an empty shell an operator has to remember to publish
+    separately. If aptly is unreachable when cutting that version, the
+    whole creation is rolled back (502) rather than left as a content
+    view with zero versions to promote — same "no dangling half-created
+    state" posture as every other aptly-backed endpoint in this router.
+    """
     existing = db.execute(select(ContentView).where(ContentView.name == payload.name)).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="content view name already in use")
@@ -160,7 +171,7 @@ def create_content_view(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"repository ids not found: {sorted(str(m) for m in missing)}"
         )
 
-    content_view = ContentView(name=payload.name)
+    content_view = ContentView(name=payload.name, description=payload.description)
     db.add(content_view)
     db.flush()
     for repo_id in payload.repository_ids:
@@ -175,6 +186,8 @@ def create_content_view(
     )
     db.commit()
     db.refresh(content_view)
+
+    do_publish(content_view, db, aptly, current_user, force=True)
 
     return _read_content_view(db, content_view)
 

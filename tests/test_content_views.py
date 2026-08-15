@@ -37,6 +37,26 @@ def test_create_content_view_as_operator(client, operator_token):
     body = r.json()
     assert body["name"] == "base-cv"
     assert body["repository_ids"] == [repo["id"]]
+    assert body["description"] is None
+
+
+def test_create_content_view_with_description(client, operator_token):
+    repo = _create_repo(client, operator_token, "described-cv-repo")
+    r = client.post(
+        "/content-views",
+        json={
+            "name": "described-cv",
+            "description": "Base packages for Ubuntu 22.04 servers",
+            "repository_ids": [repo["id"]],
+        },
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["description"] == "Base packages for Ubuntu 22.04 servers"
+
+    get_r = client.get(f"/content-views/{body['id']}", headers=auth_headers(operator_token))
+    assert get_r.json()["description"] == "Base packages for Ubuntu 22.04 servers"
 
 
 def test_create_content_view_as_viewer_forbidden(client, operator_token, viewer_token):
@@ -74,17 +94,23 @@ def test_create_content_view_missing_repository_404s(client, operator_token):
     assert r.status_code == 404, r.text
 
 
-def test_list_content_view_versions_empty(client, operator_token, viewer_token):
-    repo = _create_repo(client, operator_token, "versions-empty-repo")
+def test_list_content_view_versions_has_v1_after_create(client, operator_token, viewer_token):
+    # Creating a content view now cuts version 1 immediately, from the
+    # member repositories' current state — matches Satellite, where a
+    # newly created content view already has an initial version rather
+    # than existing as an empty shell.
+    repo = _create_repo(client, operator_token, "versions-v1-repo")
     cv = client.post(
         "/content-views",
-        json={"name": "versions-empty-cv", "repository_ids": [repo["id"]]},
+        json={"name": "versions-v1-cv", "repository_ids": [repo["id"]]},
         headers=auth_headers(operator_token),
     ).json()
 
     r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(viewer_token))
     assert r.status_code == 200, r.text
-    assert r.json() == []
+    versions = r.json()
+    assert len(versions) == 1
+    assert versions[0]["version"] == 1
 
 
 def test_list_content_view_versions_not_found(client, viewer_token):
@@ -155,13 +181,46 @@ def test_create_content_view_filter_errata_since_requires_iso_date(client, opera
     assert r.status_code == 422, r.text
 
 
-def test_publish_content_view_cuts_new_version(client, operator_token, mock_aptly):
+def test_create_content_view_cuts_version_1_immediately(client, operator_token, mock_aptly):
     mock_aptly.get_mirror_packages.return_value = [
         {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
     ]
     mock_aptly.get_snapshot_packages.return_value = [
         {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"},
         {"Package": "curl", "Version": "7.81.0-1", "Architecture": "amd64"},
+    ]
+    repo = _create_repo(client, operator_token, "create-cuts-v1-repo")
+
+    r = client.post(
+        "/content-views",
+        json={"name": "create-cuts-v1-cv", "repository_ids": [repo["id"]]},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 201, r.text
+    cv = r.json()
+
+    versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
+    assert versions_r.status_code == 200, versions_r.text
+    versions = versions_r.json()
+    assert len(versions) == 1
+    version = versions[0]
+    assert version["version"] == 1
+    assert len(version["snapshots"]) == 1
+    assert version["snapshots"][0]["component"] == "main"
+    # Counted from get_snapshot_packages (the final, post-filter snapshot),
+    # not get_mirror_packages (the source mirror) — this content view has
+    # no filters, but the two are deliberately given different package
+    # lists here to prove the count comes from the right call.
+    assert version["package_count"] == 2
+
+
+def test_publish_content_view_cuts_new_version_after_repo_change(client, operator_token, mock_aptly):
+    # Version 1 already exists from creation (see
+    # test_create_content_view_cuts_version_1_immediately) — this proves
+    # an explicit publish afterward still cuts version 2 when the
+    # repository's content has genuinely changed since then.
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
     ]
     repo = _create_repo(client, operator_token, "publish-repo")
     cv = client.post(
@@ -170,18 +229,14 @@ def test_publish_content_view_cuts_new_version(client, operator_token, mock_aptl
         headers=auth_headers(operator_token),
     ).json()
 
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-7", "Architecture": "amd64"}
+    ]
     r = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["version_cut"] is True
-    assert body["content_view_version"]["version"] == 1
-    assert len(body["content_view_version"]["snapshots"]) == 1
-    assert body["content_view_version"]["snapshots"][0]["component"] == "main"
-    # Counted from get_snapshot_packages (the final, post-filter snapshot),
-    # not get_mirror_packages (the source mirror) — this content view has
-    # no filters, but the two are deliberately given different package
-    # lists here to prove the count comes from the right call.
-    assert body["content_view_version"]["package_count"] == 2
+    assert body["content_view_version"]["version"] == 2
 
 
 def test_publish_content_view_package_count_not_double_counted_across_components(client, operator_token, mock_aptly):
@@ -208,22 +263,27 @@ def test_publish_content_view_package_count_not_double_counted_across_components
     )
     assert repo_r.status_code == 201, repo_r.text
     repo = repo_r.json()
-    cv = client.post(
+    cv_r = client.post(
         "/content-views",
         json={"name": "multi-component-cv", "repository_ids": [repo["id"]]},
         headers=auth_headers(operator_token),
-    ).json()
+    )
+    assert cv_r.status_code == 201, cv_r.text
+    cv = cv_r.json()
 
-    r = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
-    assert r.status_code == 201, r.text
-    body = r.json()
+    versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
+    versions = versions_r.json()
+    assert len(versions) == 1
+    version = versions[0]
     # Two components -> two snapshots entries, but both share the same
     # underlying snapshot_name (one repo, no filters) -> counted once.
-    assert len(body["content_view_version"]["snapshots"]) == 2
-    assert body["content_view_version"]["package_count"] == 3
+    assert len(version["snapshots"]) == 2
+    assert version["package_count"] == 3
 
 
 def test_publish_content_view_idempotent_when_unchanged(client, operator_token, mock_aptly):
+    # Version 1 already exists from creation — an explicit publish right
+    # after, with nothing changed, must be a no-op returning that same v1.
     mock_aptly.get_mirror_packages.return_value = [
         {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
     ]
@@ -234,17 +294,15 @@ def test_publish_content_view_idempotent_when_unchanged(client, operator_token, 
         headers=auth_headers(operator_token),
     ).json()
 
-    r1 = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
-    assert r1.status_code == 201, r1.text
-    assert r1.json()["version_cut"] is True
-
-    r2 = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
-    assert r2.status_code == 201, r2.text
-    assert r2.json()["version_cut"] is False
-    assert r2.json()["content_view_version"]["version"] == 1
+    r = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
+    assert r.status_code == 201, r.text
+    assert r.json()["version_cut"] is False
+    assert r.json()["content_view_version"]["version"] == 1
 
 
 def test_publish_content_view_force_cuts_new_version_even_when_unchanged(client, operator_token, mock_aptly):
+    # Version 1 already exists from creation — force=True must cut version
+    # 2 anyway even though nothing changed since then.
     mock_aptly.get_mirror_packages.return_value = [
         {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
     ]
@@ -255,20 +313,12 @@ def test_publish_content_view_force_cuts_new_version_even_when_unchanged(client,
         headers=auth_headers(operator_token),
     ).json()
 
-    r1 = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
-    assert r1.status_code == 201, r1.text
-    assert r1.json()["version_cut"] is True
-    assert r1.json()["content_view_version"]["version"] == 1
-
-    # No repository content changed at all — a plain publish would be a
-    # no-op (see test_publish_content_view_idempotent_when_unchanged
-    # above), but force=True must cut version 2 anyway.
-    r2 = client.post(
+    r = client.post(
         f"/content-views/{cv['id']}/publish", json={"force": True}, headers=auth_headers(operator_token)
     )
-    assert r2.status_code == 201, r2.text
-    assert r2.json()["version_cut"] is True
-    assert r2.json()["content_view_version"]["version"] == 2
+    assert r.status_code == 201, r.text
+    assert r.json()["version_cut"] is True
+    assert r.json()["content_view_version"]["version"] == 2
 
     versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
     assert [v["version"] for v in versions_r.json()] == [2, 1]
@@ -516,6 +566,37 @@ def test_delete_content_view_filter_wrong_content_view_404s(client, operator_tok
         f"/content-views/{cv2['id']}/filters/{content_filter['id']}", headers=auth_headers(operator_token)
     )
     assert r.status_code == 404, r.text
+
+
+def test_create_content_view_aptly_unreachable_returns_502(db_session, mock_aptly, mock_aptly_unreachable):
+    """Creation now cuts version 1 in the same request (see
+    test_create_content_view_cuts_version_1_immediately) — if aptly is
+    unreachable at that moment, the whole creation must fail rather than
+    leaving a content view with zero versions to promote.
+    """
+    from app.aptly_client import get_aptly_client
+    from app.main import app
+    from tests.conftest import Role, TestClient, _token_for
+
+    app.dependency_overrides[get_aptly_client] = lambda: mock_aptly
+    try:
+        with TestClient(app) as c:
+            token = _token_for(c, db_session, Role.operator)
+            repo = _create_repo(c, token, "create-unreachable-repo")
+    finally:
+        app.dependency_overrides.clear()
+
+    app.dependency_overrides[get_aptly_client] = lambda: mock_aptly_unreachable
+    try:
+        with TestClient(app) as c:
+            r = c.post(
+                "/content-views",
+                json={"name": "create-unreachable-cv", "repository_ids": [repo["id"]]},
+                headers=auth_headers(token),
+            )
+            assert r.status_code == 502, r.text
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_publish_content_view_aptly_unreachable_returns_502(db_session, mock_aptly, mock_aptly_unreachable):

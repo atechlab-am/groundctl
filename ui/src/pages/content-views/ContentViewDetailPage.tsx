@@ -182,7 +182,11 @@ export function ContentViewDetailPage() {
           <div className="flex flex-col gap-6">
             <PageHeader
               title={view.name}
-              description={`${view.repository_ids.length} repositor${view.repository_ids.length === 1 ? "y" : "ies"}`}
+              description={
+                view.description
+                  ? `${view.description} · ${view.repository_ids.length} repositor${view.repository_ids.length === 1 ? "y" : "ies"}`
+                  : `${view.repository_ids.length} repositor${view.repository_ids.length === 1 ? "y" : "ies"}`
+              }
               actions={
                 <RoleGate minRole="operator">
                   <div className="flex gap-2">

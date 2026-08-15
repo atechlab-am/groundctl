@@ -351,6 +351,7 @@ class RepositoryBatchCreateResult(BaseModel):
 
 class ContentViewCreate(BaseModel):
     name: str
+    description: str | None = None
     repository_ids: list[uuid.UUID] = Field(min_length=1)
 
     _validate_name = field_validator("name")(validate_aptly_name)
@@ -359,6 +360,7 @@ class ContentViewCreate(BaseModel):
 class ContentViewRead(BaseModel):
     id: uuid.UUID
     name: str
+    description: str | None
     repository_ids: list[uuid.UUID]
     created_at: datetime
     updated_at: datetime

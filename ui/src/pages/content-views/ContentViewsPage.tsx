@@ -8,6 +8,7 @@ import { QueryState } from "@/components/QueryState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
@@ -29,6 +30,7 @@ export function ContentViewsPage() {
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
   const [selectedRepoIds, setSelectedRepoIds] = useState<string[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -47,6 +49,7 @@ export function ContentViewsPage() {
       void queryClient.invalidateQueries({ queryKey: ["content-views"] });
       setDialogOpen(false);
       setName("");
+      setDescription("");
       setSelectedRepoIds([]);
       setFormError(null);
     },
@@ -64,7 +67,11 @@ export function ContentViewsPage() {
       setFormError("select at least one repository");
       return;
     }
-    createMutation.mutate({ name, repository_ids: selectedRepoIds });
+    createMutation.mutate({
+      name,
+      description: description.trim() || null,
+      repository_ids: selectedRepoIds,
+    });
   }
 
   return (
@@ -85,13 +92,25 @@ export function ContentViewsPage() {
                 <form onSubmit={handleSubmit}>
                   <DialogHeader>
                     <DialogTitle>Create content view</DialogTitle>
-                    <DialogDescription>Bundle one or more repositories into a versioned content view.</DialogDescription>
+                    <DialogDescription>
+                      Bundle one or more repositories into a versioned content view. Version 1 is cut immediately
+                      from the selected repositories' current package state.
+                    </DialogDescription>
                   </DialogHeader>
                   <div className="mt-4 flex flex-col gap-4">
                     {formError && <p className="text-sm text-destructive">{formError}</p>}
                     <div className="flex flex-col gap-1.5">
                       <Label htmlFor="cv-name">Name</Label>
                       <Input id="cv-name" value={name} onChange={(e) => setName(e.target.value)} required />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="cv-description">Description (optional)</Label>
+                      <Textarea
+                        id="cv-description"
+                        value={description}
+                        onChange={(e) => setDescription(e.target.value)}
+                        rows={2}
+                      />
                     </div>
                     <div className="flex flex-col gap-1.5">
                       <Label>Repositories</Label>
@@ -136,6 +155,7 @@ export function ContentViewsPage() {
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
+              <TableHead>Description</TableHead>
               <TableHead>Repositories</TableHead>
               <TableHead>Created</TableHead>
             </TableRow>
@@ -147,6 +167,9 @@ export function ContentViewsPage() {
                   <Link to={`/content-views/${view.id}`} className="hover:underline">
                     {view.name}
                   </Link>
+                </TableCell>
+                <TableCell className="max-w-64 truncate text-muted-foreground" title={view.description ?? undefined}>
+                  {view.description || "—"}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {view.repository_ids.length === 0

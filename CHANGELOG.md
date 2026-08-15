@@ -25,6 +25,22 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-08-15
+
+### Added: content views auto-publish version 1 on creation, and can be named with a description
+
+- New `ContentView.description` (optional) — content views could
+  previously only be named, matching Satellite's own create dialog now
+  requires a name and offers a description field alongside it.
+- Creating a content view now cuts version 1 immediately, from the member
+  repositories' current package state, in the same request — previously
+  a newly created content view was an empty shell with zero versions
+  until someone remembered to hit Publish separately. Matches Satellite,
+  where a content view always has an initial version as soon as it's
+  created. If aptly is unreachable at that moment, the whole creation
+  fails (502) rather than leaving a content view with nothing to
+  promote — same posture as every other aptly-backed operation here.
+
 ## [0.28.0] - 2026-08-14
 
 ### Added: on-demand version check, in-app changelog viewer, GitHub link, and an always-in-sync README

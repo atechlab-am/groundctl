@@ -4,12 +4,14 @@ export type FilterType = "include" | "exclude" | "errata_since";
 
 export interface ContentViewCreate {
   name: string;
+  description?: string | null;
   repository_ids: string[];
 }
 
 export interface ContentViewRead {
   id: string;
   name: string;
+  description: string | null;
   repository_ids: string[];
   created_at: string;
   updated_at: string;
@@ -65,6 +67,9 @@ export function getContentView(contentViewId: string): Promise<ContentViewRead> 
   return api.get<ContentViewRead>(`/content-views/${contentViewId}`);
 }
 
+// Cuts version 1 immediately, from the member repositories' current
+// package state, in the same request — matches Satellite, where a newly
+// created content view already has an initial version.
 export function createContentView(payload: ContentViewCreate): Promise<ContentViewRead> {
   return api.post<ContentViewRead>("/content-views", payload);
 }
