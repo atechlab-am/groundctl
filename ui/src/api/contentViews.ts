@@ -138,3 +138,12 @@ export function publishAndPromoteContentView(
 ): Promise<JobRead> {
   return api.post<JobRead>(`/content-views/${contentViewId}/publish-and-promote`, payload);
 }
+
+// Blocked (409) server-side if the version is live on any environment
+// right now or was ever promoted in the past (still reachable via
+// rollback) — only a version that was cut but never promoted anywhere
+// can be deleted. Runs as a tracked Job (deletes the aptly snapshots the
+// version's publish created); navigate to the returned Job's status page.
+export function deleteContentViewVersion(contentViewId: string, versionId: string): Promise<JobRead> {
+  return api.post<JobRead>(`/content-views/${contentViewId}/versions/${versionId}/delete`);
+}

@@ -679,6 +679,345 @@ def test_publish_and_promote_task_fails_job_on_path_order_violation(client, oper
     assert dev_after["current_version_id"] is None
 
 
+# ---------------------------------------------------------------------------
+# POST /content-views/{id}/versions/{version_id}/delete
+# ---------------------------------------------------------------------------
+
+
+def test_trigger_delete_version_creates_job(client, operator_token, mock_aptly):
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    repo = _create_repo(client, operator_token, "del-repo1")
+    cv = client.post(
+        "/content-views", json={"name": "del-cv1", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+
+    from unittest.mock import patch
+
+    with patch("app.tasks.delete_content_view_version_task.delay") as mock_delay:
+        r = client.post(
+            f"/content-views/{cv['id']}/versions/{version['id']}/delete",
+            headers=auth_headers(operator_token),
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["job_type"] == "delete_content_view_version"
+        assert body["status"] == "pending"
+        mock_delay.assert_called_once_with(str(body["id"]))
+
+
+def test_trigger_delete_version_as_viewer_forbidden(client, operator_token, viewer_token, mock_aptly):
+    mock_aptly.get_mirror_packages.return_value = []
+    repo = _create_repo(client, operator_token, "del-repo2")
+    cv = client.post(
+        "/content-views", json={"name": "del-cv2", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+
+    from unittest.mock import patch
+
+    with patch("app.tasks.delete_content_view_version_task.delay") as mock_delay:
+        r = client.post(
+            f"/content-views/{cv['id']}/versions/{version['id']}/delete",
+            headers=auth_headers(viewer_token),
+        )
+        assert r.status_code == 403, r.text
+        mock_delay.assert_not_called()
+
+
+def test_trigger_delete_version_content_view_not_found(client, operator_token):
+    r = client.post(
+        "/content-views/00000000-0000-0000-0000-000000000000/versions/00000000-0000-0000-0000-000000000000/delete",
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_trigger_delete_version_not_found(client, operator_token):
+    repo = _create_repo(client, operator_token, "del-repo3")
+    cv = client.post(
+        "/content-views", json={"name": "del-cv3", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+
+    r = client.post(
+        f"/content-views/{cv['id']}/versions/00000000-0000-0000-0000-000000000000/delete",
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_trigger_delete_version_currently_live_blocked(client, operator_token, mock_aptly):
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    mock_aptly.publish_exists.return_value = False
+    repo = _create_repo(client, operator_token, "del-repo4")
+    cv = client.post(
+        "/content-views", json={"name": "del-cv4", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    env = _create_env(client, operator_token, cv, "del-env4", "del-path4", 0, "del-prefix4")
+    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+
+    promote_r = client.post(
+        f"/lifecycle-environments/{env['id']}/promote",
+        json={"content_view_version_id": version["id"]},
+        headers=auth_headers(operator_token),
+    )
+    assert promote_r.status_code == 200, promote_r.text
+
+    r = client.post(
+        f"/content-views/{cv['id']}/versions/{version['id']}/delete",
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 409, r.text
+
+
+def test_trigger_delete_version_past_promoted_blocked(client, operator_token, mock_aptly):
+    """A version that's no longer live (superseded by a newer one) but was
+    promoted in the past — still reachable via POST /rollback — must stay
+    blocked, same as the currently-live case. Deleting it would silently
+    break that environment's rollback history.
+    """
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    mock_aptly.publish_exists.return_value = False
+    repo = _create_repo(client, operator_token, "del-repo5")
+    cv = client.post(
+        "/content-views", json={"name": "del-cv5", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    env = _create_env(client, operator_token, cv, "del-env5", "del-path5", 0, "del-prefix5")
+    v1 = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+
+    promote_r = client.post(
+        f"/lifecycle-environments/{env['id']}/promote",
+        json={"content_view_version_id": v1["id"]},
+        headers=auth_headers(operator_token),
+    )
+    assert promote_r.status_code == 200, promote_r.text
+
+    # Cut and promote v2 — v1 is no longer live, but was live in the past.
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.19.0-1", "Architecture": "amd64"}
+    ]
+    publish_r = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
+    assert publish_r.status_code == 201, publish_r.text
+    v2 = publish_r.json()["content_view_version"]
+    promote2_r = client.post(
+        f"/lifecycle-environments/{env['id']}/promote",
+        json={"content_view_version_id": v2["id"]},
+        headers=auth_headers(operator_token),
+    )
+    assert promote2_r.status_code == 200, promote2_r.text
+
+    r = client.post(
+        f"/content-views/{cv['id']}/versions/{v1['id']}/delete",
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 409, r.text
+
+
+def test_trigger_delete_version_never_promoted_allowed(client, operator_token, mock_aptly):
+    """The 409 guard is specific to promotion history — a version that was
+    simply cut and never promoted anywhere is deletable, confirming the
+    guard doesn't over-block unrelated versions of the same content view.
+    """
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    mock_aptly.publish_exists.return_value = False
+    repo = _create_repo(client, operator_token, "del-repo6")
+    cv = client.post(
+        "/content-views", json={"name": "del-cv6", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    env = _create_env(client, operator_token, cv, "del-env6", "del-path6", 0, "del-prefix6")
+    v1 = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+    promote_r = client.post(
+        f"/lifecycle-environments/{env['id']}/promote",
+        json={"content_view_version_id": v1["id"]},
+        headers=auth_headers(operator_token),
+    )
+    assert promote_r.status_code == 200, promote_r.text
+
+    # v2 is cut but never promoted anywhere.
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.19.0-1", "Architecture": "amd64"}
+    ]
+    publish_r = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
+    v2 = publish_r.json()["content_view_version"]
+
+    from unittest.mock import patch
+
+    with patch("app.tasks.delete_content_view_version_task.delay") as mock_delay:
+        r = client.post(
+            f"/content-views/{cv['id']}/versions/{v2['id']}/delete",
+            headers=auth_headers(operator_token),
+        )
+        assert r.status_code == 201, r.text
+        mock_delay.assert_called_once()
+
+
+def test_delete_content_view_version_task_deletes_snapshots_and_row(client, operator_token, mock_aptly, db_session):
+    """Calls delete_content_view_version_task directly (real task body,
+    not .delay) — same pattern used for publish_and_promote_task's own
+    direct-call tests. get_aptly_client() is patched for the same reason
+    those needed it: called directly inside the task body, not via
+    FastAPI DI, so the client fixture's dependency_overrides never applies.
+    """
+    from unittest.mock import patch
+
+    from app.models import ContentViewVersion
+    from app.tasks import delete_content_view_version_task
+
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    repo = _create_repo(client, operator_token, "del-repo7")
+    cv = client.post(
+        "/content-views", json={"name": "del-cv7", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+
+    with patch("app.tasks.delete_content_view_version_task.delay"):
+        job_r = client.post(
+            f"/content-views/{cv['id']}/versions/{version['id']}/delete",
+            headers=auth_headers(operator_token),
+        )
+    job_id = job_r.json()["id"]
+
+    with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+        delete_content_view_version_task(job_id)
+
+    job_after = client.get(f"/jobs/{job_id}", headers=auth_headers(operator_token))
+    assert job_after.json()["status"] == "success"
+
+    # Real aptly delete calls happened — one per unique snapshot name.
+    assert mock_aptly.delete_snapshot.call_count >= 1
+
+    # Row actually gone.
+    import uuid as _uuid
+
+    from sqlalchemy import select as _select
+
+    remaining = db_session.execute(
+        _select(ContentViewVersion).where(ContentViewVersion.id == _uuid.UUID(version["id"]))
+    ).scalar_one_or_none()
+    assert remaining is None
+
+    versions_after = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()
+    assert all(v["id"] != version["id"] for v in versions_after)
+
+
+def test_delete_content_view_version_task_deletes_all_snapshot_names_for_filtered_view(
+    client, operator_token, mock_aptly, db_session
+):
+    """A content view WITH filters produces intermediate aptly snapshots
+    (raw pre-filter + filter-chain steps) never referenced by `snapshots`
+    — only all_snapshot_names tracks them. Confirms delete_snapshot is
+    called for every one of them, not just the final snapshot name.
+    """
+    from unittest.mock import patch
+
+    from app.tasks import delete_content_view_version_task
+
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    repo = _create_repo(client, operator_token, "del-repo8")
+    cv = client.post(
+        "/content-views", json={"name": "del-cv8", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    filter_r = client.post(
+        f"/content-views/{cv['id']}/filters",
+        json={"filter_type": "include", "pattern": "nginx*"},
+        headers=auth_headers(operator_token),
+    )
+    assert filter_r.status_code == 201, filter_r.text
+
+    # Publish AFTER adding the filter so this cut actually goes through
+    # the filtered-snapshot branch of do_publish.
+    publish_r = client.post(
+        f"/content-views/{cv['id']}/publish", json={"force": True}, headers=auth_headers(operator_token)
+    )
+    assert publish_r.status_code == 201, publish_r.text
+    version = publish_r.json()["content_view_version"]
+    # One repo, no components beyond "main" by default (_create_repo) ->
+    # one (repo, component) entry, but the underlying cut still creates
+    # TWO aptly snapshots: the raw one and the filtered one.
+    assert len(version["snapshots"]) == 1
+
+    with patch("app.tasks.delete_content_view_version_task.delay"):
+        job_r = client.post(
+            f"/content-views/{cv['id']}/versions/{version['id']}/delete",
+            headers=auth_headers(operator_token),
+        )
+    job_id = job_r.json()["id"]
+
+    with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+        delete_content_view_version_task(job_id)
+
+    job_after = client.get(f"/jobs/{job_id}", headers=auth_headers(operator_token))
+    assert job_after.json()["status"] == "success"
+
+    # Raw snapshot + filtered snapshot = 2 delete calls, not 1 — proves
+    # the intermediate (never in `snapshots`) got cleaned up too.
+    assert mock_aptly.delete_snapshot.call_count == 2
+    deleted_names = {call.args[0] for call in mock_aptly.delete_snapshot.call_args_list}
+    assert any(name.endswith("-filtered") for name in deleted_names)
+    assert any(not name.endswith("-filtered") for name in deleted_names)
+
+
+def test_delete_content_view_version_task_rechecks_promotion_race(client, operator_token, mock_aptly):
+    """The task re-checks the "never promoted" guard immediately before
+    deleting — proves the race-window protection actually works: promote
+    the version AFTER the Job was created (simulating an operator
+    promoting it in the window between the trigger request and the task
+    running) and confirm the task fails instead of deleting live data.
+    """
+    from unittest.mock import patch
+
+    from app.tasks import delete_content_view_version_task
+
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    mock_aptly.publish_exists.return_value = False
+    repo = _create_repo(client, operator_token, "del-repo9")
+    cv = client.post(
+        "/content-views", json={"name": "del-cv9", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    env = _create_env(client, operator_token, cv, "del-env9", "del-path9", 0, "del-prefix9")
+    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+
+    with patch("app.tasks.delete_content_view_version_task.delay"):
+        job_r = client.post(
+            f"/content-views/{cv['id']}/versions/{version['id']}/delete",
+            headers=auth_headers(operator_token),
+        )
+    job_id = job_r.json()["id"]
+
+    # Promote AFTER the delete job was created but BEFORE the task runs.
+    promote_r = client.post(
+        f"/lifecycle-environments/{env['id']}/promote",
+        json={"content_view_version_id": version["id"]},
+        headers=auth_headers(operator_token),
+    )
+    assert promote_r.status_code == 200, promote_r.text
+
+    with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+        delete_content_view_version_task(job_id)
+
+    job_after = client.get(f"/jobs/{job_id}", headers=auth_headers(operator_token))
+    assert job_after.json()["status"] == "failed"
+    mock_aptly.delete_snapshot.assert_not_called()
+
+    # The version must still exist — the race guard prevented data loss.
+    versions_after = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()
+    assert any(v["id"] == version["id"] for v in versions_after)
+
+
 def test_list_content_views_as_viewer(client, operator_token, viewer_token):
     repo = _create_repo(client, operator_token, "list-cv-repo")
     client.post(

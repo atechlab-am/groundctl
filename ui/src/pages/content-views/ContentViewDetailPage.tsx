@@ -29,6 +29,7 @@ import {
   createContentViewFilter,
   deleteContentViewFilter,
   deleteContentView,
+  deleteContentViewVersion,
   publishContentView,
   publishAndPromoteContentView,
   updateContentViewVersion,
@@ -245,6 +246,20 @@ export function ContentViewDetailPage() {
     setEditVersionDescription(version.description ?? "");
   }
 
+  const deleteVersionMutation = useMutation({
+    mutationFn: (version: ContentViewVersionRead) => deleteContentViewVersion(contentViewId, version.id),
+    onSuccess: (job) => {
+      toast.success("Version deletion started");
+      navigate(`/jobs/${job.id}`);
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+
+  function handleDeleteVersion(version: ContentViewVersionRead) {
+    if (!confirm(`Delete version ${version.version}? This removes its aptly snapshots and cannot be undone.`)) return;
+    deleteVersionMutation.mutate(version);
+  }
+
   function handleAddFilter(e: FormEvent) {
     e.preventDefault();
     setFilterError(null);
@@ -448,6 +463,20 @@ export function ContentViewDetailPage() {
                                 >
                                   <Rocket className="h-3.5 w-3.5" />
                                   Promote to…
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 gap-1.5 px-2 text-xs text-destructive hover:text-destructive"
+                                  disabled={
+                                    liveOn.length > 0 ||
+                                    (deleteVersionMutation.isPending && deleteVersionMutation.variables?.id === v.id)
+                                  }
+                                  title={liveOn.length > 0 ? "Live on an environment — cannot be deleted" : undefined}
+                                  onClick={() => handleDeleteVersion(v)}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  Delete
                                 </Button>
                               </RoleGate>
                             </div>

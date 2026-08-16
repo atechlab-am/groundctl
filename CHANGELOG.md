@@ -25,6 +25,34 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-08-17
+
+### Added: content view version deletion
+
+- New `POST /content-views/{id}/versions/{version_id}/delete` — deletes a
+  version and the aptly snapshots its publish created, as a tracked Job
+  (new `JobType.delete_content_view_version`). Blocked (409), before a
+  Job is even created, if the version is live on any environment right
+  now OR was ever promoted in the past — still reachable via
+  `POST /rollback` — matching Satellite: a published/promoted version is
+  locked in as part of environment history; only a version that was cut
+  but never promoted anywhere can be deleted. The task re-checks the same
+  guard immediately before deleting, closing the race window between the
+  request and the task running.
+- New `ContentViewVersion.all_snapshot_names` — `do_publish` now records
+  every aptly snapshot a cut creates, including intermediates never
+  referenced by the existing `snapshots` field (the raw pre-filter
+  snapshot and any intermediate filter-chain steps, for content views
+  with filters). Without this, deleting a filtered content view's version
+  would only remove its final snapshot and leak the intermediates in
+  aptly forever. Nullable — versions cut before this column existed fall
+  back to deleting just their recorded final snapshot names.
+- New `AptlyClient.delete_snapshot`.
+- Web UI: version rows in the content view detail page gained a Delete
+  action (disabled when the version is live on an environment; the
+  past-promoted case surfaces via the server's 409). CLI:
+  `groundctl content-view delete-version`.
+
 ## [0.35.0] - 2026-08-16
 
 ### Added: combined create-version-and-promote job, job progress bars

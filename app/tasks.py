@@ -52,7 +52,7 @@ from app.models import (
     User,
 )
 from app.routers.compliance import ComplianceDataNotReadyError, do_check_compliance
-from app.routers.content_views import do_publish
+from app.routers.content_views import do_publish, version_ever_promoted
 from app.routers.lifecycle_environments import do_promote
 from app.routers.repositories import do_sync_repository
 from app.version_check import refresh_version_check
@@ -1060,6 +1060,93 @@ def delete_repository_task(self, job_id: str) -> str:
             return "failed"
         finally:
             lock.release()
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True)
+def delete_content_view_version_task(self, job_id: str) -> str:
+    """Backs the operator-triggered POST /content-views/{id}/versions/
+    {version_id}/delete endpoint (app/routers/content_views.py) — deletes
+    every aptly snapshot this version's publish cut (version.
+    all_snapshot_names when present; falls back to the final snapshot
+    names recorded in `snapshots` for versions cut before that column
+    existed, meaning any intermediate filter-chain snapshots from those
+    older versions stay orphaned in aptly, unchanged pre-existing gap),
+    then the ContentViewVersion row itself. A Job, not synchronous, since
+    aptly snapshot deletion is a real network call per snapshot.
+
+    Re-checks the "never promoted anywhere" guard here, not just at the
+    endpoint (which already checked it before creating this Job) — an
+    operator could promote this exact version to some environment in the
+    window between the request returning and this task actually running.
+    Same race-window reasoning as delete_repository_task's ContentView
+    reference re-check.
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(Job, uuid.UUID(job_id))
+        if job is None:
+            return "job not found"
+
+        job.celery_task_id = self.request.id
+        job.status = JobStatus.running
+        job.started_at = datetime.now(timezone.utc)
+        db.commit()
+
+        audit = db.execute(
+            select(AuditLog).where(
+                AuditLog.resource_id == str(job.id),
+                AuditLog.action == AuditAction.trigger_delete_content_view_version,
+            )
+        ).scalar_one()
+        if audit.detail is None:
+            raise ValueError(f"audit log for job {job.id} is missing its delete-version detail")
+        version_id = uuid.UUID(audit.detail["version_id"])
+
+        version = db.get(ContentViewVersion, version_id)
+        if version is None:
+            _mark_job(db, job, JobStatus.failed, f"content view version {version_id} no longer exists")
+            return "version not found"
+
+        version_label = f"version {version.version}"
+
+        if version_ever_promoted(db, version.id):
+            _mark_job(
+                db, job, JobStatus.failed,
+                f"{version_label} has since been promoted to an environment and can no longer be deleted",
+            )
+            return "version promoted since request"
+
+        snapshot_names = version.all_snapshot_names
+        if not snapshot_names:
+            snapshot_names = list({entry["snapshot_name"] for entry in version.snapshots})
+
+        job.log_output = f"deleting {len(snapshot_names)} snapshot(s) for {version_label}…"
+        db.commit()
+
+        aptly = get_aptly_client()
+        try:
+            for snapshot_name in snapshot_names:
+                aptly.delete_snapshot(snapshot_name)
+            db.add(
+                AuditLog(
+                    user_id=job.created_by_user_id,
+                    action=AuditAction.delete_content_view_version,
+                    resource_type="content_view_version",
+                    resource_id=str(version.id),
+                    detail={"version": version.version, "content_view_id": str(version.content_view_id)},
+                )
+            )
+            db.delete(version)
+            db.commit()
+            _mark_job(db, job, JobStatus.success, f"deleted {version_label}")
+            return "successful"
+        except AptlyError as exc:
+            db.rollback()
+            job = _get_job_or_raise(db, job_id)
+            _mark_job(db, job, JobStatus.failed, str(exc))
+            return "failed"
     finally:
         db.close()
 

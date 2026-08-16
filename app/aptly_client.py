@@ -236,6 +236,23 @@ class AptlyClient:
         )
         return response.json() if response.content else []
 
+    def delete_snapshot(self, snapshot_name: str) -> None:
+        """Deletes an aptly snapshot outright. aptly refuses this (409) if
+        the snapshot is still referenced by an active publish or another
+        snapshot built on top of it (e.g. a filtered snapshot's source) —
+        callers must ensure the version isn't live/rollback-able anywhere
+        first (delete_content_view_version_task, app/tasks.py); aptly's
+        own check has no notion of groundctl's ContentViewVersion/
+        LifecycleEnvironment concepts, only its own snapshot graph.
+
+        No extended timeout needed — unlike delete_mirror (which touches
+        pool references for every package a full mirror holds), deleting
+        one snapshot's own metadata is a much lighter operation. Kept at
+        the default client timeout.
+        """
+        _validate_name(snapshot_name)
+        self._request("DELETE", f"/api/snapshots/{snapshot_name}")
+
     # -- publish ------------------------------------------------------------
 
     def publish_exists(self, prefix: str) -> bool:

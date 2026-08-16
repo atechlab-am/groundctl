@@ -1,5 +1,5 @@
 """groundctl content-view create|publish|publish-and-promote|add-filter|
-versions|set-version-description
+versions|set-version-description|delete-version
 
 LIMITATION (matches a known backend gap, also hit by the web UI): there is
 no GET list/detail endpoint for content views on the backend
@@ -132,4 +132,21 @@ def set_version_description(
     payload = {"description": description}
     with authed_client() as client:
         response = client.patch(f"/content-views/{content_view_id}/versions/{version_id}", json=payload)
+    render_item(response.json(), output=output)
+
+
+@app.command("delete-version")
+def delete_version(
+    ctx: typer.Context,
+    content_view_id: uuid.UUID = typer.Argument(..., help="Content view UUID."),
+    version_id: uuid.UUID = typer.Argument(..., help="Content view version UUID (see `versions`)."),
+) -> None:
+    """Delete a version and the aptly snapshots it cut, as a tracked job —
+    poll with `groundctl job show <id>`. Blocked (409) if the version is
+    live on any environment now, or was ever promoted in the past (still
+    reachable via `groundctl environment rollback`) — only a version that
+    was cut but never promoted anywhere can be deleted."""
+    output = get_output(ctx)
+    with authed_client() as client:
+        response = client.post(f"/content-views/{content_view_id}/versions/{version_id}/delete")
     render_item(response.json(), output=output)

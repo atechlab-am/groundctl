@@ -1,6 +1,6 @@
 # Groundctl
 
-**Version:** [0.35.0](CHANGELOG.md#0350---2026-08-16) · see [`CHANGELOG.md`](CHANGELOG.md) for release history and [`docs/releasing.md`](docs/releasing.md) for how releases are cut.
+**Version:** [0.36.0](CHANGELOG.md#0360---2026-08-17) · see [`CHANGELOG.md`](CHANGELOG.md) for release history and [`docs/releasing.md`](docs/releasing.md) for how releases are cut.
 
 **A self-hosted content-view and patch-level manager for Debian/Ubuntu fleets — mirror repos, snapshot them, stage different package versions to different environments, and manage servers from one place.**
 

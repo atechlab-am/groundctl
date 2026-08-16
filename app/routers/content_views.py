@@ -318,6 +318,85 @@ def update_content_view_version(
     return version
 
 
+def version_ever_promoted(db: Session, version_id: uuid.UUID) -> bool:
+    """True if this version is currently live on any environment, OR was
+    ever live in the past (still reachable via POST /rollback). Matches
+    rollback_environment's own "ever_live" check (lifecycle_environments.py)
+    but across ALL environments, not just one — deleting a version that's
+    rollback-able anywhere would silently break that environment's
+    rollback history. A version that was never promoted anywhere has no
+    AuditAction.switch_publish/rollback_environment row referencing it and
+    is not any environment's current_version_id.
+    """
+    if db.execute(
+        select(LifecycleEnvironment.id).where(LifecycleEnvironment.current_version_id == version_id)
+    ).first():
+        return True
+    promoted = db.execute(
+        select(AuditLog).where(AuditLog.action.in_([AuditAction.switch_publish, AuditAction.rollback_environment]))
+    ).scalars()
+    return any(entry.detail.get("content_view_version_id") == str(version_id) for entry in promoted if entry.detail)
+
+
+@router.post(
+    "/{content_view_id}/versions/{version_id}/delete", response_model=JobRead, status_code=status.HTTP_201_CREATED
+)
+def trigger_delete_content_view_version(
+    content_view_id: uuid.UUID,
+    version_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """Deletes a content view version — the aptly snapshots it cut (see
+    ContentViewVersion.all_snapshot_names) and the row itself — as a
+    tracked Job, since aptly snapshot deletion is a real network call
+    (see AptlyClient.delete_snapshot). Blocked (409), before a Job is even
+    created, if the version is live on any environment right now OR was
+    ever promoted in the past (still reachable via rollback) — matches
+    Satellite: a published/promoted version is locked in as part of
+    environment history, only a version that was cut but never promoted
+    anywhere can be deleted. The task itself re-checks this guard
+    immediately before the actual delete, closing the race window between
+    this request and the task running (same pattern as
+    delete_repository_task's ContentView-reference re-check).
+    """
+    from app.tasks import delete_content_view_version_task
+
+    content_view = _get_content_view_or_404(db, content_view_id)
+
+    version = db.get(ContentViewVersion, version_id)
+    if version is None or version.content_view_id != content_view.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view version not found")
+
+    if version_ever_promoted(db, version.id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="version has been promoted to an environment (currently or in the past) and cannot be deleted",
+        )
+
+    job = Job(
+        job_type=JobType.delete_content_view_version,
+        target_type=JobTargetType.content_view,
+        created_by_user_id=current_user.id,
+    )
+    db.add(job)
+    db.flush()
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.trigger_delete_content_view_version,
+            resource_type="job",
+            resource_id=str(job.id),
+            detail={"content_view_id": str(content_view.id), "version_id": str(version.id), "version": version.version},
+        )
+    )
+    db.commit()
+    db.refresh(job)
+
+    delete_content_view_version_task.delay(str(job.id))
+    return job
+
+
 @router.get("/{content_view_id}/filters", response_model=list[ContentViewFilterRead])
 def list_content_view_filters(
     content_view_id: uuid.UUID,
@@ -441,6 +520,12 @@ def do_publish(
     next_version = 1 if latest is None else latest.version + 1
     timestamp = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
     snapshots: list[dict] = []
+    # Every snapshot this cut creates, including intermediates never
+    # referenced by `snapshots` (the raw pre-filter snapshot, and any
+    # intermediate filter-chain steps) — lets a later version delete
+    # clean up everything this publish created, not just the final names.
+    # See ContentViewVersion.all_snapshot_names' docstring.
+    all_snapshot_names: list[str] = []
 
     for repo in repos:
         raw_snapshot_name = f"{content_view.name}-v{next_version}-{repo.name}-{timestamp}"
@@ -448,6 +533,7 @@ def do_publish(
             aptly.create_snapshot_from_mirror(repo.name, raw_snapshot_name)
         except AptlyError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        all_snapshot_names.append(raw_snapshot_name)
 
         snapshot_name = raw_snapshot_name
         if filters:
@@ -464,6 +550,7 @@ def do_publish(
                 except AptlyError as exc:
                     raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
                 current_source = dest
+                all_snapshot_names.append(dest)
             snapshot_name = current_source
 
         for component in repo.components:
@@ -498,6 +585,7 @@ def do_publish(
         snapshots=snapshots,
         content_hash=content_hash,
         package_count=package_count,
+        all_snapshot_names=all_snapshot_names,
         created_by_user_id=user.id,
     )
     db.add(version)

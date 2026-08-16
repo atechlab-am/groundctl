@@ -60,6 +60,7 @@ class JobType(str, enum.Enum):
     update_repository = "update_repository"
     install_beacon = "install_beacon"
     publish_and_promote = "publish_and_promote"
+    delete_content_view_version = "delete_content_view_version"
 
 
 class JobTargetType(str, enum.Enum):
@@ -68,6 +69,7 @@ class JobTargetType(str, enum.Enum):
     host_group = "host_group"
     adhoc = "adhoc"
     repository = "repository"
+    content_view = "content_view"
 
 
 class PackageAction(str, enum.Enum):
@@ -156,6 +158,8 @@ class AuditAction(str, enum.Enum):
     trigger_install_beacon = "trigger_install_beacon"
     update_content_view_version = "update_content_view_version"
     trigger_publish_and_promote = "trigger_publish_and_promote"
+    trigger_delete_content_view_version = "trigger_delete_content_view_version"
+    delete_content_view_version = "delete_content_view_version"
 
 
 class User(Base):
@@ -403,6 +407,20 @@ class ContentViewVersion(Base):
     # NUMBER stays the canonical, immutable identifier (matches Satellite:
     # versions are numbered, not renamed — only annotated).
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Every aptly snapshot this version's cut created, including
+    # intermediates never referenced by `snapshots` above — the raw
+    # pre-filter snapshot and any intermediate filter-chain steps when
+    # this content view has filters (do_publish names them
+    # "<raw>-filtered", "<raw>-filtered-0", "<raw>-filtered-1", etc.,
+    # composing sequentially; only the LAST one becomes a `snapshots`
+    # entry's snapshot_name). Each name is unique to THIS version's cut
+    # (embeds the version number) — never shared with any other version,
+    # so deleting them can't affect another version's own data. Nullable:
+    # versions cut before this column existed only have `snapshots`'
+    # final names, so deleting one of those cleans up less (the
+    # intermediates from that old cut stay orphaned in aptly, a
+    # pre-existing gap this column closes only going forward).
+    all_snapshot_names: Mapped[list | None] = mapped_column(JSON, nullable=True)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
