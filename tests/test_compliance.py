@@ -51,27 +51,31 @@ def _create_cv(client, operator_token, repo, name="cv"):
     return r.json()
 
 
-def _env_payload(cv, name="dev", path_name="main", position=0, publish_prefix="dev"):
-    return {
-        "name": name,
-        "path_name": path_name,
-        "position": position,
-        "content_view_id": cv["id"],
-        "distro": "ubuntu",
-        "release": "jammy",
-        "publish_prefix": publish_prefix,
-        "allow_unsigned": True,
-    }
-
-
 def _create_env(client, operator_token, cv, name="dev", path_name="main", position=0, publish_prefix="dev"):
-    r = client.post(
-        "/lifecycle-environments",
-        json=_env_payload(cv, name, path_name, position, publish_prefix),
+    # path_name/position/publish_prefix are no longer creation-time fields
+    # (see LifecycleEnvironmentCreate) — publish_prefix is derived from
+    # `name` at first promote instead. This helper immediately promotes
+    # the content view's already-published version 1 so callers keep
+    # getting back a fully linked, published environment exactly like
+    # before. No caller in this file uses position>0, so prior-chaining
+    # isn't needed here.
+    r = client.post("/lifecycle-environments", json={"name": name}, headers=auth_headers(operator_token))
+    assert r.status_code == 201, r.text
+    env = r.json()
+
+    versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
+    version_id = versions_r.json()[0]["id"]
+    promote_r = client.post(
+        f"/lifecycle-environments/{env['id']}/promote",
+        json={"content_view_version_id": version_id, "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
-    assert r.status_code == 201, r.text
-    return r.json()
+    assert promote_r.status_code == 200, promote_r.text
+
+    get_r = client.get(
+        "/lifecycle-environments", params={"content_view_id": cv["id"]}, headers=auth_headers(operator_token)
+    )
+    return next(e for e in get_r.json() if e["id"] == env["id"])
 
 
 def _create_server(client, operator_token, env, hostname="host1.example.com"):
@@ -133,9 +137,12 @@ def test_check_compliance_server_not_found(client, operator_token):
 
 
 def test_check_compliance_environment_not_published_422(client, operator_token, db_session):
-    repo = _create_repo(client, operator_token, "repo-unpub")
-    cv = _create_cv(client, operator_token, repo, "cv-unpub")
-    env = _create_env(client, operator_token, cv, "env-unpub", "path-unpub", 0, "prefix-unpub")
+    # Deliberately NOT using _create_env — that helper now creates AND
+    # promotes (so other tests get a fully-linked environment by default),
+    # but this test specifically needs current_version_id to stay null.
+    env_r = client.post("/lifecycle-environments", json={"name": "env-unpub"}, headers=auth_headers(operator_token))
+    assert env_r.status_code == 201, env_r.text
+    env = env_r.json()
     server = _create_server(client, operator_token, env, "host-unpub.example.com")
 
     _seed_compliance_record(db_session, server["id"], [{"name": "nginx", "version": "1.18.0-6", "arch": "amd64"}])

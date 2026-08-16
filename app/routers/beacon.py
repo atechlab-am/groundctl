@@ -122,6 +122,16 @@ def checkin(
         # deleted), but a beacon with nothing coherent to reconcile
         # against should fail loudly rather than get a malformed response.
         raise RuntimeError(f"server {server.id}'s environment no longer exists")
+    if environment.publish_prefix is None or environment.release is None:
+        # publish_prefix/release are deferred to the environment's FIRST
+        # promote (lifecycle_environments.py's promote_environment) — same
+        # guard as bootstrap_task, same reason: nothing coherent to
+        # reconcile a beacon against until something's actually been
+        # promoted to this environment.
+        raise RuntimeError(
+            f"server {server.id}'s environment '{environment.name}' has never been promoted — "
+            "nothing to reconcile against yet"
+        )
 
     version = (
         db.get(ContentViewVersion, environment.current_version_id)

@@ -51,30 +51,39 @@ environment against this content view.
 
 ## 3. Lifecycle Environments — the thing servers actually point at
 
-**Environments** page → **New environment**.
+**Environments** page → **New environment**. Creation matches Satellite's
+own "New Lifecycle Environment" dialog — just three fields:
 
 | Field | What it means |
 |---|---|
-| Name | Display name, e.g. `jammy-prod` |
-| Path name | Groups environments into an ordered promotion chain — e.g. all environments sharing path `default` form one chain (`library` → `dev` → `prod`). If you only need one environment right now, any name works; you can add more at other positions later. |
-| Position | 0-based order within the path. Position 0 has no promotion gate; position N can only be promoted into once position N-1 in the same path currently has that version live. Use `0` if this is your first/only environment on this path. |
-| Content view | The content view you just published a version for. |
-| Distro / release | e.g. `ubuntu` / `jammy` — must match what managed hosts expect in their apt sources. |
-| Publish prefix | The URL segment servers' `sources.list` will point at: `https://<fleet-hostname>:<nginx-port>/<publish_prefix>/`. Must be unique across environments. |
-| GPG signing | On by default — either supply a `gpg_key_id` (see [`docs/gpg-signing.md`](gpg-signing.md)) or explicitly check **allow unsigned** for a lab/test setup. Unsigned means managed hosts trust this repo's metadata unverified (`[trusted=yes]`) — fine for a trusted network, not for anything exposed. |
+| Name | Display name, e.g. `jammy-prod`. Also becomes the publish URL segment once you promote something to it (see below), so keep it something you'd want in a URL. |
+| Description | Free text, optional. |
+| Prior | Which environment this one comes right after in its promotion path (e.g. `jammy-dev` → `jammy-prod` means `jammy-prod`'s prior is `jammy-dev`). Leave blank if this is the first/only environment on a new path — position N can only be promoted into once position N-1 in the same path currently has that version live. |
 
-Create it. This does **not** publish anything yet — it just creates the
-environment shell.
+GPG signing (which content view, distro/release, publish prefix) is
+**not** asked here — none of it is needed until you actually publish
+something to the environment. Create it now; it starts as an empty shell
+with nothing published.
 
-### Promote — actually point it at content
+### Promote — actually point it at content (and lock in the rest)
 
-Click **Promote** on the environment. With no `content_view_version_id`
-specified, this promotes to the content view's latest published version —
-this is the step that actually makes the environment serve real package
-data at its publish prefix.
+Click **Promote** and pick the content view version you just published.
+This is the step that permanently ties the environment to that content
+view (every later promote must use a version of the same one), derives
+its `release` from the content view's first repository, and sets its
+publish prefix to the environment's name — same "just push a content
+view to it" flow as Satellite. It's also the step that actually makes the
+environment serve real package data.
+
+No GPG key configured yet? You'll be asked to either set one first
+(**Edit** on the environment page, or `PATCH /api/lifecycle-environments/{id}`)
+or explicitly confirm unsigned publishing — see
+[`docs/gpg-signing.md`](gpg-signing.md). Unsigned means managed hosts
+trust this repo's metadata unverified (`[trusted=yes]`) — fine for a
+trusted network, not for anything exposed.
 
 Your environment is now live at
-`https://<fleet-hostname>:<nginx-port>/<publish_prefix>/`.
+`https://<fleet-hostname>:<nginx-port>/<name>/`.
 
 ## 4. Add a server
 

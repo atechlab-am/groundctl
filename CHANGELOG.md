@@ -25,6 +25,52 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-08-17
+
+### Changed: simplified lifecycle environment creation (BREAKING)
+
+Pre-1.0 — see `docs/releasing.md`, no stability guarantee yet — but this
+is a real breaking change to the API/CLI contract, called out explicitly
+since it removes previously-required fields rather than just adding
+optional ones.
+
+- `POST /lifecycle-environments` now only takes `name`, `description`,
+  `prior_environment_id` (replaces `path_name`+`position` — the
+  predecessor in the promotion path, instead of raw path bookkeeping),
+  and an optional `gpg_key_id` — matches Satellite's own "New Lifecycle
+  Environment" dialog. `content_view_id`/`distro`/`release`/
+  `publish_prefix` are **removed** from the creation payload entirely.
+- `content_view_id`/`release`/`publish_prefix` are now derived and
+  permanently locked in on the environment's first promote instead:
+  `POST /{id}/promote` now requires `content_view_version_id` explicitly
+  when the environment has never been promoted (no more defaulting to
+  "the content view's latest version" — there's no "the content view"
+  yet), derives `release` from that version's content view's first
+  member repository, sets `publish_prefix` to the environment's own
+  name, and — if no `gpg_key_id` is set — requires `allow_unsigned: true`
+  explicitly (same enforcement creation used to do, moved to the point
+  content actually gets published).
+- Dropped `LifecycleEnvironment.distro` — write-only, never read
+  anywhere in the codebase since `render_apt_source` only ever consumed
+  `release`.
+- New `PATCH /lifecycle-environments/{id}` (description/gpg_key_id) —
+  the only way to add a signing key to an environment before its first
+  promote, since creation no longer asks for one.
+- New `GET /lifecycle-environments?promotable_for_content_view_id=` —
+  environments already tied to a content view OR never promoted
+  anywhere yet (valid first-promote targets); separate from the
+  existing `content_view_id` filter, which stays exact-match-only.
+- `bootstrap_task`/beacon checkin both now fail loudly (not silently
+  render a broken apt source line) if a server's environment has never
+  been promoted.
+- Web UI: environment creation dialog is now three fields. Environments
+  with no content view yet get a distinct "Promote…" flow (explicit
+  version picker + signing choice) instead of the one-click "Promote
+  latest" already-linked environments use.
+- CLI: `groundctl environment create` drops `--path-name`/`--position`/
+  `--content-view-id`/`--distro`/`--release`/`--publish-prefix` in favor
+  of `--prior-environment-id`; new `groundctl environment update`.
+
 ## [0.36.0] - 2026-08-17
 
 ### Added: content view version deletion

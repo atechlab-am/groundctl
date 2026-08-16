@@ -484,21 +484,21 @@ def test_set_version_description_wrong_content_view_404s(client, operator_token)
 # ---------------------------------------------------------------------------
 
 
-def _create_env(client, operator_token, cv, name="env", path_name="path", position=0, publish_prefix="prefix"):
-    r = client.post(
-        "/lifecycle-environments",
-        json={
-            "name": name,
-            "path_name": path_name,
-            "position": position,
-            "content_view_id": cv["id"],
-            "distro": "ubuntu",
-            "release": "jammy",
-            "publish_prefix": publish_prefix,
-            "allow_unsigned": True,
-        },
-        headers=auth_headers(operator_token),
-    )
+def _create_env(client, operator_token, cv, name="env", path_name="path", position=0, publish_prefix="prefix", prior=None):
+    # path_name/position/content_view_id/publish_prefix are no longer
+    # creation-time fields (see LifecycleEnvironmentCreate) — deliberately
+    # NOT auto-promoted here (unlike other test files' _create_env
+    # helpers) since several tests in this file specifically need an
+    # unpromoted environment (e.g. path-order enforcement, delete-guard
+    # tests that promote explicitly at the point they need it). Pass
+    # `prior` (another env dict) to chain into an existing path instead
+    # of starting a new one at position 0. cv/path_name/position/
+    # publish_prefix args are accepted for call-site compatibility but
+    # only `prior` and `name` actually affect anything now.
+    payload = {"name": name}
+    if prior is not None:
+        payload["prior_environment_id"] = prior["id"]
+    r = client.post("/lifecycle-environments", json=payload, headers=auth_headers(operator_token))
     assert r.status_code == 201, r.text
     return r.json()
 
@@ -519,7 +519,7 @@ def test_trigger_publish_and_promote_creates_job(client, operator_token, mock_ap
     with patch("app.tasks.publish_and_promote_task.delay") as mock_delay:
         r = client.post(
             f"/content-views/{cv['id']}/publish-and-promote",
-            json={"environment_id": env["id"], "description": "release candidate"},
+            json={"environment_id": env["id"], "description": "release candidate", "allow_unsigned": True},
             headers=auth_headers(operator_token),
         )
         assert r.status_code == 201, r.text
@@ -561,10 +561,15 @@ def test_trigger_publish_and_promote_content_view_not_found(client, operator_tok
 
 
 def test_trigger_publish_and_promote_environment_wrong_content_view_404s(client, operator_token, mock_aptly):
-    """An environment belonging to content-view A can't be targeted via
-    content-view B's URL — same isolation pattern as
-    test_set_version_description_wrong_content_view_404s."""
+    """An environment already tied to content-view B (via a real promote)
+    can't be targeted via content-view A's URL — same isolation pattern
+    as test_set_version_description_wrong_content_view_404s. A never-
+    promoted environment (content_view_id still null) is deliberately
+    NOT what this test covers — that's a valid first-promote target for
+    ANY content view, see test_trigger_publish_and_promote_creates_job.
+    """
     mock_aptly.get_mirror_packages.return_value = []
+    mock_aptly.publish_exists.return_value = False
     repo_a = _create_repo(client, operator_token, "pp-repo3a")
     repo_b = _create_repo(client, operator_token, "pp-repo3b")
     cv_a = client.post(
@@ -574,6 +579,13 @@ def test_trigger_publish_and_promote_environment_wrong_content_view_404s(client,
         "/content-views", json={"name": "pp-cv3b", "repository_ids": [repo_b["id"]]}, headers=auth_headers(operator_token)
     ).json()
     env_b = _create_env(client, operator_token, cv_b, "pp-env3b", "pp-path3b", 0, "pp-prefix3b")
+    version_b_id = client.get(f"/content-views/{cv_b['id']}/versions", headers=auth_headers(operator_token)).json()[0]["id"]
+    promote_r = client.post(
+        f"/lifecycle-environments/{env_b['id']}/promote",
+        json={"content_view_version_id": version_b_id, "allow_unsigned": True},
+        headers=auth_headers(operator_token),
+    )
+    assert promote_r.status_code == 200, promote_r.text
 
     r = client.post(
         f"/content-views/{cv_a['id']}/publish-and-promote",
@@ -605,7 +617,12 @@ def test_publish_and_promote_task_cuts_version_sets_description_and_promotes(cli
     with patch("app.tasks.publish_and_promote_task.delay"):
         job_r = client.post(
             f"/content-views/{cv['id']}/publish-and-promote",
-            json={"environment_id": env["id"], "force": True, "description": "annotated at publish time"},
+            json={
+                "environment_id": env["id"],
+                "force": True,
+                "description": "annotated at publish time",
+                "allow_unsigned": True,
+            },
             headers=auth_headers(operator_token),
         )
     job_id = job_r.json()["id"]
@@ -652,16 +669,17 @@ def test_publish_and_promote_task_fails_job_on_path_order_violation(client, oper
         "/content-views", json={"name": "pp-cv5", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
     ).json()
     dev = _create_env(client, operator_token, cv, "pp-dev5", "pp-path5", 0, "pp-dev5-prefix")
-    staging = _create_env(client, operator_token, cv, "pp-staging5", "pp-path5", 1, "pp-staging5-prefix")
+    staging = _create_env(client, operator_token, cv, "pp-staging5", "pp-path5", 1, "pp-staging5-prefix", prior=dev)
 
     # staging is position 1 in the path but dev (position 0) has never been
     # promoted to anything — staging must be rejected.
     with patch("app.tasks.publish_and_promote_task.delay"):
         job_r = client.post(
             f"/content-views/{cv['id']}/publish-and-promote",
-            json={"environment_id": staging["id"]},
+            json={"environment_id": staging["id"], "allow_unsigned": True},
             headers=auth_headers(operator_token),
         )
+    assert job_r.status_code == 201, job_r.text
     job_id = job_r.json()["id"]
 
     with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
@@ -671,12 +689,18 @@ def test_publish_and_promote_task_fails_job_on_path_order_violation(client, oper
     assert job_after.json()["status"] == "failed"
     assert "dev5" in job_after.json()["log_output"] or "position" in job_after.json()["log_output"]
 
-    # dev being untouched confirms staging's promotion never applied.
+    # dev being untouched confirms staging's promotion never applied —
+    # dev itself was never promoted either, so content_view_id is still
+    # null; use promotable_for_content_view_id (matches never-promoted
+    # environments too) rather than the exact-match content_view_id filter.
     envs_after = client.get(
-        "/lifecycle-environments", params={"content_view_id": cv["id"]}, headers=auth_headers(operator_token)
+        "/lifecycle-environments",
+        params={"promotable_for_content_view_id": cv["id"]},
+        headers=auth_headers(operator_token),
     ).json()
     dev_after = next(e for e in envs_after if e["id"] == dev["id"])
     assert dev_after["current_version_id"] is None
+    assert dev_after["content_view_id"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -762,7 +786,7 @@ def test_trigger_delete_version_currently_live_blocked(client, operator_token, m
 
     promote_r = client.post(
         f"/lifecycle-environments/{env['id']}/promote",
-        json={"content_view_version_id": version["id"]},
+        json={"content_view_version_id": version["id"], "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
     assert promote_r.status_code == 200, promote_r.text
@@ -793,7 +817,7 @@ def test_trigger_delete_version_past_promoted_blocked(client, operator_token, mo
 
     promote_r = client.post(
         f"/lifecycle-environments/{env['id']}/promote",
-        json={"content_view_version_id": v1["id"]},
+        json={"content_view_version_id": v1["id"], "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
     assert promote_r.status_code == 200, promote_r.text
@@ -836,7 +860,7 @@ def test_trigger_delete_version_never_promoted_allowed(client, operator_token, m
     v1 = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
     promote_r = client.post(
         f"/lifecycle-environments/{env['id']}/promote",
-        json={"content_view_version_id": v1["id"]},
+        json={"content_view_version_id": v1["id"], "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
     assert promote_r.status_code == 200, promote_r.text
@@ -1001,7 +1025,7 @@ def test_delete_content_view_version_task_rechecks_promotion_race(client, operat
     # Promote AFTER the delete job was created but BEFORE the task runs.
     promote_r = client.post(
         f"/lifecycle-environments/{env['id']}/promote",
-        json={"content_view_version_id": version["id"]},
+        json={"content_view_version_id": version["id"], "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
     assert promote_r.status_code == 200, promote_r.text
@@ -1082,28 +1106,32 @@ def test_delete_content_view_not_found(client, operator_token):
     assert r.status_code == 404, r.text
 
 
-def test_delete_content_view_referenced_by_lifecycle_environment_conflicts(client, operator_token):
+def test_delete_content_view_referenced_by_lifecycle_environment_conflicts(client, operator_token, mock_aptly):
+    mock_aptly.get_mirror_packages.return_value = []
+    mock_aptly.publish_exists.return_value = False
     repo = _create_repo(client, operator_token, "delete-cv-repo3")
     cv = client.post(
         "/content-views",
         json={"name": "delete-cv3", "repository_ids": [repo["id"]]},
         headers=auth_headers(operator_token),
     ).json()
+    version_id = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]["id"]
     env_r = client.post(
-        "/lifecycle-environments",
-        json={
-            "name": "delete-cv-env",
-            "path_name": "delete-cv-path",
-            "position": 0,
-            "content_view_id": cv["id"],
-            "distro": "ubuntu",
-            "release": "jammy",
-            "publish_prefix": "delete-cv-prefix",
-            "allow_unsigned": True,
-        },
-        headers=auth_headers(operator_token),
+        "/lifecycle-environments", json={"name": "delete-cv-env"}, headers=auth_headers(operator_token)
     )
     assert env_r.status_code == 201, env_r.text
+    env = env_r.json()
+
+    # content_view_id is only set once something's actually been promoted
+    # to the environment — the delete-guard below checks an exact
+    # content_view_id reference, so this must be a real promote, not just
+    # a raw creation payload the old (pre-simplification) schema allowed.
+    promote_r = client.post(
+        f"/lifecycle-environments/{env['id']}/promote",
+        json={"content_view_version_id": version_id, "allow_unsigned": True},
+        headers=auth_headers(operator_token),
+    )
+    assert promote_r.status_code == 200, promote_r.text
 
     r = client.delete(f"/content-views/{cv['id']}", headers=auth_headers(operator_token))
     assert r.status_code == 409, r.text

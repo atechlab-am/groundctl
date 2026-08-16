@@ -1,13 +1,15 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Plus, ArrowUpCircle, RotateCcw, KeyRound } from "lucide-react";
+import { Plus, ArrowUpCircle, RotateCcw, KeyRound, Pencil } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryState } from "@/components/QueryState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   Dialog,
@@ -22,23 +24,20 @@ import { RoleGate } from "@/layout/RoleGate";
 import {
   listLifecycleEnvironments,
   createLifecycleEnvironment,
+  updateLifecycleEnvironment,
   promoteEnvironment,
   rollbackEnvironment,
   fetchEnvironmentGpgKey,
   type LifecycleEnvironmentCreate,
+  type LifecycleEnvironmentRead,
 } from "@/api/environments";
 import { errorMessage } from "@/lib/errors";
 
 const EMPTY_FORM: LifecycleEnvironmentCreate = {
   name: "",
-  path_name: "",
-  position: 0,
-  content_view_id: "",
-  distro: "",
-  release: "",
-  publish_prefix: "",
+  description: "",
+  prior_environment_id: "",
   gpg_key_id: "",
-  allow_unsigned: false,
 };
 
 export function EnvironmentsPage() {
@@ -48,6 +47,13 @@ export function EnvironmentsPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [rollbackTarget, setRollbackTarget] = useState<string | null>(null);
   const [rollbackVersionId, setRollbackVersionId] = useState("");
+  const [editingEnv, setEditingEnv] = useState<LifecycleEnvironmentRead | null>(null);
+  const [editDescription, setEditDescription] = useState("");
+  const [editGpgKeyId, setEditGpgKeyId] = useState("");
+  const [firstPromoteTarget, setFirstPromoteTarget] = useState<LifecycleEnvironmentRead | null>(null);
+  const [firstPromoteVersionId, setFirstPromoteVersionId] = useState("");
+  const [firstPromoteAllowUnsigned, setFirstPromoteAllowUnsigned] = useState(false);
+  const [firstPromoteError, setFirstPromoteError] = useState<string | null>(null);
 
   const environmentsQuery = useQuery({
     queryKey: ["environments"],
@@ -58,16 +64,32 @@ export function EnvironmentsPage() {
     mutationFn: (payload: LifecycleEnvironmentCreate) =>
       createLifecycleEnvironment({
         ...payload,
-        gpg_key_id: payload.allow_unsigned ? payload.gpg_key_id || null : payload.gpg_key_id,
+        description: payload.description || null,
+        prior_environment_id: payload.prior_environment_id || null,
+        gpg_key_id: payload.gpg_key_id || null,
       }),
     onSuccess: () => {
-      toast.success("Lifecycle environment created");
+      toast.success("Lifecycle environment created — promote something to it to finish setting it up");
       void queryClient.invalidateQueries({ queryKey: ["environments"] });
       setDialogOpen(false);
       setForm(EMPTY_FORM);
       setFormError(null);
     },
     onError: (err) => setFormError(errorMessage(err)),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: () =>
+      updateLifecycleEnvironment(editingEnv!.id, {
+        description: editDescription || null,
+        gpg_key_id: editGpgKeyId || null,
+      }),
+    onSuccess: () => {
+      toast.success("Environment updated");
+      void queryClient.invalidateQueries({ queryKey: ["environments"] });
+      setEditingEnv(null);
+    },
+    onError: (err) => toast.error(errorMessage(err)),
   });
 
   const promoteMutation = useMutation({
@@ -77,6 +99,27 @@ export function EnvironmentsPage() {
       void queryClient.invalidateQueries({ queryKey: ["environments"] });
     },
     onError: (err) => toast.error(errorMessage(err)),
+  });
+
+  // An environment with no content_view_id yet has never been promoted —
+  // "promote latest" doesn't mean anything until a content view is
+  // chosen, so this is a separate flow (dialog, explicit version id)
+  // rather than the one-click button already-linked environments use.
+  const firstPromoteMutation = useMutation({
+    mutationFn: () =>
+      promoteEnvironment(firstPromoteTarget!.id, {
+        content_view_version_id: firstPromoteVersionId,
+        allow_unsigned: firstPromoteAllowUnsigned,
+      }),
+    onSuccess: (result) => {
+      toast.success(`Promoted — live at ${result.published_url}`);
+      void queryClient.invalidateQueries({ queryKey: ["environments"] });
+      setFirstPromoteTarget(null);
+      setFirstPromoteVersionId("");
+      setFirstPromoteAllowUnsigned(false);
+      setFirstPromoteError(null);
+    },
+    onError: (err) => setFirstPromoteError(errorMessage(err)),
   });
 
   const rollbackMutation = useMutation({
@@ -112,11 +155,34 @@ export function EnvironmentsPage() {
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setFormError(null);
-    if (!form.allow_unsigned && !form.gpg_key_id) {
-      setFormError("gpg_key_id is required unless “Allow unsigned” is enabled");
+    createMutation.mutate(form);
+  }
+
+  function openEdit(env: LifecycleEnvironmentRead) {
+    setEditingEnv(env);
+    setEditDescription(env.description ?? "");
+    setEditGpgKeyId(env.gpg_key_id ?? "");
+  }
+
+  function openFirstPromote(env: LifecycleEnvironmentRead) {
+    setFirstPromoteTarget(env);
+    setFirstPromoteVersionId("");
+    setFirstPromoteAllowUnsigned(false);
+    setFirstPromoteError(null);
+  }
+
+  function handleFirstPromote(e: FormEvent) {
+    e.preventDefault();
+    if (!firstPromoteVersionId) {
+      setFirstPromoteError("content view version ID is required");
       return;
     }
-    createMutation.mutate(form);
+    if (!firstPromoteTarget!.gpg_key_id && !firstPromoteAllowUnsigned) {
+      setFirstPromoteError('gpg_key_id is required unless "Allow unsigned" is enabled');
+      return;
+    }
+    setFirstPromoteError(null);
+    firstPromoteMutation.mutate();
   }
 
   return (
@@ -138,92 +204,65 @@ export function EnvironmentsPage() {
                   <DialogHeader>
                     <DialogTitle>Create lifecycle environment</DialogTitle>
                     <DialogDescription>
-                      Requires the content view's UUID (see Content Views for ids of views you've created).
+                      Just name, description, and prior — which content view, release, and publish prefix get
+                      decided the first time you promote something to it.
                     </DialogDescription>
                   </DialogHeader>
-                  <div className="mt-4 grid grid-cols-2 gap-4">
-                    {formError && <p className="col-span-2 text-sm text-destructive">{formError}</p>}
-                    <Field label="Name" id="env-name">
+                  <div className="mt-4 flex flex-col gap-4">
+                    {formError && <p className="text-sm text-destructive">{formError}</p>}
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="env-name">Name</Label>
                       <Input
                         id="env-name"
                         value={form.name}
                         onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                         required
                       />
-                    </Field>
-                    <Field label="Path name" id="env-path">
-                      <Input
-                        id="env-path"
-                        value={form.path_name}
-                        onChange={(e) => setForm((f) => ({ ...f, path_name: e.target.value }))}
-                        placeholder="default"
-                        required
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="env-description">Description</Label>
+                      <Textarea
+                        id="env-description"
+                        value={form.description ?? ""}
+                        onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+                        placeholder="Optional"
                       />
-                    </Field>
-                    <Field label="Position" id="env-position">
-                      <Input
-                        id="env-position"
-                        type="number"
-                        min={0}
-                        value={form.position}
-                        onChange={(e) => setForm((f) => ({ ...f, position: Number(e.target.value) }))}
-                        required
-                      />
-                    </Field>
-                    <Field label="Content view ID" id="env-cv">
-                      <Input
-                        id="env-cv"
-                        value={form.content_view_id}
-                        onChange={(e) => setForm((f) => ({ ...f, content_view_id: e.target.value }))}
-                        placeholder="uuid"
-                        required
-                      />
-                    </Field>
-                    <Field label="Distro" id="env-distro">
-                      <Input
-                        id="env-distro"
-                        value={form.distro}
-                        onChange={(e) => setForm((f) => ({ ...f, distro: e.target.value }))}
-                        placeholder="ubuntu"
-                        required
-                      />
-                    </Field>
-                    <Field label="Release" id="env-release">
-                      <Input
-                        id="env-release"
-                        value={form.release}
-                        onChange={(e) => setForm((f) => ({ ...f, release: e.target.value }))}
-                        placeholder="jammy"
-                        required
-                      />
-                    </Field>
-                    <Field label="Publish prefix" id="env-prefix" full>
-                      <Input
-                        id="env-prefix"
-                        value={form.publish_prefix}
-                        onChange={(e) => setForm((f) => ({ ...f, publish_prefix: e.target.value }))}
-                        placeholder="dev"
-                        required
-                      />
-                    </Field>
-                    <Field label="GPG key ID" id="env-gpg" full>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Prior</Label>
+                      {environmentsQuery.data?.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">
+                          No environments yet — this will start a new path.
+                        </p>
+                      ) : (
+                        <Select
+                          value={form.prior_environment_id || "__none__"}
+                          onValueChange={(v) =>
+                            setForm((f) => ({ ...f, prior_environment_id: v === "__none__" ? "" : v }))
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="None — start a new path" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">None — start a new path</SelectItem>
+                            {environmentsQuery.data?.map((env) => (
+                              <SelectItem key={env.id} value={env.id}>
+                                {env.name} ({env.path_name} #{env.position})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="env-gpg">GPG key ID (optional)</Label>
                       <Input
                         id="env-gpg"
                         value={form.gpg_key_id ?? ""}
                         onChange={(e) => setForm((f) => ({ ...f, gpg_key_id: e.target.value }))}
-                        placeholder="uppercase hex fingerprint"
-                        disabled={form.allow_unsigned}
+                        placeholder="uppercase hex fingerprint — can also be set later"
                       />
-                    </Field>
-                    <div className="col-span-2 flex items-center gap-2">
-                      <Checkbox
-                        id="env-allow-unsigned"
-                        checked={form.allow_unsigned}
-                        onCheckedChange={(checked) => setForm((f) => ({ ...f, allow_unsigned: checked === true }))}
-                      />
-                      <Label htmlFor="env-allow-unsigned" className="font-normal">
-                        Allow unsigned (not recommended) — required unless a GPG key ID is set
-                      </Label>
                     </div>
                   </div>
                   <DialogFooter className="mt-6">
@@ -263,7 +302,7 @@ export function EnvironmentsPage() {
                 <TableCell className="text-muted-foreground">
                   {env.path_name} #{env.position}
                 </TableCell>
-                <TableCell>{env.publish_prefix}</TableCell>
+                <TableCell>{env.publish_prefix ?? "—"}</TableCell>
                 <TableCell className="font-mono text-xs text-muted-foreground">
                   {env.current_version_id ? env.current_version_id.slice(0, 8) : "unpublished"}
                 </TableCell>
@@ -279,15 +318,26 @@ export function EnvironmentsPage() {
                       </Button>
                     )}
                     <RoleGate minRole="operator">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={promoteMutation.isPending && promoteMutation.variables === env.id}
-                        onClick={() => promoteMutation.mutate(env.id)}
-                      >
-                        <ArrowUpCircle className="h-3.5 w-3.5" />
-                        Promote
+                      <Button variant="outline" size="sm" onClick={() => openEdit(env)}>
+                        <Pencil className="h-3.5 w-3.5" />
+                        Edit
                       </Button>
+                      {env.content_view_id === null ? (
+                        <Button variant="outline" size="sm" onClick={() => openFirstPromote(env)}>
+                          <ArrowUpCircle className="h-3.5 w-3.5" />
+                          Promote…
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={promoteMutation.isPending && promoteMutation.variables === env.id}
+                          onClick={() => promoteMutation.mutate(env.id)}
+                        >
+                          <ArrowUpCircle className="h-3.5 w-3.5" />
+                          Promote
+                        </Button>
+                      )}
                       <Dialog
                         open={rollbackTarget === env.id}
                         onOpenChange={(open) => setRollbackTarget(open ? env.id : null)}
@@ -335,25 +385,100 @@ export function EnvironmentsPage() {
           </TableBody>
         </Table>
       </QueryState>
-    </div>
-  );
-}
 
-function Field({
-  label,
-  id,
-  children,
-  full,
-}: {
-  label: string;
-  id: string;
-  children: ReactNode;
-  full?: boolean;
-}) {
-  return (
-    <div className={`flex flex-col gap-1.5 ${full ? "col-span-2" : ""}`}>
-      <Label htmlFor={id}>{label}</Label>
-      {children}
+      <Dialog open={editingEnv !== null} onOpenChange={(open) => !open && setEditingEnv(null)}>
+        <DialogContent>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              updateMutation.mutate();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>Edit {editingEnv?.name}</DialogTitle>
+              <DialogDescription>
+                Description and signing key only — everything else is locked in once set by a promote.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-4 flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="edit-env-description">Description</Label>
+                <Textarea
+                  id="edit-env-description"
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  placeholder="Optional"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="edit-env-gpg">GPG key ID</Label>
+                <Input
+                  id="edit-env-gpg"
+                  value={editGpgKeyId}
+                  onChange={(e) => setEditGpgKeyId(e.target.value)}
+                  placeholder="uppercase hex fingerprint"
+                />
+              </div>
+            </div>
+            <DialogFooter className="mt-6">
+              <Button type="button" variant="outline" onClick={() => setEditingEnv(null)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={updateMutation.isPending}>
+                {updateMutation.isPending ? "Saving…" : "Save"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={firstPromoteTarget !== null} onOpenChange={(open) => !open && setFirstPromoteTarget(null)}>
+        <DialogContent>
+          <form onSubmit={handleFirstPromote}>
+            <DialogHeader>
+              <DialogTitle>Promote {firstPromoteTarget?.name}</DialogTitle>
+              <DialogDescription>
+                This environment has never been promoted — pick a content view version to publish. This
+                permanently ties the environment to that version's content view; every later promote must use
+                another version of the same one.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-4 flex flex-col gap-4">
+              {firstPromoteError && <p className="text-sm text-destructive">{firstPromoteError}</p>}
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="first-promote-version">Content view version ID</Label>
+                <Input
+                  id="first-promote-version"
+                  value={firstPromoteVersionId}
+                  onChange={(e) => setFirstPromoteVersionId(e.target.value)}
+                  placeholder="uuid — see Content Views for ids of versions you've published"
+                  required
+                />
+              </div>
+              {!firstPromoteTarget?.gpg_key_id && (
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="first-promote-allow-unsigned"
+                    checked={firstPromoteAllowUnsigned}
+                    onCheckedChange={(checked) => setFirstPromoteAllowUnsigned(checked === true)}
+                  />
+                  <Label htmlFor="first-promote-allow-unsigned" className="cursor-pointer font-normal">
+                    Allow unsigned (not recommended) — this environment has no GPG key configured
+                  </Label>
+                </div>
+              )}
+            </div>
+            <DialogFooter className="mt-6">
+              <Button type="button" variant="outline" onClick={() => setFirstPromoteTarget(null)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={firstPromoteMutation.isPending}>
+                {firstPromoteMutation.isPending ? "Promoting…" : "Promote"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

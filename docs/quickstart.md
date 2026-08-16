@@ -114,42 +114,63 @@ Publishing cuts an immutable **content view version** — a snapshot of every me
 ```bash
 curl -X POST https://<HOST>/api/content-views/$CV_ID/publish -H "Authorization: Bearer $TOKEN"
 # {"content_view_version": {"id": "...", "version": 1, ...}, "version_cut": true}
+# save the version's "id" as $VERSION_ID
 ```
 
 ## 5. Create a lifecycle environment and promote into it
 
-A **lifecycle environment** is a named slot in an ordered **path** (e.g. `library` → `dev` → `qa` → `prod`, all sharing one `path_name`, each with an incrementing `position`). Promoting points an environment's publish prefix at a specific content view version.
-
-GPG signing is on by default (see [`docs/gpg-signing.md`](gpg-signing.md))
-— creating an environment requires `gpg_key_id` unless you explicitly pass
-`allow_unsigned: true`. This example opts out for simplicity; for anything
-beyond a lab, generate a real signing key first and pass its fingerprint
-as `gpg_key_id` instead.
+A **lifecycle environment** is a named slot in an ordered **path** (e.g.
+`library` → `dev` → `qa` → `prod`). Creating one only asks for name,
+description, and its **prior** (predecessor in the path) — matches
+Satellite's own "New Lifecycle Environment" dialog. Everything
+apt-specific (which content view, release, publish prefix) is deferred to
+the environment's first promote, derived from whatever version you push
+to it there — not asked up front.
 
 ```bash
 curl -X POST https://<HOST>/api/lifecycle-environments \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{
-    "name": "jammy-library",
-    "path_name": "default",
-    "position": 0,
-    "content_view_id": "'$CV_ID'",
-    "distro": "ubuntu",
-    "release": "jammy",
-    "publish_prefix": "jammy-library",
-    "allow_unsigned": true
-  }'
-# save the returned "id" as $ENV_ID
+  -d '{"name": "jammy-library", "description": "First environment on the default path"}'
+# save the returned "id" as $ENV_ID — prior_environment_id omitted, so this
+# starts a new path at position 0
 
 curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/promote \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}'
-# omitting content_view_version_id promotes the content view's latest version
-# — jammy-library is now live at https://<FLEET_HOSTNAME>:8080/jammy-library/
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"content_view_version_id": "'$VERSION_ID'", "allow_unsigned": true}'
+# content_view_version_id is REQUIRED on an environment's first promote —
+# this is the moment it gets permanently tied to that content view, and
+# its release/publish_prefix get derived (publish_prefix = the
+# environment's own name). GPG signing is on by default (see
+# docs/gpg-signing.md) — allow_unsigned=true opts out for this example;
+# for anything beyond a lab, PATCH the environment with a real gpg_key_id
+# first instead (see step 5b), or pass it directly here.
+#
+# jammy-library is now live at https://<FLEET_HOSTNAME>:8080/jammy-library/
 # (8080 is install.sh's default nginx port, self-signed HTTPS by default —
 # see docs/install.md and docs/https.md)
 ```
 
-**Path enforcement**: an environment at `position` N can only be promoted into once the environment at `position` N-1 in the same `path_name` already has that version live. `position=0` has no such gate. Create a second environment at `position=1` and promote the same way — skipping straight to `position=2` before `position=1` has ever had the version returns `409`.
+Every promote *after* the first one drops back to the simple form — no
+`allow_unsigned`, and omitting `content_view_version_id` promotes the
+content view's latest version:
+
+```bash
+curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/promote \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}'
+```
+
+**Path enforcement**: an environment at position N can only be promoted into once the environment at position N-1 in the same path already has that version live. Position 0 has no such gate. Create a second environment with `"prior_environment_id": "'$ENV_ID'"` and promote the same way — skipping straight past it before it's ever had the version returns `409`.
+
+### 5b. Set a signing key before first promote (optional)
+
+```bash
+curl -X PATCH https://<HOST>/api/lifecycle-environments/$ENV_ID \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"gpg_key_id": "YOUR_KEY_FINGERPRINT"}'
+```
+
+Also how you set/change an environment's description, or add a key it
+didn't have at creation, any time — not just before the first promote.
 
 ## 6. Add a server
 

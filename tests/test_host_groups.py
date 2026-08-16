@@ -37,22 +37,30 @@ def _create_cv(client, operator_token, repo, name="cv"):
 
 
 def _create_env(client, operator_token, cv, name="dev", path_name="main", position=0, publish_prefix="dev"):
-    r = client.post(
-        "/lifecycle-environments",
-        json={
-            "name": name,
-            "path_name": path_name,
-            "position": position,
-            "content_view_id": cv["id"],
-            "distro": "ubuntu",
-            "release": "jammy",
-            "publish_prefix": publish_prefix,
-            "allow_unsigned": True,
-        },
+    # path_name/position/publish_prefix are no longer creation-time fields
+    # (see LifecycleEnvironmentCreate) — publish_prefix is derived from
+    # `name` at first promote instead. This helper immediately promotes
+    # the content view's already-published version 1 so callers keep
+    # getting back a fully linked, published environment exactly like
+    # before. No caller in this file uses position>0, so prior-chaining
+    # isn't needed here.
+    r = client.post("/lifecycle-environments", json={"name": name}, headers=auth_headers(operator_token))
+    assert r.status_code == 201, r.text
+    env = r.json()
+
+    versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
+    version_id = versions_r.json()[0]["id"]
+    promote_r = client.post(
+        f"/lifecycle-environments/{env['id']}/promote",
+        json={"content_view_version_id": version_id, "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
-    assert r.status_code == 201, r.text
-    return r.json()
+    assert promote_r.status_code == 200, promote_r.text
+
+    get_r = client.get(
+        "/lifecycle-environments", params={"content_view_id": cv["id"]}, headers=auth_headers(operator_token)
+    )
+    return next(e for e in get_r.json() if e["id"] == env["id"])
 
 
 def _create_server(client, operator_token, env, hostname="host1.example.com"):

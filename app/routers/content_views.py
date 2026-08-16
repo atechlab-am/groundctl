@@ -652,10 +652,30 @@ def trigger_publish_and_promote(
     content_view = _get_content_view_or_404(db, content_view_id)
 
     environment = db.get(LifecycleEnvironment, payload.environment_id)
-    if environment is None or environment.content_view_id != content_view.id:
+    # None matches too — an environment's content_view_id is deferred
+    # until its first-ever promote (lifecycle_environments.py's
+    # promote_environment); this may BE that first promote, in which case
+    # do_promote/publish_and_promote_task locks the environment to THIS
+    # content view. Once set, every later promote must match it exactly,
+    # same as before.
+    if environment is None or (
+        environment.content_view_id is not None and environment.content_view_id != content_view.id
+    ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="lifecycle environment not found for this content view",
+        )
+
+    if environment.content_view_id is None and environment.gpg_key_id is None and not payload.allow_unsigned:
+        # Fail fast, before a Job is even created — same "validate before
+        # dispatching work" posture promote_environment uses for the
+        # equivalent synchronous case.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "this environment has no signing key configured — set one via PATCH, or pass "
+                "allow_unsigned=true explicitly to publish unsigned (see docs/gpg-signing.md)"
+            ),
         )
 
     job = Job(
@@ -677,6 +697,7 @@ def trigger_publish_and_promote(
                 "environment_id": str(environment.id),
                 "force": payload.force,
                 "description": payload.description,
+                "allow_unsigned": payload.allow_unsigned,
             },
         )
     )

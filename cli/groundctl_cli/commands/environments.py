@@ -1,4 +1,4 @@
-"""groundctl environment create|list|promote|rollback|gpg-key
+"""groundctl environment create|update|list|promote|rollback|gpg-key
 
 Maps to /lifecycle-environments/* (domain term stays "environment" per
 CLAUDE.md — "lifecycle environment" is the full domain term, "environment"
@@ -21,36 +21,47 @@ app = typer.Typer(no_args_is_help=True)
 def create(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="aptly object name: letters, numbers, dots, underscores, hyphens only."),
-    path_name: str = typer.Option(..., "--path-name", help="Promotion path this environment belongs to, e.g. 'default'."),
-    position: int = typer.Option(..., "--position", help="Position within the path (0 = first, no predecessor)."),
-    content_view_id: uuid.UUID = typer.Option(..., "--content-view-id"),
-    distro: str = typer.Option(..., "--distro"),
-    release: str = typer.Option(..., "--release", help="apt sources.list distribution field."),
-    publish_prefix: str = typer.Option(..., "--publish-prefix", help="aptly publish prefix / stable URL path."),
-    gpg_key_id: str = typer.Option(
-        None, "--gpg-key-id", help="Uppercase hex GPG key ID/fingerprint (16-40 chars). Required unless --allow-unsigned."
+    description: str = typer.Option(None, "--description"),
+    prior_environment_id: uuid.UUID = typer.Option(
+        None,
+        "--prior-environment-id",
+        help="Insert this environment right after another one in its promotion path. Omit to start a new path at position 0.",
     ),
-    allow_unsigned: bool = typer.Option(
-        False,
-        "--allow-unsigned",
-        help="Explicit opt-out of GPG signing (logged, see docs/gpg-signing.md). Off by default.",
+    gpg_key_id: str = typer.Option(
+        None, "--gpg-key-id", help="Uppercase hex GPG key ID/fingerprint (16-40 chars). Can also be set later via `update`."
     ),
 ) -> None:
-    """Create a lifecycle environment."""
+    """Create a lifecycle environment. Matches Satellite's own "New
+    Lifecycle Environment" dialog — just name/description/prior.
+    content_view_id/release/publish_prefix are NOT set here; they're
+    derived automatically the first time you `promote` something to it."""
     output = get_output(ctx)
     payload = {
         "name": name,
-        "path_name": path_name,
-        "position": position,
-        "content_view_id": str(content_view_id),
-        "distro": distro,
-        "release": release,
-        "publish_prefix": publish_prefix,
+        "description": description,
+        "prior_environment_id": str(prior_environment_id) if prior_environment_id else None,
         "gpg_key_id": gpg_key_id,
-        "allow_unsigned": allow_unsigned,
     }
     with authed_client() as client:
         response = client.post("/lifecycle-environments", json=payload)
+    render_item(response.json(), output=output)
+
+
+@app.command()
+def update(
+    ctx: typer.Context,
+    environment_id: uuid.UUID = typer.Argument(..., help="Environment UUID."),
+    description: str = typer.Option(None, "--description"),
+    gpg_key_id: str = typer.Option(None, "--gpg-key-id"),
+) -> None:
+    """Set description and/or gpg_key_id. This is how you add a signing
+    key to an environment before its first promote (otherwise `promote`
+    requires --allow-unsigned). Everything else (content_view_id/release/
+    publish_prefix) is locked in by `promote` and can't be changed here."""
+    output = get_output(ctx)
+    payload = {"description": description, "gpg_key_id": gpg_key_id}
+    with authed_client() as client:
+        response = client.patch(f"/lifecycle-environments/{environment_id}", json=payload)
     render_item(response.json(), output=output)
 
 
@@ -58,7 +69,14 @@ def create(
 def list_environments(
     ctx: typer.Context,
     path_name: str = typer.Option(None, "--path-name"),
-    content_view_id: uuid.UUID = typer.Option(None, "--content-view-id"),
+    content_view_id: uuid.UUID = typer.Option(
+        None, "--content-view-id", help="Exact match only — excludes environments never promoted yet."
+    ),
+    promotable_for_content_view_id: uuid.UUID = typer.Option(
+        None,
+        "--promotable-for-content-view-id",
+        help="Environments already tied to this content view, OR never promoted anywhere yet (valid first-promote targets).",
+    ),
     limit: int = typer.Option(100, "--limit"),
     offset: int = typer.Option(0, "--offset"),
 ) -> None:
@@ -70,6 +88,9 @@ def list_environments(
             params={
                 "path_name": path_name,
                 "content_view_id": str(content_view_id) if content_view_id else None,
+                "promotable_for_content_view_id": (
+                    str(promotable_for_content_view_id) if promotable_for_content_view_id else None
+                ),
                 "limit": limit,
                 "offset": offset,
             },
@@ -84,7 +105,13 @@ def promote(
     content_view_version_id: uuid.UUID = typer.Option(
         None,
         "--content-view-version-id",
-        help="Version to promote to. Omit to publish-if-needed and promote the content view's latest version.",
+        help="Version to promote to. REQUIRED on this environment's first-ever promote (that's the moment it gets "
+        "tied to a content view). Omit on later promotes to publish-if-needed and promote the latest version.",
+    ),
+    allow_unsigned: bool = typer.Option(
+        False,
+        "--allow-unsigned",
+        help="Only consulted on a first promote when the environment has no gpg_key_id set (see `update`).",
     ),
 ) -> None:
     """Re-point an environment's publish prefix at an existing content view
@@ -92,7 +119,8 @@ def promote(
     immutable-snapshot invariant)."""
     output = get_output(ctx)
     payload = {
-        "content_view_version_id": str(content_view_version_id) if content_view_version_id else None
+        "content_view_version_id": str(content_view_version_id) if content_view_version_id else None,
+        "allow_unsigned": allow_unsigned,
     }
     with authed_client() as client:
         response = client.post(f"/lifecycle-environments/{environment_id}/promote", json=payload)

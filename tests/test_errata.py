@@ -53,20 +53,13 @@ def _create_cv(client, operator_token, repo, name="cv"):
 
 
 def _create_env(client, operator_token, cv, name="dev", path_name="main", position=0, publish_prefix="dev"):
-    r = client.post(
-        "/lifecycle-environments",
-        json={
-            "name": name,
-            "path_name": path_name,
-            "position": position,
-            "content_view_id": cv["id"],
-            "distro": "ubuntu",
-            "release": "jammy",
-            "publish_prefix": publish_prefix,
-            "allow_unsigned": True,
-        },
-        headers=auth_headers(operator_token),
-    )
+    # path_name/position/content_view_id/publish_prefix are no longer
+    # creation-time fields (see LifecycleEnvironmentCreate). No test in
+    # this file exercises bootstrap/checkin, so an unpromoted environment
+    # (content_view_id/publish_prefix/release staying null) is harmless —
+    # cv/path_name/position/publish_prefix args kept for call-site
+    # compatibility only.
+    r = client.post("/lifecycle-environments", json={"name": name}, headers=auth_headers(operator_token))
     assert r.status_code == 201, r.text
     return r.json()
 

@@ -53,7 +53,7 @@ from app.models import (
 )
 from app.routers.compliance import ComplianceDataNotReadyError, do_check_compliance
 from app.routers.content_views import do_publish, version_ever_promoted
-from app.routers.lifecycle_environments import do_promote
+from app.routers.lifecycle_environments import derive_release_for_content_view, do_promote
 from app.routers.repositories import do_sync_repository
 from app.version_check import refresh_version_check
 from app.webhooks import send_webhook
@@ -500,6 +500,16 @@ def bootstrap_task(self, job_id: str) -> str:
         environment = db.get(LifecycleEnvironment, server.environment_id)
         if environment is None:
             raise ValueError(f"server {server.id}'s environment no longer exists")
+        if environment.publish_prefix is None or environment.release is None:
+            # publish_prefix/release are deferred to the environment's
+            # FIRST promote (see lifecycle_environments.py's
+            # promote_environment) — a server can be assigned to an
+            # environment that's never had anything promoted to it yet,
+            # and there's no apt source to bootstrap against until then.
+            raise ValueError(
+                f"environment {environment.id} ('{environment.name}') has never been promoted — "
+                "nothing to bootstrap against yet"
+            )
 
         version = (
             db.get(ContentViewVersion, environment.current_version_id)
@@ -857,6 +867,7 @@ def publish_and_promote_task(self, job_id: str) -> str:
         content_view_id = uuid.UUID(audit.detail["content_view_id"])
         force = audit.detail["force"]
         description = audit.detail["description"]
+        allow_unsigned = audit.detail.get("allow_unsigned", False)
 
         environment = db.get(LifecycleEnvironment, job.environment_id)
         if environment is None:
@@ -894,6 +905,28 @@ def publish_and_promote_task(self, job_id: str) -> str:
                 f" — promoting to {environment.name}…"
             )
             db.commit()
+
+            if environment.content_view_id is None:
+                # First-ever promote for this environment — derive/lock
+                # content_view_id/release/publish_prefix, same as
+                # promote_environment's is_first_promote branch
+                # (lifecycle_environments.py). Re-checks the signing guard
+                # here too (already validated at trigger time in
+                # trigger_publish_and_promote, but this closes the race
+                # window between that request and this task running, same
+                # pattern as every other re-check in this file).
+                if environment.gpg_key_id is None and not allow_unsigned:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "this environment has no signing key configured — set one via PATCH, "
+                            "or the request must pass allow_unsigned=true"
+                        ),
+                    )
+                environment.content_view_id = content_view.id
+                environment.release = derive_release_for_content_view(db, content_view.id)
+                environment.publish_prefix = environment.name
+
             do_promote(environment, version, db, aptly, user)
 
             _mark_job(
@@ -1433,6 +1466,11 @@ def scheduled_sync_relays() -> str:
                     .join(SiteEnvironment, SiteEnvironment.environment_id == LifecycleEnvironment.id)
                     .where(SiteEnvironment.site_id == relay.site_id)
                 ).scalars()
+                # publish_prefix is null until an environment's first
+                # promote (lifecycle_environments.py) — nothing published
+                # yet means nothing for a relay to sync for that
+                # environment, not a groundctl_prefixes entry of "None".
+                if env.publish_prefix is not None
             ]
             if not prefixes:
                 continue

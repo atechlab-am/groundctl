@@ -417,6 +417,10 @@ class PublishAndPromoteRequest(BaseModel):
     # PATCH /content-views/{id}/versions/{version_id}, just set in one
     # step instead of a separate call after the fact.
     description: str | None = None
+    # Same semantics as PromoteRequest.allow_unsigned — only consulted if
+    # this is the target environment's first-ever promote and it has no
+    # gpg_key_id configured.
+    allow_unsigned: bool = False
 
 
 # A package name or a simple wildcard/regex pattern, per aptly's query
@@ -469,51 +473,42 @@ class ContentViewFilterRead(BaseModel):
 
 
 class LifecycleEnvironmentCreate(BaseModel):
+    """Matches Satellite's own "New Lifecycle Environment" dialog: name,
+    description, and prior (predecessor in the promotion path). Everything
+    apt-specific — which content view, release, publish_prefix — is
+    deferred to the environment's first promote (do_promote,
+    lifecycle_environments.py), derived from whatever version gets pushed
+    to it, instead of asked up front. gpg_key_id stays optional here for
+    an operator who already knows their signing key; if left unset, the
+    signed-vs-unsigned choice is enforced at first-promote time instead
+    (see PromoteRequest.allow_unsigned) — CLAUDE.md's "signing on by
+    default, unsigned an explicit opt-out" posture still applies, just at
+    the point content actually gets published rather than at creation.
+    """
+
     name: str
-    path_name: str
-    position: int = Field(ge=0)
-    content_view_id: uuid.UUID
-    distro: str
-    release: str
-    publish_prefix: str
-    # GPG signing is on-by-default per CLAUDE.md: gpg_key_id is required
-    # unless allow_unsigned is explicitly set, which is the documented,
-    # logged opt-out (see docs/gpg-signing.md) — not silently permitted.
+    description: str | None = None
+    # None = start a new path at position 0 (path_name = this
+    # environment's own name). Set = insert immediately after that
+    # environment in its existing path (same path_name, position + 1).
+    prior_environment_id: uuid.UUID | None = None
     gpg_key_id: str | None = None
-    # validate_default=True: without it, pydantic v2 skips field validators
-    # entirely for a field left at its default (allow_unsigned omitted from
-    # the request body is the exact case this check exists for) — a real
-    # bug caught by live verification, since the omitted-field case is the
-    # one that matters most here.
-    allow_unsigned: bool = Field(default=False, validate_default=True)
 
     _validate_name = field_validator("name")(validate_aptly_name)
-    _validate_release = field_validator("release")(validate_sources_list_field)
-    _validate_publish_prefix = field_validator("publish_prefix")(validate_sources_list_field)
     _validate_gpg_key_id = field_validator("gpg_key_id")(
         lambda v: validate_gpg_key_id(v) if v is not None else v
     )
-
-    @field_validator("allow_unsigned")
-    @classmethod
-    def _validate_signing_choice(cls, v: bool, info) -> bool:
-        if not v and info.data.get("gpg_key_id") is None:
-            raise ValueError(
-                "gpg_key_id is required unless allow_unsigned=true is explicitly set "
-                "(see docs/gpg-signing.md)"
-            )
-        return v
 
 
 class LifecycleEnvironmentRead(BaseModel):
     id: uuid.UUID
     name: str
+    description: str | None
     path_name: str
     position: int
-    content_view_id: uuid.UUID
-    distro: str
-    release: str
-    publish_prefix: str
+    content_view_id: uuid.UUID | None
+    release: str | None
+    publish_prefix: str | None
     current_version_id: uuid.UUID | None
     gpg_key_id: str | None
     created_at: datetime
@@ -522,9 +517,37 @@ class LifecycleEnvironmentRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class LifecycleEnvironmentUpdate(BaseModel):
+    """Both fields optional/independent — a caller sets whichever it wants
+    to change, omitted fields are left untouched (unlike
+    ContentViewVersionUpdate's single-field description-or-clear shape,
+    this has two fields that can be updated separately, so `None` isn't
+    usable as "no change" for gpg_key_id specifically — see the router's
+    exclude_unset handling).
+    """
+
+    description: str | None = None
+    gpg_key_id: str | None = None
+
+    _validate_gpg_key_id = field_validator("gpg_key_id")(
+        lambda v: validate_gpg_key_id(v) if v is not None else v
+    )
+
+
 class PromoteRequest(BaseModel):
-    # Omit to promote the content view's latest version.
+    # Omit to promote the content view's latest version — only valid once
+    # the environment already has a content_view_id (i.e. not its first
+    # promote; do_promote requires this explicitly on a never-promoted
+    # environment, since there's no "the content view" to default to yet).
     content_view_version_id: uuid.UUID | None = None
+    # Only consulted on an environment's FIRST promote (content_view_id is
+    # still None) — locks in the environment's permanent signing posture
+    # at the same moment publish_prefix/release/content_view_id get
+    # derived. Ignored on every later promote (the environment's gpg_key_id,
+    # set at creation or by this first promote, governs from then on).
+    # Same enforcement LifecycleEnvironmentCreate used to do at creation
+    # time: gpg_key_id required unless allow_unsigned=true is explicit.
+    allow_unsigned: bool = False
 
 
 class PromoteResponse(BaseModel):

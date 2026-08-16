@@ -75,13 +75,14 @@ export function ContentViewDetailPage() {
     queryFn: () => listContentViewFilters(contentViewId),
   });
 
-  // Only environments whose content_view_id is this one are valid promote
-  // targets — promoteEnvironment resolves the version against the
-  // environment's OWN content_view_id server-side, so offering an
-  // environment on a different content view would just 404.
+  // Valid promote targets: environments already tied to this content
+  // view, OR never promoted anywhere yet (any content view can be their
+  // first — see promotable_for_content_view_id's docstring, app/routers/
+  // lifecycle_environments.py). An environment tied to a DIFFERENT
+  // content view is correctly excluded either way.
   const environmentsQuery = useQuery({
     queryKey: ["lifecycle-environments", "content-view", contentViewId],
-    queryFn: () => listLifecycleEnvironments({ content_view_id: contentViewId, limit: 100 }),
+    queryFn: () => listLifecycleEnvironments({ promotable_for_content_view_id: contentViewId, limit: 100 }),
   });
 
   const filterMutation = useMutation({
@@ -108,13 +109,17 @@ export function ContentViewDetailPage() {
   const [createDescription, setCreateDescription] = useState("");
   const [createPromoteNow, setCreatePromoteNow] = useState(false);
   const [createEnvironmentId, setCreateEnvironmentId] = useState("");
+  const [createAllowUnsigned, setCreateAllowUnsigned] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
   const environmentsForCreateQuery = useQuery({
     queryKey: ["lifecycle-environments", "content-view", contentViewId],
-    queryFn: () => listLifecycleEnvironments({ content_view_id: contentViewId, limit: 100 }),
+    queryFn: () => listLifecycleEnvironments({ promotable_for_content_view_id: contentViewId, limit: 100 }),
     enabled: createDialogOpen && createPromoteNow,
   });
+
+  const selectedCreateEnv = environmentsForCreateQuery.data?.find((env) => env.id === createEnvironmentId);
+  const createNeedsSigningChoice = selectedCreateEnv?.content_view_id === null && !selectedCreateEnv?.gpg_key_id;
 
   // Always cuts a new version, even with nothing changed since the latest
   // (a version doubles as a promotion checkpoint, not purely a
@@ -137,6 +142,7 @@ export function ContentViewDetailPage() {
           environment_id: createEnvironmentId,
           force: true,
           description: createDescription || null,
+          allow_unsigned: createAllowUnsigned,
         });
         return { kind: "job" as const, job };
       }
@@ -151,6 +157,7 @@ export function ContentViewDetailPage() {
       setCreateDescription("");
       setCreatePromoteNow(false);
       setCreateEnvironmentId("");
+      setCreateAllowUnsigned(false);
       setCreateError(null);
       if (result.kind === "job") {
         toast.success("Version creation + promotion started");
@@ -168,6 +175,7 @@ export function ContentViewDetailPage() {
     setCreateDescription("");
     setCreatePromoteNow(false);
     setCreateEnvironmentId("");
+    setCreateAllowUnsigned(false);
     setCreateError(null);
     setCreateDialogOpen(true);
   }
@@ -176,6 +184,10 @@ export function ContentViewDetailPage() {
     e.preventDefault();
     if (createPromoteNow && !createEnvironmentId) {
       setCreateError("select an environment to promote to");
+      return;
+    }
+    if (createPromoteNow && createNeedsSigningChoice && !createAllowUnsigned) {
+      setCreateError('this environment has no signing key configured — enable "Allow unsigned" to proceed');
       return;
     }
     setCreateError(null);
@@ -194,17 +206,27 @@ export function ContentViewDetailPage() {
 
   const [promotingVersion, setPromotingVersion] = useState<ContentViewVersionRead | null>(null);
   const [promoteEnvironmentId, setPromoteEnvironmentId] = useState<string>("");
+  const [promoteAllowUnsigned, setPromoteAllowUnsigned] = useState(false);
   const [promoteError, setPromoteError] = useState<string | null>(null);
+
+  const selectedPromoteEnv = environmentsQuery.data?.find((env) => env.id === promoteEnvironmentId);
+  // Only relevant on an environment's first promote (content_view_id
+  // still null) — every later promote reuses its already-locked-in
+  // gpg_key_id, this field is ignored server-side by then.
+  const promoteNeedsSigningChoice =
+    selectedPromoteEnv?.content_view_id === null && !selectedPromoteEnv?.gpg_key_id;
 
   const promoteMutation = useMutation({
     mutationFn: () =>
       promoteEnvironment(promoteEnvironmentId, {
         content_view_version_id: promotingVersion!.id,
+        allow_unsigned: promoteAllowUnsigned,
       }),
     onSuccess: (result) => {
       toast.success(`Promoted version ${promotingVersion!.version} — live at ${result.published_url}`);
       setPromotingVersion(null);
       setPromoteEnvironmentId("");
+      setPromoteAllowUnsigned(false);
       setPromoteError(null);
       void queryClient.invalidateQueries({ queryKey: ["lifecycle-environments", "content-view", contentViewId] });
     },
@@ -214,6 +236,7 @@ export function ContentViewDetailPage() {
   function openPromote(version: ContentViewVersionRead) {
     setPromotingVersion(version);
     setPromoteEnvironmentId("");
+    setPromoteAllowUnsigned(false);
     setPromoteError(null);
   }
 
@@ -221,6 +244,10 @@ export function ContentViewDetailPage() {
     e.preventDefault();
     if (!promoteEnvironmentId) {
       setPromoteError("select an environment");
+      return;
+    }
+    if (promoteNeedsSigningChoice && !promoteAllowUnsigned) {
+      setPromoteError('this environment has no signing key configured — enable "Allow unsigned" to proceed');
       return;
     }
     setPromoteError(null);
@@ -541,12 +568,25 @@ export function ContentViewDetailPage() {
                       {environmentsQuery.data?.map((env) => (
                         <SelectItem key={env.id} value={env.id}>
                           {env.name} ({env.path_name}, position {env.position})
+                          {env.content_view_id === null ? " — never promoted" : ""}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 )}
               </div>
+              {promoteNeedsSigningChoice && (
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="promote-allow-unsigned"
+                    checked={promoteAllowUnsigned}
+                    onCheckedChange={(checked) => setPromoteAllowUnsigned(checked === true)}
+                  />
+                  <Label htmlFor="promote-allow-unsigned" className="cursor-pointer font-normal">
+                    Allow unsigned (not recommended) — this environment has no GPG key configured
+                  </Label>
+                </div>
+              )}
             </div>
             <DialogFooter className="mt-6">
               <Button type="button" variant="outline" onClick={() => setPromotingVersion(null)}>
@@ -642,11 +682,24 @@ export function ContentViewDetailPage() {
                         {environmentsForCreateQuery.data?.map((env) => (
                           <SelectItem key={env.id} value={env.id}>
                             {env.name} ({env.path_name}, position {env.position})
+                            {env.content_view_id === null ? " — never promoted" : ""}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
                   )}
+                </div>
+              )}
+              {createPromoteNow && createNeedsSigningChoice && (
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="create-allow-unsigned"
+                    checked={createAllowUnsigned}
+                    onCheckedChange={(checked) => setCreateAllowUnsigned(checked === true)}
+                  />
+                  <Label htmlFor="create-allow-unsigned" className="cursor-pointer font-normal">
+                    Allow unsigned (not recommended) — this environment has no GPG key configured
+                  </Label>
                 </div>
               )}
             </div>

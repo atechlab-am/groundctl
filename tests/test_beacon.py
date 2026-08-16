@@ -38,22 +38,31 @@ def _create_cv(client, operator_token, repo, name="beacon-cv"):
 
 
 def _create_env(client, operator_token, cv, name="beacon-env", path_name="beacon-path", position=0, publish_prefix="beacon-prefix"):
-    r = client.post(
-        "/lifecycle-environments",
-        json={
-            "name": name,
-            "path_name": path_name,
-            "position": position,
-            "content_view_id": cv["id"],
-            "distro": "ubuntu",
-            "release": "jammy",
-            "publish_prefix": publish_prefix,
-            "allow_unsigned": True,
-        },
+    # path_name/position/content_view_id/publish_prefix are no longer
+    # creation-time fields (see LifecycleEnvironmentCreate) — every beacon
+    # checkin call in this file needs a genuinely PROMOTED environment now
+    # (checkin hard-fails with RuntimeError if publish_prefix/release are
+    # still null — app/routers/beacon.py), so this helper creates then
+    # immediately promotes the content view's already-published version 1.
+    # cv/path_name/position/publish_prefix args kept for call-site
+    # compatibility; only `name` and `cv` actually matter now.
+    r = client.post("/lifecycle-environments", json={"name": name}, headers=auth_headers(operator_token))
+    assert r.status_code == 201, r.text
+    env = r.json()
+
+    versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
+    version_id = versions_r.json()[0]["id"]
+    promote_r = client.post(
+        f"/lifecycle-environments/{env['id']}/promote",
+        json={"content_view_version_id": version_id, "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
-    assert r.status_code == 201, r.text
-    return r.json()
+    assert promote_r.status_code == 200, promote_r.text
+
+    get_r = client.get(
+        "/lifecycle-environments", params={"content_view_id": cv["id"]}, headers=auth_headers(operator_token)
+    )
+    return next(e for e in get_r.json() if e["id"] == env["id"])
 
 
 def _make_environment(client, operator_token, suffix="1"):

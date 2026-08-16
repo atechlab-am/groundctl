@@ -126,6 +126,9 @@ export interface PublishAndPromoteRequest {
   environment_id: string;
   force?: boolean;
   description?: string | null;
+  // Only consulted on the target environment's first-ever promote, when
+  // it has no gpg_key_id set.
+  allow_unsigned?: boolean;
 }
 
 // Cuts a new version (with an optional description) and promotes it to
