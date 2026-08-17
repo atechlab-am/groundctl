@@ -1108,7 +1108,7 @@ def test_publish_and_promote_task_rejects_environment_belonging_to_different_con
     # Same mismatch, but reached by calling the task directly against a
     # job row that (however it got there) targets the wrong content
     # view — the task's own guard must independently reject it too.
-    from app.models import Job, JobStatus, JobTargetType, JobType
+    from app.models import Job, JobTargetType, JobType
 
     job = Job(
         job_type=JobType.publish_and_promote,
