@@ -16,6 +16,7 @@ from app.models import (
     ContentViewFilter,
     ContentViewRepository,
     ContentViewVersion,
+    EnvironmentContentView,
     Erratum,
     ErratumPackage,
     FilterType,
@@ -34,6 +35,7 @@ from app.schemas import (
     ContentViewRead,
     ContentViewVersionRead,
     ContentViewVersionUpdate,
+    EnvironmentContentViewRead,
     JobRead,
     PublishAndPromoteRequest,
     PublishRequest,
@@ -71,17 +73,17 @@ def _get_content_view_or_404(db: Session, content_view_id: uuid.UUID) -> Content
 
 
 def _referencing_lifecycle_environment_names(db: Session, content_view_id: uuid.UUID) -> list[str]:
-    # Excludes is_library — every content view has exactly one Library,
-    # always (auto-created alongside it, see create_content_view), so an
-    # unfiltered query would make every content view permanently
-    # undeletable the moment it exists. Library is OWNED by this content
-    # view, not merely referencing it — delete_content_view deletes it
-    # alongside the content view itself; this only blocks on OTHER
-    # (operator-created) environments still pointing here.
+    """Every environment this content view is currently ASSIGNED to (via
+    EnvironmentContentView) — deleting the content view would orphan those
+    assignments' current_version_id FKs, so it's blocked until an operator
+    explicitly unassigns it from each one first
+    (DELETE /lifecycle-environments/{id}/content-views/{content_view_id}).
+    """
     return list(
         db.execute(
             select(LifecycleEnvironment.name)
-            .where(LifecycleEnvironment.content_view_id == content_view_id, ~LifecycleEnvironment.is_library)
+            .join(EnvironmentContentView, EnvironmentContentView.environment_id == LifecycleEnvironment.id)
+            .where(EnvironmentContentView.content_view_id == content_view_id)
             .order_by(LifecycleEnvironment.name)
         ).scalars()
     )
@@ -170,17 +172,12 @@ def create_content_view(
     view with zero versions to promote — same "no dangling half-created
     state" posture as every other aptly-backed endpoint in this router.
 
-    Also auto-creates and publishes this content view's "Library"
-    environment (create_library_environment, lifecycle_environments.py)
-    — every content view has exactly one, always, matching Satellite;
-    it's never something an operator creates by hand. Deferred import:
-    lifecycle_environments.py already imports do_publish FROM this
-    module, so importing it back at module load time would be circular
-    (same pattern repositories.py's sync_repository endpoint already uses
-    for app.tasks).
+    Does NOT touch any lifecycle environment — a content view is a
+    separate axis from the promotion path now (see EnvironmentContentView,
+    models.py). An operator assigns this content view to whichever
+    environment(s) they want via
+    POST /lifecycle-environments/{id}/content-views afterward.
     """
-    from app.routers.lifecycle_environments import create_library_environment
-
     existing = db.execute(select(ContentView).where(ContentView.name == payload.name)).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="content view name already in use")
@@ -211,8 +208,7 @@ def create_content_view(
     db.commit()
     db.refresh(content_view)
 
-    version, _cut = do_publish(content_view, db, aptly, current_user, force=True)
-    create_library_environment(db, content_view, version, aptly, current_user)
+    do_publish(content_view, db, aptly, current_user, force=True)
 
     return _read_content_view(db, content_view)
 
@@ -246,16 +242,17 @@ def delete_content_view(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(Role.operator)),
 ):
-    """Blocked (409) if any LifecycleEnvironment still references this
-    content view — same reasoning as Repository's delete guard against
-    ContentView references: deleting the content view out from under an
-    environment would leave that environment pointing at a nonexistent
-    parent, and there's no cascade that makes sense here (an environment
-    always needs a content view). ContentViewVersion rows and
-    ContentViewFilter rows belonging to this content view are deleted
-    alongside it — versions are historical snapshots of THIS content
-    view specifically and have no meaning once it's gone; unlike
-    Repository, no other resource references a ContentViewVersion by id.
+    """Blocked (409) if this content view is still ASSIGNED to any
+    lifecycle environment (EnvironmentContentView) — deleting it out from
+    under an assignment would leave that row's current_version_id FK
+    pointing at a nonexistent version, and there's no cascade that makes
+    sense here. An operator must unassign it from each environment first
+    (DELETE /lifecycle-environments/{id}/content-views/{content_view_id}).
+    ContentViewVersion rows and ContentViewFilter rows belonging to this
+    content view are deleted alongside it — versions are historical
+    snapshots of THIS content view specifically and have no meaning once
+    it's gone; unlike Repository, no other resource references a
+    ContentViewVersion by id once the guard above has passed.
     """
     content_view = _get_content_view_or_404(db, content_view_id)
 
@@ -266,14 +263,6 @@ def delete_content_view(
             detail=f"content view is used by lifecycle environment(s): {', '.join(referencing)}",
         )
 
-    # Library first — its current_version_id FK references a
-    # ContentViewVersion row deleted below (no ON DELETE cascade on that
-    # FK), so it must go before the version delete, not after.
-    db.execute(
-        delete(LifecycleEnvironment).where(
-            LifecycleEnvironment.content_view_id == content_view_id, LifecycleEnvironment.is_library
-        )
-    )
     db.execute(delete(ContentViewRepository).where(ContentViewRepository.content_view_id == content_view_id))
     db.execute(delete(ContentViewFilter).where(ContentViewFilter.content_view_id == content_view_id))
     db.execute(delete(ContentViewVersion).where(ContentViewVersion.content_view_id == content_view_id))
@@ -306,6 +295,29 @@ def list_content_view_versions(
             .order_by(ContentViewVersion.version.desc())
             .limit(limit)
             .offset(offset)
+        ).scalars()
+    )
+
+
+@router.get("/{content_view_id}/environments", response_model=list[EnvironmentContentViewRead])
+def list_content_view_environments(
+    content_view_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.viewer)),
+):
+    """Every EnvironmentContentView row for this content view, across ALL
+    environments it's assigned to — the mirror image of GET
+    /lifecycle-environments/{id}/content-views (that one is scoped by
+    environment; this one is scoped by content view). Backs the content
+    view detail page's "which environments is this live on" / "promote to
+    an environment I'm already assigned to" UI.
+    """
+    _get_content_view_or_404(db, content_view_id)
+    return list(
+        db.execute(
+            select(EnvironmentContentView)
+            .where(EnvironmentContentView.content_view_id == content_view_id)
+            .order_by(EnvironmentContentView.created_at)
         ).scalars()
     )
 
@@ -346,27 +358,27 @@ def update_content_view_version(
 
 
 def version_ever_promoted(db: Session, version_id: uuid.UUID) -> bool:
-    """True if this version is currently live on any environment, OR was
-    ever live in the past (still reachable via POST /rollback). Matches
-    rollback_environment's own "ever_live" check (lifecycle_environments.py)
-    but across ALL environments, not just one — deleting a version that's
-    rollback-able anywhere would silently break that environment's
-    rollback history. A version that was never promoted anywhere has no
+    """True if this version is currently live on any (environment, content
+    view) assignment, OR was ever live in the past (still reachable via
+    POST .../rollback). Matches rollback_environment_content_view's own
+    "ever_live" check (lifecycle_environments.py) but across ALL
+    assignments, not just one — deleting a version that's rollback-able
+    anywhere would silently break that assignment's rollback history. A
+    version that was never promoted anywhere has no
     AuditAction.switch_publish/rollback_environment row referencing it and
-    is not any environment's current_version_id.
+    is not any assignment's current_version_id.
     """
     if db.execute(
-        select(LifecycleEnvironment.id).where(LifecycleEnvironment.current_version_id == version_id)
+        select(EnvironmentContentView.id).where(EnvironmentContentView.current_version_id == version_id)
     ).first():
         return True
-    # resource_id on these actions is the ENVIRONMENT id, not the version
-    # id (see promote_environment/rollback_environment), so the only way
-    # to scope this is by the version id embedded inside detail — pushed
-    # down as a JSON-path comparison rather than pulling every
-    # switch_publish/rollback_environment row in the installation's
-    # history into Python and filtering there (real cost on an install
-    # with a long promotion history, since this runs on every version
-    # delete request and the task's own re-check).
+    # resource_id on these actions is the EnvironmentContentView id, not
+    # the version id, so the only way to scope this is by the version id
+    # embedded inside detail — pushed down as a JSON-path comparison
+    # rather than pulling every switch_publish/rollback_environment row in
+    # the installation's history into Python and filtering there (real
+    # cost on an install with a long promotion history, since this runs on
+    # every version delete request and the task's own re-check).
     return (
         db.execute(
             select(AuditLog.id)
@@ -694,25 +706,29 @@ def trigger_publish_and_promote(
     content_view = _get_content_view_or_404(db, content_view_id)
 
     environment = db.get(LifecycleEnvironment, payload.environment_id)
-    # content_view_id is always set at creation now (explicit, inherited
-    # via prior_environment_id, or auto-set for Library — see
-    # create_lifecycle_environment/create_library_environment in
-    # lifecycle_environments.py), so this must match exactly; there is no
-    # more "still unlinked" case to special-case here.
-    if environment is None or environment.content_view_id != content_view.id:
+    if environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="lifecycle environment not found")
+
+    ecv = db.execute(
+        select(EnvironmentContentView).where(
+            EnvironmentContentView.environment_id == environment.id,
+            EnvironmentContentView.content_view_id == content_view.id,
+        )
+    ).scalar_one_or_none()
+    if ecv is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="lifecycle environment not found for this content view",
+            detail="this content view is not assigned to this environment — assign it first via "
+            "POST /lifecycle-environments/{id}/content-views",
         )
 
-    if environment.release is None and environment.gpg_key_id is None and not payload.allow_unsigned:
+    if ecv.release is None and ecv.gpg_key_id is None and not payload.allow_unsigned:
         # Fail fast, before a Job is even created — same "validate before
-        # dispatching work" posture promote_environment uses for the
-        # equivalent synchronous case.
+        # dispatching work" posture the synchronous promote endpoint uses.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                "this environment has no signing key configured — set one via PATCH, or pass "
+                "this assignment has no signing key configured — set one via PATCH, or pass "
                 "allow_unsigned=true explicitly to publish unsigned (see docs/gpg-signing.md)"
             ),
         )

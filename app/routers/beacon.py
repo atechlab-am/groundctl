@@ -33,7 +33,9 @@ from app.models import (
     BeaconAction,
     BeaconActionStatus,
     ComplianceRecord,
+    ContentView,
     ContentViewVersion,
+    EnvironmentContentView,
     LifecycleEnvironment,
     Server,
     ServerBeaconState,
@@ -47,7 +49,7 @@ from app.schemas import (
     BeaconAptSource,
     BeaconCheckinRequest,
     BeaconCheckinResponse,
-    BeaconEnvironmentInfo,
+    BeaconContentViewInfo,
     BeaconFactsRequest,
     BeaconFactsResponse,
     BeaconReportRequest,
@@ -122,33 +124,50 @@ def checkin(
         # deleted), but a beacon with nothing coherent to reconcile
         # against should fail loudly rather than get a malformed response.
         raise RuntimeError(f"server {server.id}'s environment no longer exists")
-    if environment.publish_prefix is None or environment.release is None:
-        # publish_prefix/release are deferred to the environment's FIRST
-        # promote (lifecycle_environments.py's promote_environment) — same
-        # guard as bootstrap_task, same reason: nothing coherent to
-        # reconcile a beacon against until something's actually been
-        # promoted to this environment.
-        raise RuntimeError(
-            f"server {server.id}'s environment '{environment.name}' has never been promoted — "
-            "nothing to reconcile against yet"
-        )
 
-    version = (
-        db.get(ContentViewVersion, environment.current_version_id)
-        if environment.current_version_id is not None
-        else None
+    # Any number of content views can be assigned to this environment now
+    # (EnvironmentContentView, models.py) — build one apt source entry per
+    # assignment that's actually been published; never-promoted
+    # assignments are skipped rather than failing the whole checkin.
+    ecvs = list(
+        db.execute(select(EnvironmentContentView).where(EnvironmentContentView.environment_id == environment.id)).scalars()
     )
-    components = resolve_environment_components(version.snapshots if version is not None else None)
+    published_ecvs = [ecv for ecv in ecvs if ecv.publish_prefix is not None and ecv.release is not None]
 
     base_url = resolve_published_base_url(db, server)
-    apt_source = render_apt_source(
-        environment_name=environment.name,
-        published_repo_base_url=base_url,
-        publish_prefix=environment.publish_prefix,
-        release=environment.release,
-        components=components,
-        gpg_key_id=environment.gpg_key_id,
-    )
+    content_view_infos: list[BeaconContentViewInfo] = []
+    for ecv in published_ecvs:
+        content_view = db.get(ContentView, ecv.content_view_id)
+        content_view_name = content_view.name if content_view is not None else str(ecv.content_view_id)
+        version = db.get(ContentViewVersion, ecv.current_version_id) if ecv.current_version_id is not None else None
+        components = resolve_environment_components(version.snapshots if version is not None else None)
+        assert ecv.publish_prefix is not None and ecv.release is not None  # filtered by published_ecvs above
+        apt_source = render_apt_source(
+            environment_name=environment.name,
+            content_view_name=content_view_name,
+            published_repo_base_url=base_url,
+            publish_prefix=ecv.publish_prefix,
+            release=ecv.release,
+            components=components,
+            gpg_key_id=ecv.gpg_key_id,
+        )
+        content_view_infos.append(
+            BeaconContentViewInfo(
+                id=ecv.id,
+                content_view_id=ecv.content_view_id,
+                content_view_name=content_view_name,
+                release=ecv.release,
+                publish_prefix=ecv.publish_prefix,
+                components=components,
+                gpg_key_id=ecv.gpg_key_id,
+                apt_source=BeaconAptSource(
+                    filename=apt_source.filename,
+                    contents=apt_source.contents,
+                    keyring_filename=apt_source.keyring_filename,
+                ),
+                gpg_public_key=export_gpg_public_key(ecv.gpg_key_id) if ecv.gpg_key_id else None,
+            )
+        )
 
     now = datetime.now(timezone.utc)
     server.last_seen_at = now
@@ -178,20 +197,8 @@ def checkin(
         server_id=server.id,
         hostname=server.hostname,
         config_serial=state.config_serial,
-        environment=BeaconEnvironmentInfo(
-            id=environment.id,
-            name=environment.name,
-            release=environment.release,
-            publish_prefix=environment.publish_prefix,
-            components=components,
-            gpg_key_id=environment.gpg_key_id,
-        ),
-        apt_source=BeaconAptSource(
-            filename=apt_source.filename,
-            contents=apt_source.contents,
-            keyring_filename=apt_source.keyring_filename,
-        ),
-        gpg_public_key=export_gpg_public_key(environment.gpg_key_id) if environment.gpg_key_id else None,
+        environment_name=environment.name,
+        content_views=content_view_infos,
         checkin_interval_seconds=_CHECKIN_INTERVAL_SECONDS,
         facts_requested=_facts_push_is_due(state, now),
         actions=[

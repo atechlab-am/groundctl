@@ -1,5 +1,6 @@
 import { api } from "./client";
 import type { JobRead } from "./jobs";
+import type { EnvironmentContentViewRead } from "./environments";
 
 export type FilterType = "include" | "exclude" | "errata_since";
 
@@ -88,6 +89,14 @@ export function listContentViewVersions(
   params: { limit?: number; offset?: number } = {},
 ): Promise<ContentViewVersionRead[]> {
   return api.get<ContentViewVersionRead[]>(`/content-views/${contentViewId}/versions`, params);
+}
+
+// Every EnvironmentContentView row for this content view, across ALL
+// environments it's assigned to — mirror image of
+// listEnvironmentContentViews (environments.ts), which is scoped by
+// environment instead.
+export function listContentViewEnvironments(contentViewId: string): Promise<EnvironmentContentViewRead[]> {
+  return api.get<EnvironmentContentViewRead[]>(`/content-views/${contentViewId}/environments`);
 }
 
 export function listContentViewFilters(contentViewId: string): Promise<ContentViewFilterRead[]> {

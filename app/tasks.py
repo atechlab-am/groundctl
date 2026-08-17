@@ -37,6 +37,7 @@ from app.models import (
     ContentView,
     ContentViewRepository,
     ContentViewVersion,
+    EnvironmentContentView,
     Job,
     JobServer,
     JobStatus,
@@ -53,7 +54,7 @@ from app.models import (
 )
 from app.routers.compliance import ComplianceDataNotReadyError, do_check_compliance
 from app.routers.content_views import do_publish, version_ever_promoted
-from app.routers.lifecycle_environments import derive_release_for_content_view, do_promote
+from app.routers.lifecycle_environments import do_promote
 from app.routers.repositories import do_sync_repository
 from app.version_check import refresh_version_check
 from app.webhooks import send_webhook
@@ -496,23 +497,39 @@ def bootstrap_task(self, job_id: str) -> str:
         environment = db.get(LifecycleEnvironment, server.environment_id)
         if environment is None:
             raise ValueError(f"server {server.id}'s environment no longer exists")
-        if environment.publish_prefix is None or environment.release is None:
-            # publish_prefix/release are deferred to the environment's
-            # FIRST promote (see lifecycle_environments.py's
-            # promote_environment) — a server can be assigned to an
-            # environment that's never had anything promoted to it yet,
-            # and there's no apt source to bootstrap against until then.
+
+        # Any number of content views can be assigned to this environment
+        # now (EnvironmentContentView, models.py) — each one that's
+        # actually been promoted (publish_prefix/release set) gets its own
+        # apt source file written by bootstrap_client.yml's loop.
+        # Assignments never promoted yet are skipped rather than failing
+        # the whole bootstrap.
+        ecvs = list(
+            db.execute(
+                select(EnvironmentContentView).where(EnvironmentContentView.environment_id == environment.id)
+            ).scalars()
+        )
+        published = [ecv for ecv in ecvs if ecv.publish_prefix is not None and ecv.release is not None]
+        if not published:
             raise ValueError(
-                f"environment {environment.id} ('{environment.name}') has never been promoted — "
-                "nothing to bootstrap against yet"
+                f"environment {environment.id} ('{environment.name}') has no published content view "
+                "assignments — nothing to bootstrap against yet"
             )
 
-        version = (
-            db.get(ContentViewVersion, environment.current_version_id)
-            if environment.current_version_id is not None
-            else None
-        )
-        components = resolve_environment_components(version.snapshots if version is not None else None)
+        content_views_extra_var = []
+        for ecv in published:
+            content_view = db.get(ContentView, ecv.content_view_id)
+            version = db.get(ContentViewVersion, ecv.current_version_id) if ecv.current_version_id else None
+            components = resolve_environment_components(version.snapshots if version is not None else None)
+            content_views_extra_var.append(
+                {
+                    "content_view_name": content_view.name if content_view is not None else str(ecv.content_view_id),
+                    "publish_prefix": ecv.publish_prefix,
+                    "release": ecv.release,
+                    "components": components,
+                    "gpg_key_id": ecv.gpg_key_id,
+                }
+            )
 
         # Generated but NOT yet assigned to server.ssh_key_path — this run's
         # bootstrap connection must still use the server's existing key
@@ -523,11 +540,8 @@ def bootstrap_task(self, job_id: str) -> str:
 
         extra_vars = {
             "published_repo_base_url": resolve_published_base_url(db, server),
-            "publish_prefix": environment.publish_prefix,
-            "release": environment.release,
-            "components": components,
             "environment_name": environment.name,
-            "gpg_key_id": environment.gpg_key_id,
+            "content_views": content_views_extra_var,
             "groundctl_tls_ca_path": _tls_ca_path_if_self_signed(),
         }
         if new_host_key is not None:
@@ -875,11 +889,11 @@ def publish_and_promote_task(self, job_id: str) -> str:
             _mark_job(db, job, JobStatus.failed, f"content view {content_view_id} no longer exists")
             return "content view not found"
 
-        lock = _acquire_lock(f"groundctl:lock:environment:{environment.id}")
+        lock = _acquire_lock(f"groundctl:lock:environment-content-view:{environment.id}:{content_view.id}")
         if lock is None:
             _mark_job(
                 db, job, JobStatus.failed,
-                "another job is already running against this environment — retry once it completes",
+                "another job is already running against this assignment — retry once it completes",
             )
             return "lock contention"
 
@@ -888,6 +902,38 @@ def publish_and_promote_task(self, job_id: str) -> str:
             user = db.get(User, job.created_by_user_id)
             if user is None:
                 raise ValueError(f"job {job.id}'s creating user no longer exists")
+
+            # The trigger endpoint (trigger_publish_and_promote,
+            # content_views.py) requires this assignment to already exist
+            # before dispatching the job — assign+first-promote happens
+            # synchronously via create_environment_content_view, so this
+            # task path is always a LATER promote of an existing pair.
+            ecv = db.execute(
+                select(EnvironmentContentView).where(
+                    EnvironmentContentView.environment_id == environment.id,
+                    EnvironmentContentView.content_view_id == content_view.id,
+                )
+            ).scalar_one_or_none()
+            if ecv is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"content view {content_view.name} is not assigned to environment {environment.name}",
+                )
+            if ecv.gpg_key_id is None and not allow_unsigned and ecv.release is None:
+                # Re-checks the signing guard here too (already validated
+                # at trigger time in trigger_publish_and_promote, but this
+                # closes the race window between that request and this
+                # task running, same pattern as every other re-check in
+                # this file). Only relevant if the assignment somehow
+                # still has no release (shouldn't happen given the
+                # trigger's own guard, kept as defense in depth).
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "this assignment has no signing key configured — set one via PATCH, "
+                        "or the request must pass allow_unsigned=true"
+                    ),
+                )
 
             job.log_output = f"publishing new version of {content_view.name}…"
             db.commit()
@@ -902,44 +948,7 @@ def publish_and_promote_task(self, job_id: str) -> str:
             )
             db.commit()
 
-            if environment.content_view_id != content_view.id:
-                # content_view_id is always set at creation now (explicit or
-                # inherited via prior_environment_id — see
-                # create_lifecycle_environment/create_library_environment in
-                # lifecycle_environments.py), never derived here. A mismatch
-                # means this environment belongs to a different content view
-                # entirely — fail loudly rather than mixing content from two
-                # content views onto one environment.
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"environment {environment.name} belongs to a different content view "
-                        "than the one being published"
-                    ),
-                )
-
-            is_first_promote = environment.release is None
-            if is_first_promote:
-                # First-ever promote for this environment — derive/lock
-                # release/publish_prefix, same as promote_environment's
-                # is_first_promote branch (lifecycle_environments.py).
-                # Re-checks the signing guard here too (already validated at
-                # trigger time in trigger_publish_and_promote, but this
-                # closes the race window between that request and this task
-                # running, same pattern as every other re-check in this
-                # file).
-                if environment.gpg_key_id is None and not allow_unsigned:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(
-                            "this environment has no signing key configured — set one via PATCH, "
-                            "or the request must pass allow_unsigned=true"
-                        ),
-                    )
-                environment.release = derive_release_for_content_view(db, content_view.id)
-                environment.publish_prefix = environment.name
-
-            do_promote(environment, version, db, aptly, user)
+            do_promote(ecv, environment, version, db, aptly, user)
 
             _mark_job(
                 db, job, JobStatus.success,
@@ -1502,18 +1511,22 @@ def scheduled_sync_relays() -> str:
         synced = 0
         errors: list[str] = []
         for relay in relays:
+            # Every content view assigned to every environment this
+            # relay's site serves — each is its own publish_prefix now
+            # (EnvironmentContentView, models.py), not one per environment.
             prefixes = [
-                env.publish_prefix
-                for env in db.execute(
-                    select(LifecycleEnvironment)
+                prefix
+                for prefix, in db.execute(
+                    select(EnvironmentContentView.publish_prefix)
+                    .join(LifecycleEnvironment, LifecycleEnvironment.id == EnvironmentContentView.environment_id)
                     .join(SiteEnvironment, SiteEnvironment.environment_id == LifecycleEnvironment.id)
                     .where(SiteEnvironment.site_id == relay.site_id)
-                ).scalars()
-                # publish_prefix is null until an environment's first
-                # promote (lifecycle_environments.py) — nothing published
-                # yet means nothing for a relay to sync for that
-                # environment, not a groundctl_prefixes entry of "None".
-                if env.publish_prefix is not None
+                ).all()
+                # publish_prefix is null until an assignment's first
+                # promote — nothing published yet means nothing for a
+                # relay to sync for that pair, not a groundctl_prefixes
+                # entry of "None".
+                if prefix is not None
             ]
             if not prefixes:
                 continue

@@ -33,6 +33,7 @@ class AptSource:
 
 def render_apt_source(
     environment_name: str,
+    content_view_name: str,
     published_repo_base_url: str,
     publish_prefix: str,
     release: str,
@@ -40,18 +41,24 @@ def render_apt_source(
     gpg_key_id: str | None,
 ) -> AptSource:
     """Pure function, no DB/network access — callers resolve
-    environment/components/base_url first (see tasks.py's bootstrap_task
-    and app/routers/beacon.py's checkin handler for the two call sites).
-    Mirrors bootstrap_client.yml's existing Jinja template exactly: same
-    filename convention, same signed-vs-trusted branching, same
-    space-joined components list.
+    environment/content-view/components/base_url first (see tasks.py's
+    bootstrap_task and app/routers/beacon.py's checkin handler for the two
+    call sites). Mirrors bootstrap_client.yml's existing Jinja template
+    exactly: same filename convention, same signed-vs-trusted branching,
+    same space-joined components list.
+
+    filename includes BOTH environment_name and content_view_name — one
+    environment can have any number of content views assigned to it
+    (EnvironmentContentView, models.py), so environment_name alone is no
+    longer unique enough to avoid one assignment's file overwriting
+    another's.
     """
-    filename = f"groundctl-{environment_name}.list"
+    filename = f"groundctl-{environment_name}-{content_view_name}.list"
     base = f"{published_repo_base_url}/{publish_prefix}/"
     components_str = " ".join(components)
 
     if gpg_key_id is not None:
-        keyring_filename = f"groundctl-{environment_name}.gpg"
+        keyring_filename = f"groundctl-{environment_name}-{content_view_name}.gpg"
         contents = f"deb [signed-by=/etc/apt/keyrings/{keyring_filename}] {base} {release} {components_str}\n"
         return AptSource(filename=filename, contents=contents, keyring_filename=keyring_filename)
 

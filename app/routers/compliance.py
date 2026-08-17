@@ -13,6 +13,7 @@ from app.models import (
     ComplianceCheckLog,
     ComplianceRecord,
     ContentViewVersion,
+    EnvironmentContentView,
     LifecycleEnvironment,
     Role,
     Server,
@@ -63,18 +64,32 @@ def do_check_compliance(server: Server, db: Session, aptly: AptlyClient) -> Comp
         raise ComplianceDataNotReadyError("no compliance data for this server yet — run gather-facts first")
 
     environment = db.get(LifecycleEnvironment, server.environment_id)
-    if environment is None or environment.current_version_id is None:
-        raise ComplianceDataNotReadyError("server's environment has not been published yet")
+    if environment is None:
+        raise ComplianceDataNotReadyError("server's environment no longer exists")
 
-    version = db.get(ContentViewVersion, environment.current_version_id)
-    if version is None:
-        raise ComplianceDataNotReadyError("environment's published content view version no longer exists")
+    # Any number of content views can be assigned to this environment now
+    # (EnvironmentContentView, models.py) — "available" is the UNION of
+    # every one of them that's actually been published, not one single
+    # version's snapshots. A package can be current in content view A's
+    # live version even if content view B (also assigned here) doesn't
+    # carry it at all.
+    published_ecvs = list(
+        db.execute(
+            select(EnvironmentContentView).where(
+                EnvironmentContentView.environment_id == environment.id,
+                EnvironmentContentView.current_version_id.is_not(None),
+            )
+        ).scalars()
+    )
+    if not published_ecvs:
+        raise ComplianceDataNotReadyError("server's environment has no published content view assignments yet")
 
-    # A content view version can aggregate snapshots from multiple
-    # repositories — fetch each and merge before ranking, rather than the
-    # single get_snapshot_packages call this had when one environment mapped
-    # to exactly one mirror.
-    snapshot_names = {entry["snapshot_name"] for entry in version.snapshots}
+    snapshot_names: set[str] = set()
+    for ecv in published_ecvs:
+        version = db.get(ContentViewVersion, ecv.current_version_id)
+        if version is None:
+            continue
+        snapshot_names.update(entry["snapshot_name"] for entry in version.snapshots)
     snapshot_packages: list[dict] = []
     for snapshot_name in snapshot_names:
         snapshot_packages.extend(aptly.get_snapshot_packages(snapshot_name))

@@ -107,11 +107,9 @@ curl -X POST https://<HOST>/api/content-views \
 # save the returned "id" as $CV_ID
 ```
 
-## 4. Publish a version — and meet your content view's Library
+## 4. Publish a version
 
-Publishing cuts an immutable **content view version** — a snapshot of every member repository's current contents, frozen together. Publishing again with no upstream changes is a fast no-op; it never wastes a snapshot on unchanged content.
-
-Content view creation already did this once for you: every content view auto-creates and auto-publishes an implicit root environment called **Library** (matching Satellite) the moment it exists, so `jammy-baseline` is already live at `https://<FLEET_HOSTNAME>:8080/jammy-baseline/library/` before you do anything else in this section.
+Publishing cuts an immutable **content view version** — a snapshot of every member repository's current contents, frozen together. Publishing again with no upstream changes is a fast no-op; it never wastes a snapshot on unchanged content. A content view is entirely independent of any lifecycle environment — nothing is published anywhere yet.
 
 ```bash
 curl -X POST https://<HOST>/api/content-views/$CV_ID/publish -H "Authorization: Bearer $TOKEN"
@@ -119,38 +117,39 @@ curl -X POST https://<HOST>/api/content-views/$CV_ID/publish -H "Authorization: 
 # save the version's "id" as $VERSION_ID
 ```
 
-## 5. Create a lifecycle environment and promote into it
+## 5. Create a lifecycle environment and assign a content view to it
 
 A **lifecycle environment** is a named slot in an ordered **path** (e.g.
-`Library` → `qa` → `dev` → `prod`). Everything you promote flows outward
-from Library first — Library always has it before anything downstream
-can. Creating an environment asks for name, description, its content
-view, and its **prior** (predecessor in the path, defaulting to that
-content view's Library if omitted) — matches Satellite's own "New
-Lifecycle Environment" dialog. `release`/`publish_prefix` stay deferred
-to the environment's first promote, derived from whatever version you
-push to it there — not asked up front.
+`Library` → `qa` → `dev` → `prod`) — pure promotion-path structure, with
+NO content view of its own. Any number of content views can be assigned
+to the same environment, independently. Creating one asks only for name,
+description, and its **prior** (predecessor in the path) — matches
+Satellite's own "New Lifecycle Environment" dialog.
 
 ```bash
 curl -X POST https://<HOST>/api/lifecycle-environments \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name": "jammy-qa", "description": "First stop after Library", "content_view_id": "'$CV_ID'"}'
+  -d '{"name": "jammy-qa", "description": "First stop for jammy-baseline"}'
 # save the returned "id" as $ENV_ID — prior_environment_id omitted, so this
-# chains directly onto jammy-baseline's Library at position 0 on a new path
-# one step out from it
+# starts a new path at position 0
+```
 
-curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/promote \
+Assigning a content view to an environment publishes it there in the same
+call — this is that pair's first promote:
+
+```bash
+curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/content-views \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"content_view_version_id": "'$VERSION_ID'", "allow_unsigned": true}'
-# content_view_version_id is REQUIRED on an environment's first promote —
-# this is the moment its release/publish_prefix get derived (publish_prefix
-# = the environment's own name); content_view_id was already fixed at
-# creation. GPG signing is on by default (see docs/gpg-signing.md) —
-# allow_unsigned=true opts out for this example; for anything beyond a lab,
-# PATCH the environment with a real gpg_key_id first instead (see step 5b),
-# or pass it directly here.
+  -d '{"content_view_id": "'$CV_ID'", "content_view_version_id": "'$VERSION_ID'", "allow_unsigned": true}'
+# save the returned "id" as $ECV_ID (the assignment itself)
+# content_view_version_id is REQUIRED on an assignment's first promote —
+# this is the moment release/publish_prefix get derived (publish_prefix =
+# "<environment-name>/<content-view-name>"). GPG signing is on by default
+# (see docs/gpg-signing.md) — allow_unsigned=true opts out for this
+# example; for anything beyond a lab, pass a real gpg_key_id instead.
 #
-# jammy-qa is now live at https://<FLEET_HOSTNAME>:8080/jammy-qa/
+# jammy-qa/jammy-baseline is now live at
+# https://<FLEET_HOSTNAME>:8080/jammy-qa/jammy-baseline/
 # (8080 is install.sh's default nginx port, self-signed HTTPS by default —
 # see docs/install.md and docs/https.md)
 ```
@@ -160,22 +159,13 @@ Every promote *after* the first one drops back to the simple form — no
 content view's latest version:
 
 ```bash
-curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/promote \
+curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/content-views/$CV_ID/promote \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}'
 ```
 
-**Path enforcement**: an environment at position N can only be promoted into once the environment at position N-1 in the same path already has that version live — Library (position 0) has no such gate, it's live from creation. Create a second environment with `"prior_environment_id": "'$ENV_ID'"` (content_view_id inherited automatically) and promote the same way — skipping straight past it before it's ever had the version returns `409`. Chaining `jammy-qa → jammy-dev → jammy-prod` this way is how content eventually converges: every environment in the path ends up on the same version once each has been promoted in order.
+**Path enforcement**: a content view assigned at position N can only be promoted into once the SAME content view is already live at position N-1 in the same path — position 0 has no such gate. Create a second environment with `"prior_environment_id": "'$ENV_ID'"` and assign `jammy-baseline` there too (a separate `POST .../content-views` call) — promoting it before `jammy-qa` has the version returns `409`. Chaining `qa → dev → prod` this way is how content eventually converges for THAT content view; a different content view assigned to the same path tracks its own position independently.
 
-### 5b. Set a signing key before first promote (optional)
-
-```bash
-curl -X PATCH https://<HOST>/api/lifecycle-environments/$ENV_ID \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"gpg_key_id": "YOUR_KEY_FINGERPRINT"}'
-```
-
-Also how you set/change an environment's description, or add a key it
-didn't have at creation, any time — not just before the first promote.
+You can assign as many content views to `jammy-qa` as you want, each with its own publish prefix and version — e.g. a separate `security-only` content view lives at `jammy-qa/security-only/`, promoted on its own schedule.
 
 ## 6. Add a server
 
@@ -200,16 +190,16 @@ curl https://<HOST>/api/jobs/<job_id> -H "Authorization: Bearer $TOKEN"
 # poll until status is "success" or "failed"; log_output has the full ansible run
 ```
 
-This points the server's apt sources at your `jammy-library` endpoint. From here, `apt install`/`apt upgrade` on that box only see what you've published to its environment.
+This writes one apt source file per content view assigned to `jammy-qa` — right now just `jammy-baseline`, at `/etc/apt/sources.list.d/groundctl-jammy-qa-jammy-baseline.list`. From here, `apt install`/`apt upgrade` on that box sees every content view assigned to its environment.
 
 ## 8. Patch an environment
 
-Sync your repositories, publish a new content view version, then promote it into an environment:
+Sync your repositories, publish a new content view version, then promote that specific assignment:
 
 ```bash
 curl -X POST https://<HOST>/api/repositories/ubuntu-jammy/sync -H "Authorization: Bearer $TOKEN"
 curl -X POST https://<HOST>/api/content-views/$CV_ID/publish -H "Authorization: Bearer $TOKEN"
-curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/promote \
+curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/content-views/$CV_ID/promote \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}'
 ```
 
@@ -221,15 +211,15 @@ curl -X POST "https://<HOST>/api/jobs/apply-updates?environment_id=$ENV_ID" -H "
 
 ## 9. Roll back
 
-Environments can be rolled back to any content view version they've previously had live — no re-sync, no re-cut, just an immediate switch to already-published, already-immutable content:
+An (environment, content view) assignment can be rolled back to any version it's previously had live — no re-sync, no re-cut, just an immediate switch to already-published, already-immutable content:
 
 ```bash
-curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/rollback \
+curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/content-views/$CV_ID/rollback \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"content_view_version_id": "'$OLD_VERSION_ID'"}'
 ```
 
-Rolling back to a version this specific environment never actually ran (e.g. one that only ever ran in a different environment) returns `409`.
+Rolling back to a version this specific assignment never actually ran (e.g. one that only ever ran on a different environment, or for a different content view) returns `409`.
 
 ## 10. Check compliance drift
 

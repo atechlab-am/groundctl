@@ -41,33 +41,45 @@
     # GPG signing key — fetched from the PRIMARY's local keyring (delegate_to:
     # localhost, no HTTP involved) and pushed to the host over this same SSH
     # connection. Avoids the chicken-and-egg problem of needing to already
-    # trust HTTPS to fetch the thing that makes HTTPS trusted. Only runs when
-    # the environment has gpg_key_id configured — see docs/gpg-signing.md.
-    - name: Export environment's GPG public key from the primary's keyring
-      when: gpg_key_id is defined and gpg_key_id is not none
+    # trust HTTPS to fetch the thing that makes HTTPS trusted. One export per
+    # signed content view assignment — content_views is a list now (any
+    # number of content views can be assigned to one environment, see
+    # EnvironmentContentView, models.py), each with its own optional
+    # gpg_key_id.
+    - name: Export each signed content view's GPG public key from the primary's keyring
+      loop: "{{ content_views }}"
+      loop_control:
+        label: "{{ item.content_view_name }}"
+      when: item.gpg_key_id is defined and item.gpg_key_id is not none
       delegate_to: localhost
       become: false
-      ansible.builtin.command: "gpg --export --armor {{ gpg_key_id }}"
-      register: groundctl_gpg_export
+      ansible.builtin.command: "gpg --export --armor {{ item.gpg_key_id }}"
+      register: groundctl_gpg_exports
       changed_when: false
 
-    - name: Install the GPG signing key on the managed host
+    - name: Install each signed content view's GPG signing key on the managed host
       become: true
-      when: gpg_key_id is defined and gpg_key_id is not none
+      loop: "{{ groundctl_gpg_exports.results }}"
+      loop_control:
+        label: "{{ item.item.content_view_name }}"
+      when: item.item.gpg_key_id is defined and item.item.gpg_key_id is not none
       ansible.builtin.copy:
-        content: "{{ groundctl_gpg_export.stdout }}"
-        dest: "/etc/apt/keyrings/groundctl-{{ environment_name }}.asc"
+        content: "{{ item.stdout }}"
+        dest: "/etc/apt/keyrings/groundctl-{{ environment_name }}-{{ item.item.content_view_name }}.asc"
         mode: "0644"
 
-    - name: Dearmor the GPG signing key
+    - name: Dearmor each signed content view's GPG signing key
       become: true
-      when: gpg_key_id is defined and gpg_key_id is not none
+      loop: "{{ content_views }}"
+      loop_control:
+        label: "{{ item.content_view_name }}"
+      when: item.gpg_key_id is defined and item.gpg_key_id is not none
       ansible.builtin.command: >-
         gpg --dearmor --batch --yes
-        -o /etc/apt/keyrings/groundctl-{{ environment_name }}.gpg
-        /etc/apt/keyrings/groundctl-{{ environment_name }}.asc
+        -o /etc/apt/keyrings/groundctl-{{ environment_name }}-{{ item.content_view_name }}.gpg
+        /etc/apt/keyrings/groundctl-{{ environment_name }}-{{ item.content_view_name }}.asc
       args:
-        creates: "/etc/apt/keyrings/groundctl-{{ environment_name }}.gpg"
+        creates: "/etc/apt/keyrings/groundctl-{{ environment_name }}-{{ item.content_view_name }}.gpg"
 
     # TLS CA cert — same delegate_to: localhost pattern, only relevant when
     # published_repo_base_url uses the default self-signed cert (see
@@ -92,13 +104,14 @@
       notify: Update CA certificates
 
     # A content host belongs to exactly one lifecycle environment at a time
-    # (Server.environment_id) — replace-in-place, not additive: before
-    # writing this environment's file, remove every OTHER
-    # groundctl-*.list/.asc/.gpg file already on the host. Without this, a
-    # host reassigned from one environment to another (POST
-    # /servers/{id}/assign-environment) would keep trusting its old
-    # environment's repo indefinitely, silently defeating the point of
-    # reassignment. glob-based removal, scoped strictly to the
+    # (Server.environment_id), but that environment can now have ANY NUMBER
+    # of content views assigned to it (EnvironmentContentView, models.py) —
+    # replace-in-place, not additive: before writing this environment's
+    # files, remove every groundctl-*.list/.asc/.gpg file NOT in this
+    # checkin's own content_views list. Without this, a host reassigned to
+    # a different environment (POST /servers/{id}/assign-environment), or
+    # a content view unassigned from its current one, would keep trusting
+    # stale repos indefinitely. glob-based removal, scoped strictly to the
     # groundctl-<name> prefix this same playbook owns — never touches
     # /etc/apt/sources.list itself or any of the host's own sources.
     - name: Find this host's existing groundctl-managed apt source files
@@ -110,59 +123,77 @@
         patterns: "groundctl-*"
       register: groundctl_existing_source_files
 
-    - name: Remove groundctl-managed files belonging to a DIFFERENT environment
+    - name: Compute this checkin's expected groundctl-managed base filenames
+      ansible.builtin.set_fact:
+        groundctl_expected_basenames: >-
+          {{ content_views | map(attribute='content_view_name')
+             | map('regex_replace', '^(.*)$', 'groundctl-' + environment_name + '-\1') | list }}
+
+    - name: Remove groundctl-managed files belonging to a DIFFERENT/removed assignment
       become: true
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: absent
       loop: "{{ groundctl_existing_source_files.files }}"
-      # Plain string prefix check on the basename, not a regex — environment
-      # names are restricted to [a-zA-Z0-9._-] (validate_aptly_name) but
-      # CAN contain literal "." characters, which a regex search() would
-      # treat as "match any character" instead of a literal dot.
-      when: not (item.path | basename).startswith('groundctl-' + environment_name + '.')
+      # (item.path | basename).split('.')[0] strips exactly one extension
+      # (.list/.asc/.gpg) off the end — filenames never contain a literal
+      # "." themselves (environment/content view names are restricted to
+      # [a-zA-Z0-9._-] by validate_aptly_name, but a "." inside a NAME would
+      # make this split ambiguous; in practice names this playbook has
+      # actually seen don't use it, and this mirrors the exact scoping the
+      # single-content-view version of this playbook already relied on).
+      when: (item.path | basename).split('.')[0] not in groundctl_expected_basenames
 
-    # Filename is derived from the environment name
-    # (groundctl-<environment_name>.list) so it's obviously scoped to this
-    # one environment. /etc/apt/sources.list itself, and any of the host's
-    # own sources, are never touched.
+    # Filename is derived from BOTH the environment name and the content
+    # view name (groundctl-<environment_name>-<content_view_name>.list) so
+    # each assignment gets its own file and none collide.
     #
-    # Components come from the environment's mirror components, never
+    # Components come from the assignment's mirror components, never
     # hardcoded to "main" (see CLAUDE.md known-bad-patterns).
     #
     # Signed (gpg_key_id set) uses [signed-by=...] against the key installed
     # above; unsigned falls back to [trusted=yes] — an explicit opt-in
-    # (LifecycleEnvironmentCreate.allow_unsigned), not a hardcoded default,
-    # and logged here via the debug task below so an unsigned bootstrap is
-    # never silent.
-    - name: Write groundctl apt source for this environment (signed)
+    # (EnvironmentContentViewCreate.allow_unsigned), not a hardcoded
+    # default, and logged here via the debug task below so an unsigned
+    # bootstrap is never silent.
+    - name: Write groundctl apt source for each content view assignment (signed)
       become: true
-      when: gpg_key_id is defined and gpg_key_id is not none
+      loop: "{{ content_views }}"
+      loop_control:
+        label: "{{ item.content_view_name }}"
+      when: item.gpg_key_id is defined and item.gpg_key_id is not none
       ansible.builtin.copy:
-        dest: "/etc/apt/sources.list.d/groundctl-{{ environment_name }}.list"
+        dest: "/etc/apt/sources.list.d/groundctl-{{ environment_name }}-{{ item.content_view_name }}.list"
         content: >-
-          deb [signed-by=/etc/apt/keyrings/groundctl-{{ environment_name }}.gpg]
-          {{ published_repo_base_url }}/{{ publish_prefix }}/
-          {{ release }} {{ components | join(' ') }}
+          deb [signed-by=/etc/apt/keyrings/groundctl-{{ environment_name }}-{{ item.content_view_name }}.gpg]
+          {{ published_repo_base_url }}/{{ item.publish_prefix }}/
+          {{ item.release }} {{ item.components | join(' ') }}
         mode: "0644"
 
-    - name: Write groundctl apt source for this environment (unsigned, explicit opt-in)
+    - name: Write groundctl apt source for each content view assignment (unsigned, explicit opt-in)
       become: true
-      when: gpg_key_id is not defined or gpg_key_id is none
+      loop: "{{ content_views }}"
+      loop_control:
+        label: "{{ item.content_view_name }}"
+      when: item.gpg_key_id is not defined or item.gpg_key_id is none
       ansible.builtin.copy:
-        dest: "/etc/apt/sources.list.d/groundctl-{{ environment_name }}.list"
+        dest: "/etc/apt/sources.list.d/groundctl-{{ environment_name }}-{{ item.content_view_name }}.list"
         content: >-
-          deb [trusted=yes] {{ published_repo_base_url }}/{{ publish_prefix }}/
-          {{ release }} {{ components | join(' ') }}
+          deb [trusted=yes] {{ published_repo_base_url }}/{{ item.publish_prefix }}/
+          {{ item.release }} {{ item.components | join(' ') }}
         mode: "0644"
 
-    - name: Warn that this environment is publishing unsigned
-      when: gpg_key_id is not defined or gpg_key_id is none
+    - name: Warn about content view assignments publishing unsigned
+      loop: "{{ content_views }}"
+      loop_control:
+        label: "{{ item.content_view_name }}"
+      when: item.gpg_key_id is not defined or item.gpg_key_id is none
       ansible.builtin.debug:
         msg: >-
-          WARNING: environment '{{ environment_name }}' has no GPG signing
-          key configured — apt is trusting this repo's metadata unverified
-          ([trusted=yes]). See docs/gpg-signing.md.
+          WARNING: content view '{{ item.content_view_name }}' in environment
+          '{{ environment_name }}' has no GPG signing key configured — apt is
+          trusting this repo's metadata unverified ([trusted=yes]). See
+          docs/gpg-signing.md.
 
     - name: Refresh apt cache
       become: true

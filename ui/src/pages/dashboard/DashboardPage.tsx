@@ -80,7 +80,9 @@ export function DashboardPage() {
                     <Link to="/environments" className="font-medium hover:underline">
                       {env.name}
                     </Link>
-                    <span className="text-muted-foreground">{env.publish_prefix}</span>
+                    <span className="text-muted-foreground">
+                      {env.path_name} #{env.position}
+                    </span>
                   </li>
                 ))}
               </ul>

@@ -26,6 +26,7 @@ import {
   getContentView,
   listContentViewVersions,
   listContentViewFilters,
+  listContentViewEnvironments,
   createContentViewFilter,
   deleteContentViewFilter,
   deleteContentView,
@@ -37,7 +38,7 @@ import {
   type FilterType,
 } from "@/api/contentViews";
 import { listRepositories } from "@/api/repositories";
-import { listLifecycleEnvironments, promoteEnvironment } from "@/api/environments";
+import { listLifecycleEnvironments, promoteEnvironmentContentView } from "@/api/environments";
 import { formatDateTime } from "@/lib/format";
 import { errorMessage } from "@/lib/errors";
 
@@ -75,15 +76,20 @@ export function ContentViewDetailPage() {
     queryFn: () => listContentViewFilters(contentViewId),
   });
 
-  // Valid promote targets: environments already tied to this content
-  // view, OR never promoted anywhere yet (any content view can be their
-  // first — see promotable_for_content_view_id's docstring, app/routers/
-  // lifecycle_environments.py). An environment tied to a DIFFERENT
-  // content view is correctly excluded either way.
-  const environmentsQuery = useQuery({
-    queryKey: ["lifecycle-environments", "content-view", contentViewId],
-    queryFn: () => listLifecycleEnvironments({ promotable_for_content_view_id: contentViewId, limit: 100 }),
+  // Valid promote targets: environments this content view is ALREADY
+  // assigned to (EnvironmentContentView, models.py) — assigning it to a
+  // NEW environment for the first time happens from the Environments
+  // page instead (Assign content view), since that's where an operator
+  // picks which environment, not from here.
+  const assignmentsQuery = useQuery({
+    queryKey: ["content-view-environments", contentViewId],
+    queryFn: () => listContentViewEnvironments(contentViewId),
   });
+  const allEnvironmentsQuery = useQuery({
+    queryKey: ["environments"],
+    queryFn: () => listLifecycleEnvironments({ limit: 100 }),
+  });
+  const environmentNameById = new Map((allEnvironmentsQuery.data ?? []).map((env) => [env.id, env.name]));
 
   const filterMutation = useMutation({
     mutationFn: () => createContentViewFilter(contentViewId, { filter_type: filterType, pattern }),
@@ -112,14 +118,8 @@ export function ContentViewDetailPage() {
   const [createAllowUnsigned, setCreateAllowUnsigned] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  const environmentsForCreateQuery = useQuery({
-    queryKey: ["lifecycle-environments", "content-view", contentViewId],
-    queryFn: () => listLifecycleEnvironments({ promotable_for_content_view_id: contentViewId, limit: 100 }),
-    enabled: createDialogOpen && createPromoteNow,
-  });
-
-  const selectedCreateEnv = environmentsForCreateQuery.data?.find((env) => env.id === createEnvironmentId);
-  const createNeedsSigningChoice = selectedCreateEnv?.content_view_id === null && !selectedCreateEnv?.gpg_key_id;
+  const selectedCreateAssignment = assignmentsQuery.data?.find((ecv) => ecv.environment_id === createEnvironmentId);
+  const createNeedsSigningChoice = !selectedCreateAssignment?.gpg_key_id;
 
   // Always cuts a new version, even with nothing changed since the latest
   // (a version doubles as a promotion checkpoint, not purely a
@@ -206,29 +206,23 @@ export function ContentViewDetailPage() {
 
   const [promotingVersion, setPromotingVersion] = useState<ContentViewVersionRead | null>(null);
   const [promoteEnvironmentId, setPromoteEnvironmentId] = useState<string>("");
-  const [promoteAllowUnsigned, setPromoteAllowUnsigned] = useState(false);
   const [promoteError, setPromoteError] = useState<string | null>(null);
 
-  const selectedPromoteEnv = environmentsQuery.data?.find((env) => env.id === promoteEnvironmentId);
-  // Only relevant on an environment's first promote (content_view_id
-  // still null) — every later promote reuses its already-locked-in
-  // gpg_key_id, this field is ignored server-side by then.
-  const promoteNeedsSigningChoice =
-    selectedPromoteEnv?.content_view_id === null && !selectedPromoteEnv?.gpg_key_id;
-
+  // Only environments this content view is ALREADY assigned to are valid
+  // targets here — every one of them already had its first promote (see
+  // assign-and-first-promote on the Environments page), so there's no
+  // signing choice left to make; gpg_key_id is already locked in.
   const promoteMutation = useMutation({
     mutationFn: () =>
-      promoteEnvironment(promoteEnvironmentId, {
+      promoteEnvironmentContentView(promoteEnvironmentId, contentViewId, {
         content_view_version_id: promotingVersion!.id,
-        allow_unsigned: promoteAllowUnsigned,
       }),
     onSuccess: (result) => {
       toast.success(`Promoted version ${promotingVersion!.version} — live at ${result.published_url}`);
       setPromotingVersion(null);
       setPromoteEnvironmentId("");
-      setPromoteAllowUnsigned(false);
       setPromoteError(null);
-      void queryClient.invalidateQueries({ queryKey: ["lifecycle-environments", "content-view", contentViewId] });
+      void queryClient.invalidateQueries({ queryKey: ["content-view-environments", contentViewId] });
     },
     onError: (err) => setPromoteError(errorMessage(err)),
   });
@@ -236,7 +230,6 @@ export function ContentViewDetailPage() {
   function openPromote(version: ContentViewVersionRead) {
     setPromotingVersion(version);
     setPromoteEnvironmentId("");
-    setPromoteAllowUnsigned(false);
     setPromoteError(null);
   }
 
@@ -244,10 +237,6 @@ export function ContentViewDetailPage() {
     e.preventDefault();
     if (!promoteEnvironmentId) {
       setPromoteError("select an environment");
-      return;
-    }
-    if (promoteNeedsSigningChoice && !promoteAllowUnsigned) {
-      setPromoteError('this environment has no signing key configured — enable "Allow unsigned" to proceed');
       return;
     }
     setPromoteError(null);
@@ -442,7 +431,7 @@ export function ContentViewDetailPage() {
                 >
                   <ul className="flex flex-col divide-y">
                     {versionsQuery.data?.map((v, i) => {
-                      const liveOn = (environmentsQuery.data ?? []).filter((env) => env.current_version_id === v.id);
+                      const liveOn = (assignmentsQuery.data ?? []).filter((ecv) => ecv.current_version_id === v.id);
                       // Versions are server-ordered newest-first, so the
                       // next array entry is the immediately preceding
                       // version — lets each row show "+N/-N packages vs
@@ -519,9 +508,9 @@ export function ContentViewDetailPage() {
                           {liveOn.length > 0 && (
                             <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
                               <span className="text-muted-foreground">Live on:</span>
-                              {liveOn.map((env) => (
-                                <Badge key={env.id} variant="success">
-                                  {env.name}
+                              {liveOn.map((ecv) => (
+                                <Badge key={ecv.id} variant="success">
+                                  {environmentNameById.get(ecv.environment_id) ?? ecv.environment_id.slice(0, 8)}
                                 </Badge>
                               ))}
                             </div>
@@ -555,9 +544,10 @@ export function ContentViewDetailPage() {
               {promoteError && <p className="text-sm text-destructive">{promoteError}</p>}
               <div className="flex flex-col gap-1.5">
                 <Label>Environment</Label>
-                {environmentsQuery.data?.length === 0 ? (
+                {assignmentsQuery.data?.length === 0 ? (
                   <p className="text-sm text-muted-foreground">
-                    No lifecycle environments use this content view yet.
+                    This content view isn't assigned to any environment yet — assign it from the Environments page
+                    first.
                   </p>
                 ) : (
                   <Select value={promoteEnvironmentId} onValueChange={setPromoteEnvironmentId}>
@@ -565,34 +555,21 @@ export function ContentViewDetailPage() {
                       <SelectValue placeholder="Select an environment" />
                     </SelectTrigger>
                     <SelectContent>
-                      {environmentsQuery.data?.map((env) => (
-                        <SelectItem key={env.id} value={env.id}>
-                          {env.name} ({env.path_name}, position {env.position})
-                          {env.content_view_id === null ? " — never promoted" : ""}
+                      {assignmentsQuery.data?.map((ecv) => (
+                        <SelectItem key={ecv.environment_id} value={ecv.environment_id}>
+                          {environmentNameById.get(ecv.environment_id) ?? ecv.environment_id.slice(0, 8)}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 )}
               </div>
-              {promoteNeedsSigningChoice && (
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="promote-allow-unsigned"
-                    checked={promoteAllowUnsigned}
-                    onCheckedChange={(checked) => setPromoteAllowUnsigned(checked === true)}
-                  />
-                  <Label htmlFor="promote-allow-unsigned" className="cursor-pointer font-normal">
-                    Allow unsigned (not recommended) — this environment has no GPG key configured
-                  </Label>
-                </div>
-              )}
             </div>
             <DialogFooter className="mt-6">
               <Button type="button" variant="outline" onClick={() => setPromotingVersion(null)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={promoteMutation.isPending || environmentsQuery.data?.length === 0}>
+              <Button type="submit" disabled={promoteMutation.isPending || assignmentsQuery.data?.length === 0}>
                 {promoteMutation.isPending ? "Promoting…" : "Promote"}
               </Button>
             </DialogFooter>
@@ -669,9 +646,10 @@ export function ContentViewDetailPage() {
               {createPromoteNow && (
                 <div className="flex flex-col gap-1.5">
                   <Label>Environment</Label>
-                  {environmentsForCreateQuery.data?.length === 0 ? (
+                  {assignmentsQuery.data?.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
-                      No lifecycle environments use this content view yet.
+                      This content view isn't assigned to any environment yet — assign it from the Environments
+                      page first.
                     </p>
                   ) : (
                     <Select value={createEnvironmentId} onValueChange={setCreateEnvironmentId}>
@@ -679,10 +657,9 @@ export function ContentViewDetailPage() {
                         <SelectValue placeholder="Select an environment" />
                       </SelectTrigger>
                       <SelectContent>
-                        {environmentsForCreateQuery.data?.map((env) => (
-                          <SelectItem key={env.id} value={env.id}>
-                            {env.name} ({env.path_name}, position {env.position})
-                            {env.content_view_id === null ? " — never promoted" : ""}
+                        {assignmentsQuery.data?.map((ecv) => (
+                          <SelectItem key={ecv.environment_id} value={ecv.environment_id}>
+                            {environmentNameById.get(ecv.environment_id) ?? ecv.environment_id.slice(0, 8)}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -710,8 +687,7 @@ export function ContentViewDetailPage() {
               <Button
                 type="submit"
                 disabled={
-                  createVersionMutation.isPending ||
-                  (createPromoteNow && environmentsForCreateQuery.data?.length === 0)
+                  createVersionMutation.isPending || (createPromoteNow && assignmentsQuery.data?.length === 0)
                 }
               >
                 {createVersionMutation.isPending

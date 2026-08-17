@@ -25,6 +25,60 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-08-24
+
+### Changed: many content views per lifecycle environment (BREAKING)
+
+Pre-1.0 — see `docs/releasing.md`, no stability guarantee yet — but this
+supersedes 0.38.0's Library model after only a week, called out
+explicitly for the same reason those releases were.
+
+Lifecycle Environment and Content View are now genuinely separate axes,
+matching real Satellite: an environment is a promotion PATH slot
+(Library → QA → Dev → Prod); any number of content views can be assigned
+to the same environment, independently promoted, each with its own
+current version. 0.38.0's auto-created, protected "Library" environment
+is gone — environments are created explicitly again, with no special
+casing, and content view creation no longer has any environment side
+effect.
+
+- `LifecycleEnvironment` drops `content_view_id`, `release`,
+  `publish_prefix`, `current_version_id`, `gpg_key_id`, `is_library` —
+  back to pure path structure (`name` globally unique again,
+  `path_name`/`position`). New `EnvironmentContentView` join table carries
+  everything that moved off, one row per `(environment_id,
+  content_view_id)` pair, `publish_prefix` derived as
+  `<environment-name>/<content-view-name>` and still globally unique.
+- `POST /lifecycle-environments` is name/description/prior_environment_id
+  only again — no `content_view_id` field.
+- New `POST /lifecycle-environments/{id}/content-views` — assigns a
+  content view to an environment and performs its first promote in one
+  call (`content_view_id`, `content_view_version_id` required,
+  `gpg_key_id`/`allow_unsigned`). New `GET`/`DELETE` on the same path,
+  plus `POST .../content-views/{content_view_id}/promote`, `.../rollback`,
+  and `.../gpg-key` for every subsequent action on that pair — replacing
+  the old `POST /lifecycle-environments/{id}/promote`/`/rollback`/
+  `/gpg-key`, which are gone.
+- New `GET /content-views/{id}/environments` — every environment a
+  content view is assigned to, the mirror image of the endpoint above.
+- Path-order enforcement (`_check_path_order`) is now per content view: a
+  content view at path position N can only promote once that SAME content
+  view is already live at position N-1; a different content view assigned
+  to the same path tracks its own position independently.
+- `bootstrap_client.yml`/beacon checkin now write one apt source file per
+  assigned content view (`groundctl-<environment>-<content-view>.list`,
+  filename now includes the content view name) instead of one per
+  environment. Beacon's `BeaconCheckinResponse.environment` (singular) is
+  replaced by `environment_name` + `content_views: list[...]`.
+  Compliance checks union available packages across every content view
+  assigned to a server's environment instead of one single version.
+- Web UI: environment creation dialog reverts to name/description/prior;
+  each environment row gets a "Content views" panel for
+  assign/promote/rollback/unassign per content view. CLI: `groundctl
+  environment create` drops `--content-view-id`; new `groundctl
+  environment content-view <assign|list|promote|rollback|gpg-key|unassign>`
+  subcommand group.
+
 ## [0.38.0] - 2026-08-17
 
 ### Added: auto-created "Library" root environment per content view (BREAKING)

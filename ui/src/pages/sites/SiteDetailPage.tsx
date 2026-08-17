@@ -296,7 +296,9 @@ export function SiteDetailPage() {
                       >
                         <Checkbox checked={selectedEnvIds.has(env.id)} onCheckedChange={() => toggleEnv(env.id)} />
                         <span className="font-medium">{env.name}</span>
-                        <span className="text-muted-foreground">{env.publish_prefix}</span>
+                        <span className="text-muted-foreground">
+                          {env.path_name} #{env.position}
+                        </span>
                       </label>
                     ))}
                   </div>

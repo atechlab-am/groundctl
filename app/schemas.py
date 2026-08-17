@@ -474,49 +474,20 @@ class ContentViewFilterRead(BaseModel):
 
 class LifecycleEnvironmentCreate(BaseModel):
     """Matches Satellite's own "New Environment" dialog: name, description,
-    and prior (predecessor in the promotion path) — every content view has
-    its own auto-created "Library" root (see create_content_view), and
-    every OTHER environment is created explicitly, chained off an existing
-    one via prior_environment_id. content_view_id is required directly
-    only when NOT chaining off a prior (there's nothing to inherit it
-    from) — Satellite has no cross-content-view environment sharing, so
-    every environment always belongs to exactly one content view from the
-    moment it's created, never deferred. release/publish_prefix still get
-    derived at first-promote (do_promote, lifecycle_environments.py).
-    gpg_key_id stays optional; if left unset, the signed-vs-unsigned
-    choice is enforced at first-promote time instead (see PromoteRequest.
-    allow_unsigned) — CLAUDE.md's "signing on by default, unsigned an
-    explicit opt-out" posture still applies, just at the point content
-    actually gets published rather than at creation.
+    and prior (predecessor in the promotion path). An environment is pure
+    promotion-path structure with NO content view of its own — any number
+    of content views get assigned to it afterward, independently, via
+    EnvironmentContentViewCreate below.
     """
 
     name: str
     description: str | None = None
-    # Required unless prior_environment_id is set (in which case
-    # content_view_id is inherited from the prior environment — see the
-    # router's validation). Set = insert immediately after that
-    # environment in its existing path (same path_name, position + 1).
+    # Omit to start a brand-new promotion path at position 0. Set to
+    # insert this environment immediately after another one in its
+    # existing path (same path_name, position + 1).
     prior_environment_id: uuid.UUID | None = None
-    # validate_default=True: without it, pydantic v2 skips field
-    # validators entirely for a field left at its default (omitted from
-    # the request body is exactly the "neither field set" case this
-    # validator exists to catch) — same class of bug already caught once
-    # this session on LifecycleEnvironmentCreate.allow_unsigned, before
-    # that field was removed from this schema.
-    content_view_id: uuid.UUID | None = Field(default=None, validate_default=True)
-    gpg_key_id: str | None = None
 
     _validate_name = field_validator("name")(validate_aptly_name)
-    _validate_gpg_key_id = field_validator("gpg_key_id")(
-        lambda v: validate_gpg_key_id(v) if v is not None else v
-    )
-
-    @field_validator("content_view_id")
-    @classmethod
-    def _validate_content_view_or_prior(cls, v: uuid.UUID | None, info) -> uuid.UUID | None:
-        if v is None and info.data.get("prior_environment_id") is None:
-            raise ValueError("content_view_id is required unless prior_environment_id is set")
-        return v
 
 
 class LifecycleEnvironmentRead(BaseModel):
@@ -525,12 +496,6 @@ class LifecycleEnvironmentRead(BaseModel):
     description: str | None
     path_name: str
     position: int
-    content_view_id: uuid.UUID | None
-    is_library: bool
-    release: str | None
-    publish_prefix: str | None
-    current_version_id: uuid.UUID | None
-    gpg_key_id: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -538,35 +503,51 @@ class LifecycleEnvironmentRead(BaseModel):
 
 
 class LifecycleEnvironmentUpdate(BaseModel):
-    """Both fields optional/independent — a caller sets whichever it wants
-    to change, omitted fields are left untouched (unlike
-    ContentViewVersionUpdate's single-field description-or-clear shape,
-    this has two fields that can be updated separately, so `None` isn't
-    usable as "no change" for gpg_key_id specifically — see the router's
-    exclude_unset handling).
+    description: str | None = None
+
+
+class EnvironmentContentViewCreate(BaseModel):
+    """Assigns a content view to an environment AND performs its first
+    promote in one call (create_environment_content_view,
+    lifecycle_environments.py) — there's no useful "assigned but never
+    published" state worth exposing separately.
     """
 
-    description: str | None = None
+    content_view_id: uuid.UUID
+    # Required — no "latest" default on a first promote, same as the old
+    # single-content-view model's first-promote rule.
+    content_view_version_id: uuid.UUID
     gpg_key_id: str | None = None
+    # Required unless gpg_key_id is set — CLAUDE.md's "signing on by
+    # default, unsigned an explicit opt-out" posture.
+    allow_unsigned: bool = False
 
     _validate_gpg_key_id = field_validator("gpg_key_id")(
         lambda v: validate_gpg_key_id(v) if v is not None else v
     )
 
 
+class EnvironmentContentViewRead(BaseModel):
+    id: uuid.UUID
+    environment_id: uuid.UUID
+    content_view_id: uuid.UUID
+    current_version_id: uuid.UUID | None
+    release: str | None
+    publish_prefix: str | None
+    gpg_key_id: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class PromoteRequest(BaseModel):
-    # Omit to promote the content view's latest version — only valid once
-    # the environment already has a content_view_id (i.e. not its first
-    # promote; do_promote requires this explicitly on a never-promoted
-    # environment, since there's no "the content view" to default to yet).
+    # Omit to publish-if-needed and promote the content view's latest
+    # version. Every EnvironmentContentView row this applies to has
+    # already had its first promote (see EnvironmentContentViewCreate) —
+    # release/publish_prefix/gpg_key_id are already locked in by the time
+    # this is used.
     content_view_version_id: uuid.UUID | None = None
-    # Only consulted on an environment's FIRST promote (content_view_id is
-    # still None) — locks in the environment's permanent signing posture
-    # at the same moment publish_prefix/release/content_view_id get
-    # derived. Ignored on every later promote (the environment's gpg_key_id,
-    # set at creation or by this first promote, governs from then on).
-    # Same enforcement LifecycleEnvironmentCreate used to do at creation
-    # time: gpg_key_id required unless allow_unsigned=true is explicit.
     allow_unsigned: bool = False
 
 
@@ -829,23 +810,31 @@ class BeaconCheckinRequest(BaseModel):
     applied_config_serial: int | None = None
 
 
-class BeaconEnvironmentInfo(BaseModel):
-    id: uuid.UUID
-    name: str
-    release: str
-    publish_prefix: str
-    components: list[str]
-    gpg_key_id: str | None
-
-
 class BeaconAptSource(BaseModel):
-    # e.g. "groundctl-dev.list" — the ONLY file the beacon should ever
-    # write matching this exact name in /etc/apt/sources.list.d/.
+    # e.g. "groundctl-dev-jammy-baseline.list" — the filename now includes
+    # the content view name, since one environment can have many content
+    # views assigned (EnvironmentContentView, models.py) and each needs
+    # its own file.
     filename: str
     # Rendered server-side (see app/apt_sources.py) — the beacon writes
     # this verbatim and never constructs a deb line itself.
     contents: str
     keyring_filename: str | None
+
+
+class BeaconContentViewInfo(BaseModel):
+    # EnvironmentContentView.id — identifies this specific assignment.
+    id: uuid.UUID
+    content_view_id: uuid.UUID
+    content_view_name: str
+    release: str
+    publish_prefix: str
+    components: list[str]
+    gpg_key_id: str | None
+    apt_source: BeaconAptSource
+    # Armored, so the beacon can install/rotate its own keyring file.
+    # None when this assignment is unsigned ([trusted=yes]).
+    gpg_public_key: str | None
 
 
 class BeaconAction(BaseModel):
@@ -858,11 +847,11 @@ class BeaconCheckinResponse(BaseModel):
     server_id: uuid.UUID
     hostname: str
     config_serial: int
-    environment: BeaconEnvironmentInfo
-    apt_source: BeaconAptSource
-    # Armored, so the beacon can install/rotate its own keyring file.
-    # None when the environment is unsigned ([trusted=yes]).
-    gpg_public_key: str | None
+    environment_name: str
+    # One entry per content view assigned to this server's environment
+    # that's actually been published — never-promoted assignments are
+    # omitted (nothing coherent to reconcile against yet).
+    content_views: list[BeaconContentViewInfo]
     checkin_interval_seconds: int
     facts_requested: bool
     actions: list[BeaconAction]

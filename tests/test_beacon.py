@@ -38,33 +38,33 @@ def _create_cv(client, operator_token, repo, name="beacon-cv"):
 
 
 def _create_env(client, operator_token, cv, name="beacon-env", path_name="beacon-path", position=0, publish_prefix="beacon-prefix"):
-    # path_name/position/content_view_id/publish_prefix are no longer
-    # creation-time fields (see LifecycleEnvironmentCreate) — every beacon
-    # checkin call in this file needs a genuinely PROMOTED environment now
-    # (checkin hard-fails with RuntimeError if publish_prefix/release are
-    # still null — app/routers/beacon.py), so this helper creates then
-    # immediately promotes the content view's already-published version 1.
+    # An environment is now pure path structure with NO content view of its
+    # own (LifecycleEnvironmentCreate takes only name/description/
+    # prior_environment_id) — content views are assigned to it afterward
+    # via POST /{id}/content-views, which also performs that pair's first
+    # promote in the same call. Every beacon checkin call in this file
+    # needs at least one genuinely PUBLISHED assignment now (checkin's
+    # `content_views` list is populated from published EnvironmentContentView
+    # rows — app/routers/beacon.py), so this helper creates the environment
+    # then assigns+promotes the content view's already-published version 1.
     # cv/path_name/position/publish_prefix args kept for call-site
     # compatibility; only `name` and `cv` actually matter now.
     r = client.post(
-        "/lifecycle-environments", json={"name": name, "content_view_id": cv["id"]}, headers=auth_headers(operator_token)
+        "/lifecycle-environments", json={"name": name}, headers=auth_headers(operator_token)
     )
     assert r.status_code == 201, r.text
     env = r.json()
 
     versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
     version_id = versions_r.json()[0]["id"]
-    promote_r = client.post(
-        f"/lifecycle-environments/{env['id']}/promote",
-        json={"content_view_version_id": version_id, "allow_unsigned": True},
+    assign_r = client.post(
+        f"/lifecycle-environments/{env['id']}/content-views",
+        json={"content_view_id": cv["id"], "content_view_version_id": version_id, "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
-    assert promote_r.status_code == 200, promote_r.text
+    assert assign_r.status_code == 201, assign_r.text
 
-    get_r = client.get(
-        "/lifecycle-environments", params={"content_view_id": cv["id"]}, headers=auth_headers(operator_token)
-    )
-    return next(e for e in get_r.json() if e["id"] == env["id"])
+    return env
 
 
 def _make_environment(client, operator_token, suffix="1"):
@@ -313,14 +313,16 @@ def test_checkin_with_valid_token(client, operator_token):
     body = r.json()
     assert body["server_id"] == server["id"]
     assert body["hostname"] == server["hostname"]
-    assert body["environment"]["id"] == env["id"]
-    assert body["apt_source"]["filename"] == f"groundctl-{env['name']}.list"
-    assert "deb [trusted=yes]" in body["apt_source"]["contents"]
+    assert body["environment_name"] == env["name"]
+    assert len(body["content_views"]) == 1
+    cv_info = body["content_views"][0]
+    assert cv_info["apt_source"]["filename"] == f"groundctl-{env['name']}-{cv_info['content_view_name']}.list"
+    assert "deb [trusted=yes]" in cv_info["apt_source"]["contents"]
     assert body["checkin_interval_seconds"] == 300
     assert body["actions"] == []
     assert body["config_serial"] == 1
-    # Unsigned environment (allow_unsigned=True in _create_env) — no key.
-    assert body["gpg_public_key"] is None
+    # Unsigned assignment (allow_unsigned=True in _create_env) — no key.
+    assert cv_info["gpg_public_key"] is None
 
     # last_seen_at is now a real heartbeat for a beacon-managed host.
     get_r = client.get(f"/servers/{server['id']}", headers=auth_headers(operator_token))
@@ -353,7 +355,7 @@ def test_checkin_bumps_config_serial_after_reassignment(client, operator_token):
     )
     assert r2.status_code == 200, r2.text
     assert r2.json()["config_serial"] == 2
-    assert r2.json()["environment"]["id"] == env_b["id"]
+    assert r2.json()["environment_name"] == env_b["name"]
 
 
 def test_checkin_no_token_rejected(client):
@@ -509,8 +511,10 @@ def test_promote_bumps_config_serial_for_beacon_managed_server(client, operator_
     mock_aptly.get_mirror_packages.return_value = [
         {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
     ]
-    mock_aptly.publish_exists.return_value = False
-    env = _make_environment(client, operator_token, "18")
+    mock_aptly.publish_exists.return_value = True
+    repo = _create_repo(client, operator_token, "beacon-repo-18")
+    cv = _create_cv(client, operator_token, repo, "beacon-cv-18")
+    env = _create_env(client, operator_token, cv, "beacon-env-18")
     server = _create_server(client, operator_token, env, "beacon-host18.example.com", "10.1.0.20")
     token = _issue_token(client, operator_token, server)
     headers = {"Authorization": f"Bearer {token['token']}"}
@@ -518,8 +522,13 @@ def test_promote_bumps_config_serial_for_beacon_managed_server(client, operator_
     checkin_r1 = client.post("/beacon/checkin", json={"agent_version": "0.1.0"}, headers=headers)
     serial_before = checkin_r1.json()["config_serial"]
 
+    # _create_env already did the first promote (assign+publish) — this is
+    # a SECOND promote of the same (environment, content view) pair, via
+    # the nested per-content-view route.
     promote_r = client.post(
-        f"/lifecycle-environments/{env['id']}/promote", json={}, headers=auth_headers(operator_token)
+        f"/lifecycle-environments/{env['id']}/content-views/{cv['id']}/promote",
+        json={},
+        headers=auth_headers(operator_token),
     )
     assert promote_r.status_code == 200, promote_r.text
 
@@ -536,10 +545,16 @@ def test_promote_does_not_error_when_no_beacon_managed_servers(client, operator_
     mock_aptly.get_mirror_packages.return_value = [
         {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
     ]
-    mock_aptly.publish_exists.return_value = False
-    env = _make_environment(client, operator_token, "19")
+    mock_aptly.publish_exists.return_value = True
+    repo = _create_repo(client, operator_token, "beacon-repo-19")
+    cv = _create_cv(client, operator_token, repo, "beacon-cv-19")
+    env = _create_env(client, operator_token, cv, "beacon-env-19")
 
-    r = client.post(f"/lifecycle-environments/{env['id']}/promote", json={}, headers=auth_headers(operator_token))
+    r = client.post(
+        f"/lifecycle-environments/{env['id']}/content-views/{cv['id']}/promote",
+        json={},
+        headers=auth_headers(operator_token),
+    )
     assert r.status_code == 200, r.text
 
 

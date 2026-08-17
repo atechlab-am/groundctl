@@ -37,32 +37,19 @@ def _create_cv(client, operator_token, repo, name="cv"):
 
 
 def _create_env(client, operator_token, cv, name="dev", path_name="main", position=0, publish_prefix="dev"):
-    # path_name/position/publish_prefix are no longer creation-time fields
-    # (see LifecycleEnvironmentCreate) — publish_prefix is derived from
-    # `name` at first promote instead. This helper immediately promotes
-    # the content view's already-published version 1 so callers keep
-    # getting back a fully linked, published environment exactly like
-    # before. No caller in this file uses position>0, so prior-chaining
-    # isn't needed here.
+    # An environment is now pure path structure with NO content view of its
+    # own (LifecycleEnvironmentCreate takes only name/description/
+    # prior_environment_id) — `cv` is accepted for call-site compatibility
+    # but intentionally left UNASSIGNED here. No test in this file reads
+    # environment content-view state (activation keys only need env["id"]
+    # to exist), so skipping the assign+promote step keeps this helper
+    # cheap. path_name/position/publish_prefix args kept for call-site
+    # compatibility only.
     r = client.post(
-        "/lifecycle-environments", json={"name": name, "content_view_id": cv["id"]}, headers=auth_headers(operator_token)
+        "/lifecycle-environments", json={"name": name}, headers=auth_headers(operator_token)
     )
     assert r.status_code == 201, r.text
-    env = r.json()
-
-    versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
-    version_id = versions_r.json()[0]["id"]
-    promote_r = client.post(
-        f"/lifecycle-environments/{env['id']}/promote",
-        json={"content_view_version_id": version_id, "allow_unsigned": True},
-        headers=auth_headers(operator_token),
-    )
-    assert promote_r.status_code == 200, promote_r.text
-
-    get_r = client.get(
-        "/lifecycle-environments", params={"content_view_id": cv["id"]}, headers=auth_headers(operator_token)
-    )
-    return next(e for e in get_r.json() if e["id"] == env["id"])
+    return r.json()
 
 
 def _make_env(client, operator_token, suffix):

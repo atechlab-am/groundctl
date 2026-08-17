@@ -41,62 +41,58 @@ managing them separately.
 
 Give it a name, select the repositories you just created, and create it.
 
-### Publish a version — and meet your content view's Library
+### Publish a version
 
-Still on the Content Views page, click **Create** and this happens
-automatically: the content view cuts its first immutable **content view
-version** (a snapshot of every member repository's current contents,
-frozen together) and publishes it to an auto-created root environment
-called **Library** — matching Satellite exactly. You don't create Library
-yourself, can't rename or delete it, and it's already live the moment the
-content view exists.
+Still on the Content Views page, click **Create** — this cuts the content
+view's first immutable **content view version** (a snapshot of every
+member repository's current contents, frozen together). Nothing is
+published anywhere yet; a content view is its own thing, independent of
+any lifecycle environment. Click **Publish** again any time member
+repositories change to cut a new version.
 
-Everything you promote later flows outward from Library — first to
-whatever environment you chain onto it (e.g. QA), then the next
-(Dev), then the next (Prod), typically converging so every environment in
-the path eventually carries the same patch level. Click **Publish** again
-any time member repositories change to cut a new version (still lands in
-Library first).
-
-## 3. Lifecycle Environments — the promotion path from Library outward
+## 3. Lifecycle Environments — promotion paths, not content-view slots
 
 **Environments** page → **New environment**. Creation matches Satellite's
-own "New Lifecycle Environment" dialog, plus which content view it
-belongs to:
+own "New Lifecycle Environment" dialog — an environment is pure
+**promotion-path structure**, with no content view of its own:
 
 | Field | What it means |
 |---|---|
-| Name | Display name, e.g. `jammy-qa`. Also becomes the publish URL segment once you promote something to it (see below), so keep it something you'd want in a URL. |
+| Name | Display name, e.g. `Library`, `QA`, `Dev`, `Prod`. Environments have no auto-created root — if you want a Library-style starting point, create one yourself with that name, same as any other. |
 | Description | Free text, optional. |
-| Content view | Required — every environment belongs to exactly one content view, same as its Library. |
-| Prior | Which environment this one comes right after in its promotion path — defaults to that content view's Library if left blank, so a fresh environment naturally starts one step out from Library (e.g. `Library → jammy-qa`, then `jammy-qa → jammy-dev`, then `jammy-dev → jammy-prod`). Position N can only be promoted into once position N-1 in the same path currently has that version live. |
+| Prior | Which environment this one comes right after in its promotion path (e.g. `Library → QA` means QA's prior is Library). Leave blank to start a brand-new path at position 0. Position N can only be promoted into once position N-1 in the same path currently has that content view's version live. |
 
-GPG signing and publish prefix are **not** asked here — none of it is
-needed until you actually publish something to the environment. Create
-it now; it starts as an empty shell with nothing published (Library, by
-contrast, is never an empty shell — it's live from the moment its content
-view exists).
+Content view, GPG signing, and publish prefix are **not** asked here —
+none of it is needed until you actually assign a content view to the
+environment. Create it now; it starts empty, with nothing assigned.
 
-### Promote — actually point it at content (and lock in the rest)
+### Assign a content view — this is where publishing actually happens
 
-Click **Promote** and pick the content view version you just published
-(or leave it to promote whatever's newest). This is the step that derives
-`release` from the content view's first repository and sets the publish
-prefix to the environment's name — same "just push a content view to it"
-flow as Satellite. It's also the step that actually makes the environment
-serve real package data. The content view itself was already fixed at
-creation, so this step never changes which content view an environment
-belongs to.
+Any number of content views can be assigned to the same environment,
+independently. On the environment's **Content views** panel, click
+**Assign content view**, pick the content view and the version to publish,
+and (if it's the first time this content view has been assigned anywhere)
+either set a GPG key or explicitly confirm unsigned publishing.
 
-No GPG key configured yet? You'll be asked to either set one first
-(**Edit** on the environment page, or `PATCH /api/lifecycle-environments/{id}`)
-or explicitly confirm unsigned publishing — see
+This single action creates the assignment AND publishes it — deriving
+`release` from the content view's first repository and setting the
+publish prefix to `<environment-name>/<content-view-name>`. It's the step
+that actually makes the environment serve that content view's package
+data. Later promotes for the same assignment (a new version, or rolling
+back) reuse the signing/release choice made here.
+
+No GPG key configured? You'll be asked to either set one at assignment
+time or explicitly confirm unsigned publishing — see
 [`docs/gpg-signing.md`](gpg-signing.md). Unsigned means managed hosts
 trust this repo's metadata unverified (`[trusted=yes]`) — fine for a
 trusted network, not for anything exposed.
 
-Your environment is now live at
-`https://<fleet-hostname>:<nginx-port>/<name>/`.
+The assignment is now live at
+`https://<fleet-hostname>:<nginx-port>/<environment-name>/<content-view-name>/`.
+Repeat for as many content views as this environment should carry — e.g.
+a `jammy-baseline` content view and a separate `security-only` content
+view can both live in the same `Prod` environment, each promoted on its
+own schedule.
 
 ## 4. Add a server
 
@@ -116,14 +112,14 @@ Two ways, matching Satellite's own two enrollment paths:
   this step for you automatically, which is the main reason to prefer it.
 
 Either way, once the server exists, trigger **Bootstrap** on it (from the
-server's detail page, or `POST /api/jobs/bootstrap/{id}`) — this writes the
-environment's apt source into
-`/etc/apt/sources.list.d/groundctl-<environment>.list` on the host, installs
-the GPG key if signing is on, and swaps in a per-host SSH key for future
-connections.
+server's detail page, or `POST /api/jobs/bootstrap/{id}`) — this writes one
+apt source file per content view assigned to the environment
+(`/etc/apt/sources.list.d/groundctl-<environment>-<content-view>.list`),
+installs each one's GPG key if signing is on, and swaps in a per-host SSH
+key for future connections.
 
-From here, `apt update && apt upgrade` on that host only sees what you've
-published to its environment. Promoting a new content view version later
-and re-promoting the environment is how you roll out updates — see
+From here, `apt update && apt upgrade` on that host sees every content
+view assigned to its environment. Promoting a new content view version
+later and re-promoting that assignment is how you roll out updates — see
 [`docs/quickstart.md`](quickstart.md) sections 8 onward for patching an
 environment, rollback, and errata-driven filters.

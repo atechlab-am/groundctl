@@ -39,15 +39,16 @@ def _create_cv(client, operator_token, repo, name="cv"):
 
 
 def _create_env(client, operator_token, cv, name="dev", path_name="main", position=0, publish_prefix="dev"):
-    # path_name/position/content_view_id/publish_prefix are no longer
-    # creation-time fields (see LifecycleEnvironmentCreate). Every job
-    # task in this file is only exercised via mocked .delay (never a real
-    # task-body call), so the environment's content_view_id/publish_prefix/
-    # release staying null (unpromoted) is harmless here — nothing reads
-    # them. cv/path_name/position/publish_prefix args kept for call-site
-    # compatibility only.
+    # An environment is now pure path structure with NO content view of its
+    # own (LifecycleEnvironmentCreate takes only name/description/
+    # prior_environment_id) — `cv` is accepted for call-site compatibility
+    # but intentionally left UNASSIGNED here. Every job task in this file
+    # is only exercised via mocked .delay (never a real task-body call), so
+    # having no EnvironmentContentView assignment at all is harmless —
+    # nothing reads it. cv/path_name/position/publish_prefix args kept for
+    # call-site compatibility only.
     r = client.post(
-        "/lifecycle-environments", json={"name": name, "content_view_id": cv["id"]}, headers=auth_headers(operator_token)
+        "/lifecycle-environments", json={"name": name}, headers=auth_headers(operator_token)
     )
     assert r.status_code == 201, r.text
     return r.json()

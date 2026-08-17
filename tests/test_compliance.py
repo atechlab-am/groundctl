@@ -52,32 +52,31 @@ def _create_cv(client, operator_token, repo, name="cv"):
 
 
 def _create_env(client, operator_token, cv, name="dev", path_name="main", position=0, publish_prefix="dev"):
-    # path_name/position/publish_prefix are no longer creation-time fields
-    # (see LifecycleEnvironmentCreate) — publish_prefix is derived from
-    # `name` at first promote instead. This helper immediately promotes
-    # the content view's already-published version 1 so callers keep
-    # getting back a fully linked, published environment exactly like
-    # before. No caller in this file uses position>0, so prior-chaining
-    # isn't needed here.
+    # An environment is now pure path structure with NO content view of its
+    # own (LifecycleEnvironmentCreate takes only name/description/
+    # prior_environment_id) — content views are assigned to it afterward
+    # via POST /{id}/content-views, which also performs that pair's first
+    # promote in the same call. This helper creates the environment then
+    # assigns+promotes the content view's already-published version 1, so
+    # callers keep getting back a fully linked, published environment
+    # exactly like before. No caller in this file uses position>0, so
+    # prior-chaining isn't needed here.
     r = client.post(
-        "/lifecycle-environments", json={"name": name, "content_view_id": cv["id"]}, headers=auth_headers(operator_token)
+        "/lifecycle-environments", json={"name": name}, headers=auth_headers(operator_token)
     )
     assert r.status_code == 201, r.text
     env = r.json()
 
     versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
     version_id = versions_r.json()[0]["id"]
-    promote_r = client.post(
-        f"/lifecycle-environments/{env['id']}/promote",
-        json={"content_view_version_id": version_id, "allow_unsigned": True},
+    assign_r = client.post(
+        f"/lifecycle-environments/{env['id']}/content-views",
+        json={"content_view_id": cv["id"], "content_view_version_id": version_id, "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
-    assert promote_r.status_code == 200, promote_r.text
+    assert assign_r.status_code == 201, assign_r.text
 
-    get_r = client.get(
-        "/lifecycle-environments", params={"content_view_id": cv["id"]}, headers=auth_headers(operator_token)
-    )
-    return next(e for e in get_r.json() if e["id"] == env["id"])
+    return env
 
 
 def _create_server(client, operator_token, env, hostname="host1.example.com"):
@@ -114,11 +113,14 @@ def _seed_compliance_record(db_session, server_id, installed_packages):
 
 
 def _publish_env(client, operator_token, cv, mock_aptly, env):
-    # Publishing the content view alone doesn't move the environment's
-    # current_version_id — must promote too, matching
-    # test_lifecycle_environments.py's pattern.
+    # Publishing the content view alone doesn't move the
+    # EnvironmentContentView pair's current_version_id — must promote too,
+    # via the nested per-content-view route now that promotion is scoped
+    # per (environment, content view) pair rather than per environment.
     r = client.post(
-        f"/lifecycle-environments/{env['id']}/promote", json={}, headers=auth_headers(operator_token)
+        f"/lifecycle-environments/{env['id']}/content-views/{cv['id']}/promote",
+        json={},
+        headers=auth_headers(operator_token),
     )
     assert r.status_code == 200, r.text
     return r.json()
@@ -140,16 +142,16 @@ def test_check_compliance_server_not_found(client, operator_token):
 
 def test_check_compliance_environment_not_published_422(client, operator_token, db_session):
     # Deliberately NOT using _create_env — that helper now creates AND
-    # promotes (so other tests get a fully-linked environment by default),
-    # but this test specifically needs current_version_id to stay null.
-    # content_view_id is required at creation regardless (see
-    # LifecycleEnvironmentCreate) — a throwaway content view supplies it
-    # without this environment ever being promoted to anything.
-    repo = _create_repo(client, operator_token, "unpub-repo")
-    cv = _create_cv(client, operator_token, repo, "unpub-cv")
+    # assigns+promotes a content view (so other tests get a fully-linked,
+    # published environment by default), but this test specifically needs
+    # zero published EnvironmentContentView assignments. An environment is
+    # pure path structure now (LifecycleEnvironmentCreate takes only
+    # name/description/prior_environment_id) — no content view is required
+    # at creation at all, so simply never assigning one reproduces the
+    # "nothing published to check against" 422 directly.
     env_r = client.post(
         "/lifecycle-environments",
-        json={"name": "env-unpub", "content_view_id": cv["id"]},
+        json={"name": "env-unpub"},
         headers=auth_headers(operator_token),
     )
     assert env_r.status_code == 201, env_r.text

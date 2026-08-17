@@ -161,6 +161,8 @@ class AuditAction(str, enum.Enum):
     trigger_delete_content_view_version = "trigger_delete_content_view_version"
     delete_content_view_version = "delete_content_view_version"
     update_lifecycle_environment = "update_lifecycle_environment"
+    assign_content_view_to_environment = "assign_content_view_to_environment"
+    unassign_content_view_from_environment = "unassign_content_view_from_environment"
 
 
 class User(Base):
@@ -431,77 +433,81 @@ class ContentViewVersion(Base):
 
 
 class LifecycleEnvironment(Base):
-    """Every content view gets exactly one auto-created, protected root
-    environment named "Library" (is_library=True), created alongside
-    version 1 the moment the content view exists and immediately
-    promoted to that version — matches Satellite: every content view has
-    an implicit Library, publishing always lands there first, and it can
-    never be deleted/renamed/reparented (see create_content_view,
-    lifecycle_environments.py's delete/update guards). Every other
-    environment is created explicitly by an operator, always scoped to
-    ONE content view (content_view_id set at creation, never deferred —
-    a reversal of an earlier design that deferred it to first-promote;
-    Satellite has no cross-content-view environment sharing, so once
-    Library needed to be real, environments needed to be scoped again
-    too). release/publish_prefix stay derived at first-promote for
-    non-Library environments (Library's are derived immediately at
-    creation, since its content view is always already known).
+    """Pure promotion-PATH structure — Library -> QA -> Dev -> Prod — with
+    NO content view association of its own. Created explicitly by an
+    operator (name/description/prior_environment_id, see
+    create_lifecycle_environment); there is no auto-created or protected
+    row anymore. Which packages a host in this environment actually gets
+    comes entirely from whichever content views are ASSIGNED to it — see
+    EnvironmentContentView below. Any number of content views can be
+    assigned to the same environment, each independently promoted/rolled
+    back, each with its own current version — matches Satellite, where
+    Lifecycle Environment and Content View are two separate axes, not a
+    1:1 pairing.
 
-    name is unique per content view, not globally — every content view's
-    root is literally "Library", which would collide under a global
-    constraint. publish_prefix stays GLOBALLY unique regardless (it's a
-    flat aptly/nginx URL path, not scoped by content view) — Library's
-    publish_prefix is derived as "<content-view-name>/library", not the
-    literal name, specifically to avoid that collision.
+    name is unique globally again (not scoped to a content view — an
+    environment doesn't belong to one).
     """
 
     __tablename__ = "lifecycle_environments"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Ordered-path model: environments sharing (content_view_id, path_name)
-    # form one ordered chain by position (0-based), always rooted at that
-    # content view's Library (position 0). Promotion into position N
-    # requires the target version to already be current at position N-1
-    # in the same path. Set from LifecycleEnvironmentCreate.
-    # prior_environment_id at creation (Library itself has no prior — it's
-    # always position 0 of its own path, path_name = "Library").
+    # Ordered-path model: environments sharing path_name form one ordered
+    # chain by position (0-based). Promotion of a given content view into
+    # position N requires that SAME content view to already be current at
+    # position N-1 in the same path (see _check_path_order,
+    # lifecycle_environments.py) — position 0 has no such gate. Set from
+    # LifecycleEnvironmentCreate's prior_environment_id at creation.
     path_name: Mapped[str] = mapped_column(String, nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
-    # Nullable at the DB/column level only for backward compatibility with
-    # rows created under an earlier design that deferred this to first-
-    # promote (never backfilled — no correct guess exists for an
-    # environment that was never promoted to anything). The application
-    # always sets this at creation time now (create_lifecycle_environment
-    # requires it explicitly, or inherits it from prior_environment_id;
-    # every content view's auto-created Library sets it immediately). No
-    # router or task should ever leave this None on a NEW row.
-    content_view_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("content_views.id"), nullable=True
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
-    # True only for the one auto-created root per content view. Protected
-    # from delete/rename/reparent — see update_lifecycle_environment and
-    # the content view delete path.
-    is_library: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    release: Mapped[str | None] = mapped_column(String, nullable=True)
-    publish_prefix: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+
+    __table_args__ = (UniqueConstraint("path_name", "position"),)
+
+
+class EnvironmentContentView(Base):
+    """One row per (environment, content view) assignment — this is where
+    the actual "what's published" state lives now that LifecycleEnvironment
+    itself is pure path structure. Created by
+    POST /lifecycle-environments/{id}/content-views (assign + first-promote
+    in one call, lifecycle_environments.py), which is also the only place
+    release/publish_prefix get derived and locked in (same "deferred to
+    first promote" posture the old single-content-view model used).
+
+    publish_prefix is "<environment-name>/<content-view-name>" — GLOBALLY
+    unique (it's a flat aptly/nginx URL path), derived, never
+    operator-set. release is derived from the content view's first member
+    repository (derive_release_for_content_view), same as before.
+    """
+
+    __tablename__ = "environment_content_views"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("lifecycle_environments.id"), nullable=False
+    )
+    content_view_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("content_views.id"), nullable=False
+    )
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("content_view_versions.id"), nullable=True
     )
+    release: Mapped[str | None] = mapped_column(String, nullable=True)
+    publish_prefix: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     # Nullable — unsigned publishing stays available as an explicit choice
-    # (LifecycleEnvironmentCreate.allow_unsigned), but new environments
-    # require this to be set unless that flag is passed. See docs/gpg-signing.md.
+    # (EnvironmentContentViewCreate.allow_unsigned). See docs/gpg-signing.md.
     gpg_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
 
-    __table_args__ = (
-        UniqueConstraint("content_view_id", "name"),
-        UniqueConstraint("content_view_id", "path_name", "position"),
-    )
+    __table_args__ = (UniqueConstraint("environment_id", "content_view_id"),)
 
 
 class Server(Base):
