@@ -67,7 +67,12 @@ def publish_and_promote(
     content_view_id: uuid.UUID = typer.Argument(..., help="Content view UUID."),
     environment_id: uuid.UUID = typer.Option(..., "--environment-id", help="Environment to promote the new version to."),
     description: str = typer.Option(None, "--description", help="Optional, applied to the version once cut."),
-    force: bool = typer.Option(True, "--force/--no-force", help="Always cut a new version, even if unchanged since the last one."),
+    force: bool = typer.Option(
+        False,
+        "--force/--no-force",
+        help="Always cut a new version, even if unchanged since the last one. Matches `publish`'s own "
+        "default (False) — the backend's PublishAndPromoteRequest.force also defaults to False.",
+    ),
 ) -> None:
     """Cut a new version and promote it to an environment as ONE tracked
     Job — unlike `publish` (synchronous), this returns immediately; poll

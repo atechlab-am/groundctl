@@ -6,7 +6,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Callable, TypeGuard
 
-import redis
 from celery.exceptions import MaxRetriesExceededError
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
@@ -26,6 +25,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.errata_ingest import fetch_and_upsert_dsa, fetch_and_upsert_usn
 from app.instance_settings import get_effective_settings
+from app.locking import acquire_lock
 from app.metrics import APTLY_DISK_USAGE_BYTES, APTLY_DISK_USAGE_PERCENT, JOBS_TOTAL
 from app.models import (
     AuditAction,
@@ -60,16 +60,12 @@ from app.webhooks import send_webhook
 
 logger = logging.getLogger("groundctl.tasks")
 
-_redis = redis.from_url(settings.redis_url)
-
-# Matches AptlyClient's own convention for long-running operations against a
-# large fleet (see aptly_client.py's 1800s sync/publish timeouts).
-_LOCK_TIMEOUT_SECONDS = 1800
-
-
-def _acquire_lock(key: str):
-    lock = _redis.lock(key, timeout=_LOCK_TIMEOUT_SECONDS, blocking=False)
-    return lock if lock.acquire(blocking=False) else None
+# Locking now lives in app.locking (shared with the synchronous
+# promote_environment endpoint, which needs the same per-environment lock
+# publish_and_promote_task takes — see that module's docstring). Aliased
+# here so every existing _acquire_lock(...) call site in this file is
+# unchanged.
+_acquire_lock = acquire_lock
 
 
 def _mark_job(db: Session, job: Job, status_: JobStatus, log_output: str) -> None:
@@ -865,8 +861,8 @@ def publish_and_promote_task(self, job_id: str) -> str:
         if audit.detail is None:
             raise ValueError(f"audit log for job {job.id} is missing its publish-and-promote detail")
         content_view_id = uuid.UUID(audit.detail["content_view_id"])
-        force = audit.detail["force"]
-        description = audit.detail["description"]
+        force = audit.detail.get("force", False)
+        description = audit.detail.get("description")
         allow_unsigned = audit.detail.get("allow_unsigned", False)
 
         environment = db.get(LifecycleEnvironment, job.environment_id)
@@ -926,6 +922,22 @@ def publish_and_promote_task(self, job_id: str) -> str:
                 environment.content_view_id = content_view.id
                 environment.release = derive_release_for_content_view(db, content_view.id)
                 environment.publish_prefix = environment.name
+            elif environment.content_view_id != content_view.id:
+                # Race: the endpoint validated this environment was either
+                # unlinked or already tied to THIS content view at request
+                # time, but a concurrent first-promote (via the synchronous
+                # /promote endpoint, or another queued job) could have
+                # linked it to a DIFFERENT content view before this task
+                # ran. Promoting content_view's version onto it now would
+                # silently mix content from two different content views on
+                # one environment — fail loudly instead.
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"environment {environment.name} was linked to a different content view "
+                        "by a concurrent request — retry"
+                    ),
+                )
 
             do_promote(environment, version, db, aptly, user)
 
@@ -1144,42 +1156,73 @@ def delete_content_view_version_task(self, job_id: str) -> str:
 
         version_label = f"version {version.version}"
 
-        if version_ever_promoted(db, version.id):
+        # Per-version lock, matching every sibling delete/mutate task in
+        # this file (delete_repository_task locks the repository,
+        # publish_and_promote_task locks the environment) — without it,
+        # two concurrent delete requests for the same version can both
+        # pass the version_ever_promoted guard and race
+        # aptly.delete_snapshot on the same snapshot names, corrupting
+        # partial-failure recovery (see the AptlyError handling below).
+        lock = acquire_lock(f"groundctl:lock:content-view-version:{version.id}")
+        if lock is None:
             _mark_job(
                 db, job, JobStatus.failed,
-                f"{version_label} has since been promoted to an environment and can no longer be deleted",
+                "another delete is already running against this version — retry once it completes",
             )
-            return "version promoted since request"
+            return "lock contention"
 
-        snapshot_names = version.all_snapshot_names
-        if not snapshot_names:
-            snapshot_names = list({entry["snapshot_name"] for entry in version.snapshots})
-
-        job.log_output = f"deleting {len(snapshot_names)} snapshot(s) for {version_label}…"
-        db.commit()
-
-        aptly = get_aptly_client()
         try:
-            for snapshot_name in snapshot_names:
-                aptly.delete_snapshot(snapshot_name)
-            db.add(
-                AuditLog(
-                    user_id=job.created_by_user_id,
-                    action=AuditAction.delete_content_view_version,
-                    resource_type="content_view_version",
-                    resource_id=str(version.id),
-                    detail={"version": version.version, "content_view_id": str(version.content_view_id)},
+            if version_ever_promoted(db, version.id):
+                _mark_job(
+                    db, job, JobStatus.failed,
+                    f"{version_label} has since been promoted to an environment and can no longer be deleted",
                 )
-            )
-            db.delete(version)
+                return "version promoted since request"
+
+            snapshot_names = version.all_snapshot_names
+            if not snapshot_names:
+                snapshot_names = list({entry["snapshot_name"] for entry in version.snapshots})
+
+            job.log_output = f"deleting {len(snapshot_names)} snapshot(s) for {version_label}…"
             db.commit()
-            _mark_job(db, job, JobStatus.success, f"deleted {version_label}")
-            return "successful"
-        except AptlyError as exc:
-            db.rollback()
-            job = _get_job_or_raise(db, job_id)
-            _mark_job(db, job, JobStatus.failed, str(exc))
-            return "failed"
+
+            aptly = get_aptly_client()
+            remaining_names = list(snapshot_names)
+            try:
+                for snapshot_name in snapshot_names:
+                    aptly.delete_snapshot(snapshot_name)
+                    remaining_names.remove(snapshot_name)
+                db.add(
+                    AuditLog(
+                        user_id=job.created_by_user_id,
+                        action=AuditAction.delete_content_view_version,
+                        resource_type="content_view_version",
+                        resource_id=str(version.id),
+                        detail={"version": version.version, "content_view_id": str(version.content_view_id)},
+                    )
+                )
+                db.delete(version)
+                db.commit()
+                _mark_job(db, job, JobStatus.success, f"deleted {version_label}")
+                return "successful"
+            except AptlyError as exc:
+                db.rollback()
+                # Some snapshots in `snapshot_names` may have already been
+                # deleted from aptly before this one failed — a plain
+                # rollback would restore the version row with the ORIGINAL
+                # full list, so a retry re-attempts the already-deleted
+                # ones and fails again on THOSE, permanently wedging the
+                # version. Persist the shrunk remaining_names instead, so
+                # a retry only re-attempts what's actually still there.
+                job = _get_job_or_raise(db, job_id)
+                version = db.get(ContentViewVersion, version.id)
+                if version is not None:
+                    version.all_snapshot_names = remaining_names
+                    db.commit()
+                _mark_job(db, job, JobStatus.failed, str(exc))
+                return "failed"
+        finally:
+            lock.release()
     finally:
         db.close()
 

@@ -1042,6 +1042,220 @@ def test_delete_content_view_version_task_rechecks_promotion_race(client, operat
     assert any(v["id"] == version["id"] for v in versions_after)
 
 
+def test_publish_and_promote_task_rejects_environment_linked_to_different_content_view_by_race(
+    client, operator_token, mock_aptly
+):
+    """Security-review finding: publish_and_promote_task only checked
+    environment.content_view_id is None before promoting — it never
+    validated the version's content view actually matched whatever
+    content view a CONCURRENT request had already linked the environment
+    to. Simulates that race: trigger publish-and-promote for cv_a against
+    a never-promoted environment, then (before the task runs) a separate
+    request links that same environment to cv_b via the synchronous
+    /promote endpoint. The task must fail rather than silently publish
+    cv_a's content onto an environment now recorded as belonging to cv_b.
+    """
+    from unittest.mock import patch
+
+    from app.tasks import publish_and_promote_task
+
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    mock_aptly.publish_exists.return_value = False
+    repo_a = _create_repo(client, operator_token, "race-repo-a")
+    repo_b = _create_repo(client, operator_token, "race-repo-b")
+    cv_a = client.post(
+        "/content-views", json={"name": "race-cv-a", "repository_ids": [repo_a["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    cv_b = client.post(
+        "/content-views", json={"name": "race-cv-b", "repository_ids": [repo_b["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    env = _create_env(client, operator_token, cv_a, "race-env", "race-path", 0, "race-prefix")
+    version_b_id = client.get(f"/content-views/{cv_b['id']}/versions", headers=auth_headers(operator_token)).json()[0]["id"]
+
+    with patch("app.tasks.publish_and_promote_task.delay"):
+        job_r = client.post(
+            f"/content-views/{cv_a['id']}/publish-and-promote",
+            json={"environment_id": env["id"], "allow_unsigned": True},
+            headers=auth_headers(operator_token),
+        )
+    assert job_r.status_code == 201, job_r.text
+    job_id = job_r.json()["id"]
+
+    # A DIFFERENT request links the same never-promoted environment to
+    # cv_b — simulates a concurrent operator winning the race before the
+    # queued job above ever runs.
+    promote_r = client.post(
+        f"/lifecycle-environments/{env['id']}/promote",
+        json={"content_view_version_id": version_b_id, "allow_unsigned": True},
+        headers=auth_headers(operator_token),
+    )
+    assert promote_r.status_code == 200, promote_r.text
+
+    with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+        publish_and_promote_task(job_id)
+
+    job_after = client.get(f"/jobs/{job_id}", headers=auth_headers(operator_token))
+    assert job_after.json()["status"] == "failed"
+
+    # The environment must still be linked to cv_b (whatever won the
+    # race), never silently switched to cv_a by the queued job.
+    envs_after = client.get(
+        "/lifecycle-environments", params={"content_view_id": cv_b["id"]}, headers=auth_headers(operator_token)
+    ).json()
+    assert any(e["id"] == env["id"] for e in envs_after)
+
+
+def test_promote_environment_lock_contention_returns_409(client, operator_token, mock_aptly):
+    """Security-review finding: the synchronous /promote endpoint took no
+    lock while publish_and_promote_task did — verifies the fix by holding
+    the same Redis lock the endpoint now acquires and confirming a
+    concurrent promote request is rejected (409) rather than racing.
+    """
+    from app.locking import acquire_lock
+
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    repo = _create_repo(client, operator_token, "lockcontention-repo")
+    cv = client.post(
+        "/content-views", json={"name": "lockcontention-cv", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    version_id = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]["id"]
+    env = _create_env(client, operator_token, cv, "lockcontention-env", "lockcontention-path", 0, "lockcontention-prefix")
+
+    held_lock = acquire_lock(f"groundctl:lock:environment:{env['id']}")
+    assert held_lock is not None
+    try:
+        r = client.post(
+            f"/lifecycle-environments/{env['id']}/promote",
+            json={"content_view_version_id": version_id, "allow_unsigned": True},
+            headers=auth_headers(operator_token),
+        )
+        assert r.status_code == 409, r.text
+    finally:
+        held_lock.release()
+
+    # Once released, a normal promote succeeds.
+    r2 = client.post(
+        f"/lifecycle-environments/{env['id']}/promote",
+        json={"content_view_version_id": version_id, "allow_unsigned": True},
+        headers=auth_headers(operator_token),
+    )
+    assert r2.status_code == 200, r2.text
+
+
+def test_delete_content_view_version_task_lock_contention_fails_job(client, operator_token, mock_aptly, db_session):
+    """Security-review finding: delete_content_view_version_task took no
+    lock, unlike every sibling delete/mutate task. Verifies the fix by
+    holding the same Redis lock and confirming the task fails cleanly
+    (lock contention) instead of racing a concurrent delete.
+    """
+    from unittest.mock import patch
+
+    from app.locking import acquire_lock
+    from app.tasks import delete_content_view_version_task
+
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    repo = _create_repo(client, operator_token, "del-lock-repo")
+    cv = client.post(
+        "/content-views", json={"name": "del-lock-cv", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+
+    with patch("app.tasks.delete_content_view_version_task.delay"):
+        job_r = client.post(
+            f"/content-views/{cv['id']}/versions/{version['id']}/delete",
+            headers=auth_headers(operator_token),
+        )
+    job_id = job_r.json()["id"]
+
+    held_lock = acquire_lock(f"groundctl:lock:content-view-version:{version['id']}")
+    assert held_lock is not None
+    try:
+        with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+            delete_content_view_version_task(job_id)
+    finally:
+        held_lock.release()
+
+    job_after = client.get(f"/jobs/{job_id}", headers=auth_headers(operator_token))
+    assert job_after.json()["status"] == "failed"
+    assert "another delete" in job_after.json()["log_output"]
+    mock_aptly.delete_snapshot.assert_not_called()
+
+    # Version untouched by the lock-contended attempt.
+    versions_after = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()
+    assert any(v["id"] == version["id"] for v in versions_after)
+
+
+def test_delete_content_view_version_task_partial_failure_shrinks_remaining_snapshots(
+    client, operator_token, mock_aptly, db_session
+):
+    """Security-review finding: a mid-loop AptlyError during snapshot
+    deletion rolled back to the version's ORIGINAL full snapshot list,
+    so a retry re-attempted already-deleted snapshots and failed forever.
+    Verifies the fix: after a partial failure, all_snapshot_names only
+    contains what's still actually left to delete.
+    """
+    from unittest.mock import patch
+
+    from app.models import ContentViewVersion
+    from app.tasks import delete_content_view_version_task
+
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    repo = _create_repo(client, operator_token, "partial-del-repo")
+    filter_r_cv = client.post(
+        "/content-views", json={"name": "partial-del-cv", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
+    ).json()
+    version = client.get(
+        f"/content-views/{filter_r_cv['id']}/versions", headers=auth_headers(operator_token)
+    ).json()[0]
+
+    import uuid as _uuid
+
+    from sqlalchemy import select as _select
+
+    version_row = db_session.execute(
+        _select(ContentViewVersion).where(ContentViewVersion.id == _uuid.UUID(version["id"]))
+    ).scalar_one()
+    # Force a known multi-snapshot list so the partial-failure point is
+    # deterministic, regardless of what do_publish actually cut for a
+    # single-repo, no-filter content view (normally just one).
+    version_row.all_snapshot_names = ["snap-1", "snap-2", "snap-3"]
+    db_session.commit()
+
+    with patch("app.tasks.delete_content_view_version_task.delay"):
+        job_r = client.post(
+            f"/content-views/{filter_r_cv['id']}/versions/{version['id']}/delete",
+            headers=auth_headers(operator_token),
+        )
+    job_id = job_r.json()["id"]
+
+    # snap-1 succeeds, snap-2 fails — snap-3 is never attempted.
+    from app.aptly_client import AptlyError
+
+    mock_aptly.delete_snapshot.side_effect = [None, AptlyError("simulated transient failure"), None]
+
+    with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
+        delete_content_view_version_task(job_id)
+
+    job_after = client.get(f"/jobs/{job_id}", headers=auth_headers(operator_token))
+    assert job_after.json()["status"] == "failed"
+
+    db_session.expire_all()
+    version_row_after = db_session.execute(
+        _select(ContentViewVersion).where(ContentViewVersion.id == _uuid.UUID(version["id"]))
+    ).scalar_one()
+    # snap-1 already deleted — a retry must not re-attempt it, only
+    # snap-2/snap-3 remain.
+    assert version_row_after.all_snapshot_names == ["snap-2", "snap-3"]
+
+
 def test_list_content_views_as_viewer(client, operator_token, viewer_token):
     repo = _create_repo(client, operator_token, "list-cv-repo")
     client.post(

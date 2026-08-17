@@ -332,10 +332,25 @@ def version_ever_promoted(db: Session, version_id: uuid.UUID) -> bool:
         select(LifecycleEnvironment.id).where(LifecycleEnvironment.current_version_id == version_id)
     ).first():
         return True
-    promoted = db.execute(
-        select(AuditLog).where(AuditLog.action.in_([AuditAction.switch_publish, AuditAction.rollback_environment]))
-    ).scalars()
-    return any(entry.detail.get("content_view_version_id") == str(version_id) for entry in promoted if entry.detail)
+    # resource_id on these actions is the ENVIRONMENT id, not the version
+    # id (see promote_environment/rollback_environment), so the only way
+    # to scope this is by the version id embedded inside detail — pushed
+    # down as a JSON-path comparison rather than pulling every
+    # switch_publish/rollback_environment row in the installation's
+    # history into Python and filtering there (real cost on an install
+    # with a long promotion history, since this runs on every version
+    # delete request and the task's own re-check).
+    return (
+        db.execute(
+            select(AuditLog.id)
+            .where(
+                AuditLog.action.in_([AuditAction.switch_publish, AuditAction.rollback_environment]),
+                AuditLog.detail["content_view_version_id"].as_string() == str(version_id),
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
 
 
 @router.post(

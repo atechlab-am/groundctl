@@ -9,6 +9,7 @@ from app.aptly_client import AptlyClient, AptlyError, get_aptly_client
 from app.auth import require_role
 from app.config import settings
 from app.database import get_db
+from app.locking import acquire_lock
 from app.models import (
     AuditAction,
     AuditLog,
@@ -330,66 +331,81 @@ def promote_environment(
     if environment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="environment not found")
 
-    is_first_promote = environment.content_view_id is None
-
-    if is_first_promote:
-        # No content view yet — "omit to promote the latest version"
-        # doesn't mean anything until a content view is chosen, so the
-        # first promote must say explicitly which version. Deriving/
-        # locking content_view_id/release/publish_prefix/gpg_key_id
-        # happens below, once, right before the actual aptly call.
-        if payload.content_view_version_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    "this environment has never been promoted — content_view_version_id is required "
-                    "to choose which content view it belongs to"
-                ),
-            )
-        version = db.get(ContentViewVersion, payload.content_view_version_id)
-        if version is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view version not found")
-        content_view = db.get(ContentView, version.content_view_id)
-        if content_view is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view not found")
-
-        if environment.gpg_key_id is None and not payload.allow_unsigned:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    "this environment has no signing key configured — set one via PATCH, or pass "
-                    "allow_unsigned=true explicitly to publish unsigned (see docs/gpg-signing.md)"
-                ),
-            )
-
-        environment.content_view_id = content_view.id
-        environment.release = derive_release_for_content_view(db, content_view.id)
-        # name is already validated against the same charset publish_prefix
-        # requires (validate_aptly_name, schemas.py) — no separate
-        # slugification needed, and this keeps the two visually identical
-        # for the common case where an operator never renames anything.
-        environment.publish_prefix = environment.name
-    else:
-        content_view = db.get(ContentView, environment.content_view_id)
-        if content_view is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="environment's content view no longer exists")
-
-        if payload.content_view_version_id is not None:
-            version = db.get(ContentViewVersion, payload.content_view_version_id)
-            if version is None or version.content_view_id != content_view.id:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="content view version not found for this environment's content view",
-                )
-        else:
-            # No version specified: publish-if-needed, then promote the latest —
-            # preserves v0's "first promote call cuts+publishes" convenience.
-            version, _cut = do_publish(content_view, db, aptly, current_user)
-
+    # Same per-environment lock publish_and_promote_task takes
+    # (app/tasks.py) — both this endpoint and that task can perform an
+    # environment's first-promote derive-and-lock (content_view_id/
+    # release/publish_prefix), and only one of them taking the lock would
+    # leave the other free to race it, silently linking the environment
+    # to two different content views depending on commit order.
+    lock = acquire_lock(f"groundctl:lock:environment:{environment.id}")
+    if lock is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="another job is already running against this environment — retry once it completes",
+        )
     try:
-        environment = do_promote(environment, version, db, aptly, current_user)
-    except AptlyError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        is_first_promote = environment.content_view_id is None
+
+        if is_first_promote:
+            # No content view yet — "omit to promote the latest version"
+            # doesn't mean anything until a content view is chosen, so the
+            # first promote must say explicitly which version. Deriving/
+            # locking content_view_id/release/publish_prefix/gpg_key_id
+            # happens below, once, right before the actual aptly call.
+            if payload.content_view_version_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        "this environment has never been promoted — content_view_version_id is required "
+                        "to choose which content view it belongs to"
+                    ),
+                )
+            version = db.get(ContentViewVersion, payload.content_view_version_id)
+            if version is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view version not found")
+            content_view = db.get(ContentView, version.content_view_id)
+            if content_view is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view not found")
+
+            if environment.gpg_key_id is None and not payload.allow_unsigned:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        "this environment has no signing key configured — set one via PATCH, or pass "
+                        "allow_unsigned=true explicitly to publish unsigned (see docs/gpg-signing.md)"
+                    ),
+                )
+
+            environment.content_view_id = content_view.id
+            environment.release = derive_release_for_content_view(db, content_view.id)
+            # name is already validated against the same charset publish_prefix
+            # requires (validate_aptly_name, schemas.py) — no separate
+            # slugification needed, and this keeps the two visually identical
+            # for the common case where an operator never renames anything.
+            environment.publish_prefix = environment.name
+        else:
+            content_view = db.get(ContentView, environment.content_view_id)
+            if content_view is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="environment's content view no longer exists")
+
+            if payload.content_view_version_id is not None:
+                version = db.get(ContentViewVersion, payload.content_view_version_id)
+                if version is None or version.content_view_id != content_view.id:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="content view version not found for this environment's content view",
+                    )
+            else:
+                # No version specified: publish-if-needed, then promote the latest —
+                # preserves v0's "first promote call cuts+publishes" convenience.
+                version, _cut = do_publish(content_view, db, aptly, current_user)
+
+        try:
+            environment = do_promote(environment, version, db, aptly, current_user)
+        except AptlyError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    finally:
+        lock.release()
 
     # do_promote guarantees this is set (raises ValueError otherwise) —
     # narrows the type for the response below.
