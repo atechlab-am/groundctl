@@ -72,13 +72,28 @@ def _create_env(client, operator_token, cv, name="dev", path_name="main", positi
     # own (LifecycleEnvironmentCreate takes only name/description/
     # prior_environment_id) — content views are assigned to it afterward
     # via POST /{id}/content-views, which also performs that pair's first
-    # promote in the same call. This helper chains the new environment
-    # directly after Library (position 1, immediately assignable since
-    # Library's position 0 is gate-free) then assigns+promotes the content
-    # view's already-published version 1, so callers keep getting back a
-    # fully linked, published environment exactly like before. No caller
-    # in this file uses position>0, so further chaining isn't needed here.
+    # promote in the same call. _check_path_order gates position > 0
+    # regardless of chaining — a version must already be live for THIS
+    # content view at position N-1 — so chaining the new environment after
+    # Library isn't enough on its own; the content view must first be
+    # assigned+promoted to Library itself, THEN to the new environment.
+    # No caller in this file uses position>0, so further chaining isn't
+    # needed here.
     library = _library(client, operator_token)
+    versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
+    version_id = versions_r.json()[0]["id"]
+
+    library_ecvs = client.get(
+        f"/lifecycle-environments/{library['id']}/content-views", headers=auth_headers(operator_token)
+    ).json()
+    if not any(e["content_view_id"] == cv["id"] for e in library_ecvs):
+        library_assign_r = client.post(
+            f"/lifecycle-environments/{library['id']}/content-views",
+            json={"content_view_id": cv["id"], "content_view_version_id": version_id, "allow_unsigned": True},
+            headers=auth_headers(operator_token),
+        )
+        assert library_assign_r.status_code == 201, library_assign_r.text
+
     r = client.post(
         "/lifecycle-environments",
         json={"name": name, "prior_environment_id": library["id"]},
@@ -87,8 +102,6 @@ def _create_env(client, operator_token, cv, name="dev", path_name="main", positi
     assert r.status_code == 201, r.text
     env = r.json()
 
-    versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
-    version_id = versions_r.json()[0]["id"]
     assign_r = client.post(
         f"/lifecycle-environments/{env['id']}/content-views",
         json={"content_view_id": cv["id"], "content_view_version_id": version_id, "allow_unsigned": True},

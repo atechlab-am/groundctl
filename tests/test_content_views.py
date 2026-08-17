@@ -518,7 +518,36 @@ def _create_env(
     # the content view's current latest). path_name/position/publish_prefix
     # args are accepted for call-site compatibility but no longer affect
     # anything directly.
-    effective_prior = prior if prior is not None else _library(client, operator_token)
+    #
+    # _check_path_order gates position > 0 regardless of chaining — a
+    # version must already be live for THIS content view at position N-1.
+    # When no explicit `prior` is given, the effective prior is Library, so
+    # the content view must be assigned+promoted to Library FIRST (if not
+    # already) before it can be assigned to the new environment. When an
+    # explicit `prior` IS given, the caller is deliberately building a real
+    # chain (e.g. dev then staging with prior=dev) and is responsible for
+    # having already promoted that predecessor itself — no Library step
+    # needed here in that case.
+    if prior is not None:
+        effective_prior = prior
+    else:
+        effective_prior = _library(client, operator_token)
+        if assign:
+            v = version
+            if v is None:
+                v = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+            library_ecvs = client.get(
+                f"/lifecycle-environments/{effective_prior['id']}/content-views", headers=auth_headers(operator_token)
+            ).json()
+            if not any(e["content_view_id"] == cv["id"] for e in library_ecvs):
+                library_assign_r = client.post(
+                    f"/lifecycle-environments/{effective_prior['id']}/content-views",
+                    json={"content_view_id": cv["id"], "content_view_version_id": v["id"], "allow_unsigned": True},
+                    headers=auth_headers(operator_token),
+                )
+                assert library_assign_r.status_code == 201, library_assign_r.text
+            version = v
+
     payload = {"name": name, "prior_environment_id": effective_prior["id"]}
     r = client.post("/lifecycle-environments", json=payload, headers=auth_headers(operator_token))
     assert r.status_code == 201, r.text
@@ -1437,13 +1466,12 @@ def test_delete_content_view_referenced_by_lifecycle_environment_conflicts(clien
         headers=auth_headers(operator_token),
     ).json()
     version_id = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]["id"]
-    env_r = client.post(
-        "/lifecycle-environments",
-        json={"name": "delete-cv-env"},
-        headers=auth_headers(operator_token),
-    )
-    assert env_r.status_code == 201, env_r.text
-    env = env_r.json()
+    # Library (position 0) is the only environment a first assign+promote
+    # can target directly — _check_path_order gates every other position
+    # regardless of chaining. This test only needs the delete guard to
+    # name SOME assigned environment, so it assigns straight to Library
+    # rather than creating (and Library-promoting) a separate one.
+    env = _library(client, operator_token)
 
     # Assign+first-promote cv to env — this is what the delete guard
     # actually keys on now (an EnvironmentContentView row), not creation
@@ -1457,7 +1485,7 @@ def test_delete_content_view_referenced_by_lifecycle_environment_conflicts(clien
 
     r = client.delete(f"/content-views/{cv['id']}", headers=auth_headers(operator_token))
     assert r.status_code == 409, r.text
-    assert "delete-cv-env" in r.json()["detail"]
+    assert env["name"] in r.json()["detail"]
 
     # Unassign, then the delete succeeds.
     unassign_r = client.delete(
