@@ -8,7 +8,7 @@ Not a Foreman/Katello clone. Purpose-built, smaller surface area, does exactly f
 
 1. **Pull repos** — mirrors upstream Ubuntu/Debian archives locally
 2. **Content views** — freezes a mirror at a point in time as a named, immutable snapshot
-3. **Patch levels** — publishes different snapshots to different named environments (`dev`, `staging`, `prod`, or whatever you call them); promoting = pointing an environment at a newer snapshot
+3. **Patch levels** — a single promotion path of lifecycle environments (always rooted at an auto-created `Library`, e.g. `Library → QA → Dev → Prod`), each of which can carry any number of content views, independently promoted; promoting = pointing an (environment, content view) pair at a newer snapshot
 4. **Fleet management** — register servers, assign each to an environment, push config, trigger updates, track compliance drift — all from one control-plane server
 
 ## Components

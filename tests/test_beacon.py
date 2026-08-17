@@ -37,6 +37,22 @@ def _create_cv(client, operator_token, repo, name="beacon-cv"):
     return r.json()
 
 
+def _library(client, operator_token):
+    # Position 0 is always Library and never path-order-gated. A freshly
+    # created environment with no prior_environment_id now lands at
+    # position 1+ (chained after auto-seeded Library), so any env this
+    # file wants to assign+promote directly must chain onto Library
+    # explicitly. Seeds Library via a throwaway create if it doesn't
+    # exist yet in this test's fresh DB.
+    listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
+    library = next((e for e in listed if e["name"] == "Library"), None)
+    if library is not None:
+        return library
+    client.post("/lifecycle-environments", json={"name": "_seed"}, headers=auth_headers(operator_token))
+    listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
+    return next(e for e in listed if e["name"] == "Library")
+
+
 def _create_env(client, operator_token, cv, name="beacon-env", path_name="beacon-path", position=0, publish_prefix="beacon-prefix"):
     # An environment is now pure path structure with NO content view of its
     # own (LifecycleEnvironmentCreate takes only name/description/
@@ -45,12 +61,17 @@ def _create_env(client, operator_token, cv, name="beacon-env", path_name="beacon
     # promote in the same call. Every beacon checkin call in this file
     # needs at least one genuinely PUBLISHED assignment now (checkin's
     # `content_views` list is populated from published EnvironmentContentView
-    # rows — app/routers/beacon.py), so this helper creates the environment
-    # then assigns+promotes the content view's already-published version 1.
+    # rows — app/routers/beacon.py), so this helper chains the new
+    # environment directly after Library (position 1) then assigns+
+    # promotes the content view's already-published version 1 — Library's
+    # own gate-free position 0 means position 1 is immediately assignable.
     # cv/path_name/position/publish_prefix args kept for call-site
     # compatibility; only `name` and `cv` actually matter now.
+    library = _library(client, operator_token)
     r = client.post(
-        "/lifecycle-environments", json={"name": name}, headers=auth_headers(operator_token)
+        "/lifecycle-environments",
+        json={"name": name, "prior_environment_id": library["id"]},
+        headers=auth_headers(operator_token),
     )
     assert r.status_code == 201, r.text
     env = r.json()

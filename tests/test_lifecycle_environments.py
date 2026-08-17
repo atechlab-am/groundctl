@@ -310,7 +310,10 @@ def test_list_lifecycle_environments_paginated_and_filtered(client, operator_tok
         "/lifecycle-environments", params={"path_name": dev["path_name"]}, headers=auth_headers(viewer_token)
     )
     assert r.status_code == 200, r.text
-    assert len(r.json()) == 2
+    # Library shares path_name "Library" with dev11/staging11 now, so
+    # filtering by dev["path_name"] correctly returns all three.
+    assert len(r.json()) == 3
+    assert any(e["name"] == "Library" for e in r.json())
 
 
 def test_list_lifecycle_environments_as_viewer(client, operator_token, viewer_token):

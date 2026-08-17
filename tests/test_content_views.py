@@ -484,6 +484,19 @@ def test_set_version_description_wrong_content_view_404s(client, operator_token)
 # ---------------------------------------------------------------------------
 
 
+def _library(client, operator_token):
+    # Position 0 is always Library and never path-order-gated. Seeds
+    # Library via a throwaway create if it doesn't exist yet in this
+    # test's fresh DB.
+    listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
+    library = next((e for e in listed if e["name"] == "Library"), None)
+    if library is not None:
+        return library
+    client.post("/lifecycle-environments", json={"name": "_seed"}, headers=auth_headers(operator_token))
+    listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
+    return next(e for e in listed if e["name"] == "Library")
+
+
 def _create_env(
     client, operator_token, cv, name="env", path_name="path", position=0, publish_prefix="prefix", prior=None,
     version=None, assign=True,
@@ -493,7 +506,9 @@ def _create_env(
     # prior_environment_id) — content views are assigned to it afterward
     # via POST /{id}/content-views, which also performs that pair's first
     # promote in the same call. Pass `prior` (another env dict) to chain
-    # into an existing path instead of starting a new one at position 0.
+    # into an existing path; omitting it chains onto Library (seeding it
+    # if needed) so the new environment lands at position 1 and is
+    # immediately assignable, since Library's own position 0 is gate-free.
     # By default this helper also assigns+first-promotes `cv` to the new
     # environment (most callers in this file need
     # trigger_publish_and_promote to find an existing assignment, since it
@@ -503,9 +518,8 @@ def _create_env(
     # the content view's current latest). path_name/position/publish_prefix
     # args are accepted for call-site compatibility but no longer affect
     # anything directly.
-    payload = {"name": name}
-    if prior is not None:
-        payload["prior_environment_id"] = prior["id"]
+    effective_prior = prior if prior is not None else _library(client, operator_token)
+    payload = {"name": name, "prior_environment_id": effective_prior["id"]}
     r = client.post("/lifecycle-environments", json=payload, headers=auth_headers(operator_token))
     assert r.status_code == 201, r.text
     env = r.json()

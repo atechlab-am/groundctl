@@ -51,18 +51,38 @@ def _create_cv(client, operator_token, repo, name="cv"):
     return r.json()
 
 
+def _library(client, operator_token):
+    # Position 0 is always Library and never path-order-gated. A freshly
+    # created environment with no prior_environment_id now lands at
+    # position 1+ (chained after auto-seeded Library), so any env this
+    # file wants to assign+promote directly must chain onto Library
+    # explicitly. Seeds Library via a throwaway create if it doesn't
+    # exist yet in this test's fresh DB.
+    listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
+    library = next((e for e in listed if e["name"] == "Library"), None)
+    if library is not None:
+        return library
+    client.post("/lifecycle-environments", json={"name": "_seed"}, headers=auth_headers(operator_token))
+    listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
+    return next(e for e in listed if e["name"] == "Library")
+
+
 def _create_env(client, operator_token, cv, name="dev", path_name="main", position=0, publish_prefix="dev"):
     # An environment is now pure path structure with NO content view of its
     # own (LifecycleEnvironmentCreate takes only name/description/
     # prior_environment_id) — content views are assigned to it afterward
     # via POST /{id}/content-views, which also performs that pair's first
-    # promote in the same call. This helper creates the environment then
-    # assigns+promotes the content view's already-published version 1, so
-    # callers keep getting back a fully linked, published environment
-    # exactly like before. No caller in this file uses position>0, so
-    # prior-chaining isn't needed here.
+    # promote in the same call. This helper chains the new environment
+    # directly after Library (position 1, immediately assignable since
+    # Library's position 0 is gate-free) then assigns+promotes the content
+    # view's already-published version 1, so callers keep getting back a
+    # fully linked, published environment exactly like before. No caller
+    # in this file uses position>0, so further chaining isn't needed here.
+    library = _library(client, operator_token)
     r = client.post(
-        "/lifecycle-environments", json={"name": name}, headers=auth_headers(operator_token)
+        "/lifecycle-environments",
+        json={"name": name, "prior_environment_id": library["id"]},
+        headers=auth_headers(operator_token),
     )
     assert r.status_code == 201, r.text
     env = r.json()
