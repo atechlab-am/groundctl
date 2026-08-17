@@ -53,6 +53,26 @@ def _create_env(client, operator_token, name="dev", description=None, prior_envi
     return r.json()
 
 
+def _library(client, operator_token):
+    # Position 0 is always Library and never path-order-gated — tests
+    # that just need ONE directly-assignable environment (no chaining)
+    # use this instead of a freshly _create_env'd one, since any new
+    # environment created with no prior now lands at position 1+ and
+    # would need its OWN predecessor promoted first (see
+    # test_path_order_enforced_for_first_promote_at_position_1 for that
+    # scenario deliberately exercised). Creates a throwaway environment
+    # first if Library doesn't exist yet in this test's fresh DB, purely
+    # to trigger auto-seeding (see create_lifecycle_environment,
+    # lifecycle_environments.py) — the throwaway itself is discarded.
+    listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
+    library = next((e for e in listed if e["name"] == "Library"), None)
+    if library is not None:
+        return library
+    client.post("/lifecycle-environments", json={"name": "_seed"}, headers=auth_headers(operator_token))
+    listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
+    return next(e for e in listed if e["name"] == "Library")
+
+
 def _assign_cv(client, operator_token, env, cv, version_id=None, gpg_key_id=None, allow_unsigned=True):
     # POST /{environment_id}/content-views assigns a content view to an
     # environment AND performs its first promote in one call.
@@ -71,32 +91,41 @@ def _assign_cv(client, operator_token, env, cv, version_id=None, gpg_key_id=None
 
 
 # ---------------------------------------------------------------------------
-# POST /lifecycle-environments (pure path structure, no content view)
+# POST /lifecycle-environments — single path, always rooted at auto-Library
 # ---------------------------------------------------------------------------
 
 
 def test_create_lifecycle_environment_minimal(client, operator_token):
+    # First-ever environment on a fresh DB: omitting prior auto-seeds
+    # Library (position 0) and appends this one right after it.
     env = _create_env(client, operator_token, "dev1")
     assert env["name"] == "dev1"
     assert env["description"] is None
-    assert env["path_name"] == "dev1"  # no prior -> path_name defaults to own name
-    assert env["position"] == 0
-    # Pure path structure now — no content-view-shaped fields at all.
-    assert "content_view_id" not in env
-    assert "is_library" not in env
-    assert "release" not in env
-    assert "publish_prefix" not in env
-    assert "gpg_key_id" not in env
+    assert env["path_name"] == "Library"
+    assert env["position"] == 1
+    assert env["content_view_count"] == 0
+    assert env["host_count"] == 0
 
 
-def test_create_lifecycle_environment_no_content_view_or_prior_allowed(client, operator_token):
-    # Omitting BOTH is now perfectly valid — an environment is pure path
-    # structure, content views are assigned afterward via
-    # POST /{id}/content-views. This is the opposite of the old model's
-    # rejection here.
-    r = client.post("/lifecycle-environments", json={"name": "orphan1b"}, headers=auth_headers(operator_token))
-    assert r.status_code == 201, r.text
-    assert r.json()["position"] == 0
+def test_create_lifecycle_environment_auto_seeds_library(client, operator_token):
+    env = _create_env(client, operator_token, "dev1b")
+    assert env["path_name"] == "Library"
+    assert env["position"] == 1
+
+    listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
+    names_positions = {(e["name"], e["position"]) for e in listed}
+    assert ("Library", 0) in names_positions
+    assert ("dev1b", 1) in names_positions
+
+
+def test_create_lifecycle_environment_second_create_appends_at_true_end(client, operator_token):
+    # "No prior" always means "append at the end of the whole path", not
+    # "chain right after Library specifically" — the second environment
+    # lands after the first, not back at position 1.
+    first = _create_env(client, operator_token, "dev1c")
+    second = _create_env(client, operator_token, "dev1d")
+    assert first["position"] == 1
+    assert second["position"] == 2
 
 
 def test_create_lifecycle_environment_with_description(client, operator_token):
@@ -109,6 +138,27 @@ def test_create_lifecycle_environment_with_prior_chains_path(client, operator_to
     staging = _create_env(client, operator_token, "staging3", prior_environment_id=dev["id"])
     assert staging["path_name"] == dev["path_name"]
     assert staging["position"] == dev["position"] + 1
+
+
+def test_create_lifecycle_environment_prior_inserts_and_shifts_successors(client, operator_token):
+    """Real insert-in-place: explicit prior_environment_id inserts right
+    after that environment, shifting every environment currently past
+    that point back by one position.
+    """
+    a = _create_env(client, operator_token, "path-a")
+    b = _create_env(client, operator_token, "path-b", prior_environment_id=a["id"])
+    c = _create_env(client, operator_token, "path-c", prior_environment_id=b["id"])
+    assert [e["position"] for e in (a, b, c)] == [a["position"], a["position"] + 1, a["position"] + 2]
+
+    d = _create_env(client, operator_token, "path-d", prior_environment_id=a["id"])
+    assert d["position"] == a["position"] + 1
+
+    listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
+    by_name = {e["name"]: e["position"] for e in listed}
+    assert by_name["path-a"] == a["position"]
+    assert by_name["path-d"] == a["position"] + 1
+    assert by_name["path-b"] == a["position"] + 2  # shifted back by one
+    assert by_name["path-c"] == a["position"] + 3  # shifted back by one
 
 
 def test_create_lifecycle_environment_prior_not_found(client, operator_token):
@@ -127,29 +177,89 @@ def test_create_lifecycle_environment_duplicate_name_conflicts(client, operator_
 
 
 def test_create_lifecycle_environment_name_unique_globally(client, operator_token):
-    # name uniqueness is global now, NOT scoped to a content view — an
-    # environment doesn't belong to one anymore (models.py's
-    # LifecycleEnvironment docstring). Same name is rejected even for two
-    # otherwise-independent environments.
+    # name uniqueness is global — an environment doesn't belong to a
+    # content view (models.py's LifecycleEnvironment docstring). Same
+    # name is rejected even for two otherwise-unrelated environments.
     _create_env(client, operator_token, "dev5b")
     r = client.post("/lifecycle-environments", json={"name": "dev5b"}, headers=auth_headers(operator_token))
-    assert r.status_code == 409, r.text
-
-
-def test_create_lifecycle_environment_prior_already_has_successor_conflicts(client, operator_token):
-    dev = _create_env(client, operator_token, "dev6")
-    _create_env(client, operator_token, "staging6a", prior_environment_id=dev["id"])
-    r = client.post(
-        "/lifecycle-environments",
-        json={"name": "staging6b", "prior_environment_id": dev["id"]},
-        headers=auth_headers(operator_token),
-    )
     assert r.status_code == 409, r.text
 
 
 def test_create_lifecycle_environment_as_viewer_forbidden(client, viewer_token):
     r = client.post("/lifecycle-environments", json={"name": "dev7"}, headers=auth_headers(viewer_token))
     assert r.status_code == 403, r.text
+
+
+# ---------------------------------------------------------------------------
+# DELETE /lifecycle-environments/{id}
+# ---------------------------------------------------------------------------
+
+
+def test_delete_lifecycle_environment_unassigned_succeeds(client, operator_token):
+    env = _create_env(client, operator_token, "del-env1")
+    r = client.delete(f"/lifecycle-environments/{env['id']}", headers=auth_headers(operator_token))
+    assert r.status_code == 204, r.text
+
+    listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
+    assert env["id"] not in {e["id"] for e in listed}
+
+
+def test_delete_lifecycle_environment_not_found(client, operator_token):
+    r = client.delete(
+        "/lifecycle-environments/00000000-0000-0000-0000-000000000000", headers=auth_headers(operator_token)
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_delete_lifecycle_environment_as_viewer_forbidden(client, operator_token, viewer_token):
+    env = _create_env(client, operator_token, "del-env2")
+    r = client.delete(f"/lifecycle-environments/{env['id']}", headers=auth_headers(viewer_token))
+    assert r.status_code == 403, r.text
+
+
+def test_delete_lifecycle_environment_blocked_while_content_view_assigned(client, operator_token, mock_aptly):
+    mock_aptly.get_mirror_packages.return_value = [
+        {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
+    ]
+    mock_aptly.publish_exists.return_value = False
+    repo = _create_repo(client, operator_token, "del-repo1")
+    cv = _create_cv(client, operator_token, repo, "del-cv1")
+    library = _library(client, operator_token)
+    _assign_cv(client, operator_token, library, cv)
+
+    r = client.delete(f"/lifecycle-environments/{library['id']}", headers=auth_headers(operator_token))
+    assert r.status_code == 409, r.text
+    assert "1 content view" in r.text
+
+    r = client.delete(
+        f"/lifecycle-environments/{library['id']}/content-views/{cv['id']}", headers=auth_headers(operator_token)
+    )
+    assert r.status_code == 204, r.text
+
+    r = client.delete(f"/lifecycle-environments/{library['id']}", headers=auth_headers(operator_token))
+    assert r.status_code == 204, r.text
+
+
+def test_delete_lifecycle_environment_blocked_while_server_assigned(client, operator_token):
+    env = _create_env(client, operator_token, "del-env3")
+    r = client.post(
+        "/servers",
+        json={"hostname": "del-host1.example.com", "ip_address": "10.0.0.1", "ssh_user": "ubuntu", "environment_id": env["id"]},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 201, r.text
+
+    r = client.delete(f"/lifecycle-environments/{env['id']}", headers=auth_headers(operator_token))
+    assert r.status_code == 409, r.text
+    assert "1 server" in r.text
+
+
+def test_list_lifecycle_environments_includes_counts(client, operator_token):
+    env = _create_env(client, operator_token, "count-env1")
+    listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
+    row = next(e for e in listed if e["id"] == env["id"])
+    assert row["content_view_count"] == 0
+    assert row["host_count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +350,7 @@ def test_assign_content_view_derives_release_and_publish_prefix(client, operator
     repo = _create_repo(client, operator_token, "le-repo17")
     cv = _create_cv(client, operator_token, repo, "le-cv17")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev17")
+    env = _library(client, operator_token)
 
     ecv = _assign_cv(client, operator_token, env, cv, version_id=version_id)
     assert ecv["current_version_id"] == version_id
@@ -248,11 +358,11 @@ def test_assign_content_view_derives_release_and_publish_prefix(client, operator
     assert ecv["content_view_id"] == cv["id"]
     # publish_prefix is "<environment-name>/<content-view-name>" — derived,
     # never operator-set (EnvironmentContentView docstring, models.py).
-    assert ecv["publish_prefix"] == f"dev17/{cv['name']}"
+    assert ecv["publish_prefix"] == f"{env['name']}/{cv['name']}"
     assert ecv["release"] == "jammy"  # from repo's distribution
     assert mock_aptly.publish_snapshot.call_count == 1
     call = mock_aptly.publish_snapshot.call_args_list[-1]
-    assert call.args[0] == f"dev17/{cv['name']}"
+    assert call.args[0] == f"{env['name']}/{cv['name']}"
     assert call.args[1] == "jammy"
 
 
@@ -264,7 +374,7 @@ def test_assign_content_view_gpg_key_set_skips_allow_unsigned(client, operator_t
     repo = _create_repo(client, operator_token, "le-repo18")
     cv = _create_cv(client, operator_token, repo, "le-cv18")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev18")
+    env = _library(client, operator_token)
 
     ecv = _assign_cv(client, operator_token, env, cv, version_id=version_id, gpg_key_id="D" * 40)
     assert ecv["gpg_key_id"] == "D" * 40
@@ -304,7 +414,7 @@ def test_assign_content_view_already_assigned_conflicts(client, operator_token, 
     repo = _create_repo(client, operator_token, "le-repo-dup")
     cv = _create_cv(client, operator_token, repo, "le-cv-dup")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev-dup")
+    env = _library(client, operator_token)
     _assign_cv(client, operator_token, env, cv, version_id=version_id)
 
     r = client.post(
@@ -342,7 +452,7 @@ def test_assign_content_view_aptly_unreachable_returns_502(db_session, mock_aptl
             repo = _create_repo(c, token, "le-repo22")
             cv = _create_cv(c, token, repo, "le-cv22")
             version_id = _version_id(c, token, cv)
-            env = _create_env(c, token, "dev22")
+            env = _library(c, token)
     finally:
         app.dependency_overrides.clear()
 
@@ -386,7 +496,7 @@ def test_get_gpg_key_404_when_not_configured(client, operator_token, viewer_toke
     mock_aptly.publish_exists.return_value = False
     repo = _create_repo(client, operator_token, "le-repo14")
     cv = _create_cv(client, operator_token, repo, "le-cv14")
-    env = _create_env(client, operator_token, "dev14")
+    env = _library(client, operator_token)
     _assign_cv(client, operator_token, env, cv)
 
     r = client.get(
@@ -417,7 +527,7 @@ def test_second_promote_omits_version_and_publishes_latest(client, operator_toke
     repo = _create_repo(client, operator_token, "le-repo19")
     cv = _create_cv(client, operator_token, repo, "le-cv19")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev19")
+    env = _library(client, operator_token)
     _assign_cv(client, operator_token, env, cv, version_id=version_id)
 
     mock_aptly.publish_exists.return_value = True
@@ -438,7 +548,7 @@ def test_promote_environment_content_view_as_viewer_forbidden(client, operator_t
     mock_aptly.publish_exists.return_value = True
     repo = _create_repo(client, operator_token, "le-repo20b")
     cv = _create_cv(client, operator_token, repo, "le-cv20b")
-    env = _create_env(client, operator_token, "dev20b")
+    env = _library(client, operator_token)
     _assign_cv(client, operator_token, env, cv)
 
     r = client.post(
@@ -486,7 +596,7 @@ def test_promote_environment_content_view_aptly_unreachable_returns_502(
             mock_aptly.publish_exists.return_value = False
             repo = _create_repo(c, token, "le-repo-unreachable")
             cv = _create_cv(c, token, repo, "le-cv-unreachable")
-            env = _create_env(c, token, "dev-unreachable")
+            env = _library(c, token)
             _assign_cv(c, token, env, cv)
     finally:
         app.dependency_overrides.clear()
@@ -522,7 +632,7 @@ def test_path_order_enforced_for_first_promote_at_position_1(client, operator_to
     repo = _create_repo(client, operator_token, "le-repo21")
     cv = _create_cv(client, operator_token, repo, "le-cv21")
     version_id = _version_id(client, operator_token, cv)
-    dev = _create_env(client, operator_token, "dev21")
+    dev = _library(client, operator_token)
     staging = _create_env(client, operator_token, "staging21", prior_environment_id=dev["id"])
 
     r = client.post(
@@ -556,7 +666,7 @@ def test_path_order_enforced_for_later_promote(client, operator_token, mock_aptl
     repo = _create_repo(client, operator_token, "le-repo21b")
     cv = _create_cv(client, operator_token, repo, "le-cv21b")
     v1 = _version_id(client, operator_token, cv)
-    dev = _create_env(client, operator_token, "dev21b")
+    dev = _library(client, operator_token)
     staging = _create_env(client, operator_token, "staging21b", prior_environment_id=dev["id"])
     _assign_cv(client, operator_token, dev, cv, version_id=v1)
     _assign_cv(client, operator_token, staging, cv, version_id=v1)
@@ -608,7 +718,7 @@ def test_path_order_independent_per_content_view(client, operator_token, mock_ap
     cv_b = _create_cv(client, operator_token, repo_b, "le-cv-indep-b")
     v_a = _version_id(client, operator_token, cv_a)
 
-    dev = _create_env(client, operator_token, "dev-indep")
+    dev = _library(client, operator_token)
     staging = _create_env(client, operator_token, "staging-indep", prior_environment_id=dev["id"])
 
     # cv_a travels the full path: dev then staging.
@@ -671,7 +781,7 @@ def test_multiple_content_views_assigned_to_same_environment(client, operator_to
     repo_b = _create_repo(client, operator_token, "le-repo-multi-b")
     cv_a = _create_cv(client, operator_token, repo_a, "le-cv-multi-a")
     cv_b = _create_cv(client, operator_token, repo_b, "le-cv-multi-b")
-    env = _create_env(client, operator_token, "env-multi")
+    env = _library(client, operator_token)
 
     ecv_a = _assign_cv(client, operator_token, env, cv_a)
     ecv_b = _assign_cv(client, operator_token, env, cv_b)
@@ -680,8 +790,8 @@ def test_multiple_content_views_assigned_to_same_environment(client, operator_to
     assert ecv_b["environment_id"] == env["id"]
     assert ecv_a["content_view_id"] != ecv_b["content_view_id"]
     assert ecv_a["publish_prefix"] != ecv_b["publish_prefix"]
-    assert ecv_a["publish_prefix"] == f"env-multi/{cv_a['name']}"
-    assert ecv_b["publish_prefix"] == f"env-multi/{cv_b['name']}"
+    assert ecv_a["publish_prefix"] == f"{env['name']}/{cv_a['name']}"
+    assert ecv_b["publish_prefix"] == f"{env['name']}/{cv_b['name']}"
 
     listed = client.get(
         f"/lifecycle-environments/{env['id']}/content-views", headers=auth_headers(operator_token)
@@ -701,7 +811,7 @@ def test_unassign_content_view_removes_assignment(client, operator_token, mock_a
     mock_aptly.publish_exists.return_value = False
     repo = _create_repo(client, operator_token, "le-repo-unassign")
     cv = _create_cv(client, operator_token, repo, "le-cv-unassign")
-    env = _create_env(client, operator_token, "env-unassign")
+    env = _library(client, operator_token)
     _assign_cv(client, operator_token, env, cv)
 
     r = client.delete(
@@ -731,7 +841,7 @@ def test_unassign_content_view_as_viewer_forbidden(client, operator_token, viewe
     mock_aptly.publish_exists.return_value = False
     repo = _create_repo(client, operator_token, "le-repo-unassign-viewer")
     cv = _create_cv(client, operator_token, repo, "le-cv-unassign-viewer")
-    env = _create_env(client, operator_token, "env-unassign-viewer")
+    env = _library(client, operator_token)
     _assign_cv(client, operator_token, env, cv)
 
     r = client.delete(
@@ -751,7 +861,7 @@ def test_unassign_then_reassign_content_view_allowed(client, operator_token, moc
     mock_aptly.publish_exists.return_value = False
     repo = _create_repo(client, operator_token, "le-repo-reassign")
     cv = _create_cv(client, operator_token, repo, "le-cv-reassign")
-    env = _create_env(client, operator_token, "env-reassign")
+    env = _library(client, operator_token)
     _assign_cv(client, operator_token, env, cv)
 
     unassign_r = client.delete(
@@ -778,12 +888,12 @@ def test_content_view_delete_blocked_while_assigned_then_succeeds_after_unassign
     mock_aptly.publish_exists.return_value = False
     repo = _create_repo(client, operator_token, "le-repo-delguard")
     cv = _create_cv(client, operator_token, repo, "le-cv-delguard")
-    env = _create_env(client, operator_token, "env-delguard")
+    env = _library(client, operator_token)
     _assign_cv(client, operator_token, env, cv)
 
     blocked = client.delete(f"/content-views/{cv['id']}", headers=auth_headers(operator_token))
     assert blocked.status_code == 409, blocked.text
-    assert "env-delguard" in blocked.json()["detail"]
+    assert env["name"] in blocked.json()["detail"]
 
     unassign_r = client.delete(
         f"/lifecycle-environments/{env['id']}/content-views/{cv['id']}", headers=auth_headers(operator_token)
@@ -807,7 +917,7 @@ def test_rollback_environment_content_view_requires_previously_live_version(clie
     repo = _create_repo(client, operator_token, "le-repo23")
     cv = _create_cv(client, operator_token, repo, "le-cv23")
     v1 = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev23")
+    env = _library(client, operator_token)
     _assign_cv(client, operator_token, env, cv, version_id=v1)
 
     mock_aptly.get_mirror_packages.return_value = [
@@ -840,7 +950,7 @@ def test_rollback_environment_content_view_rejects_never_live_version(
     repo = _create_repo(client, operator_token, "le-repo24")
     cv = _create_cv(client, operator_token, repo, "le-cv24")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev24")
+    env = _library(client, operator_token)
     _assign_cv(client, operator_token, env, cv, version_id=version_id)
 
     # Manufacture a version this environment's content view has, but which
@@ -873,7 +983,7 @@ def test_rollback_environment_content_view_as_viewer_forbidden(client, operator_
     repo = _create_repo(client, operator_token, "le-repo25")
     cv = _create_cv(client, operator_token, repo, "le-cv25")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev25")
+    env = _library(client, operator_token)
     ecv = _assign_cv(client, operator_token, env, cv, version_id=version_id)
 
     r = client.post(

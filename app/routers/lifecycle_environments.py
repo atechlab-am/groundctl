@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.apt_sources import export_gpg_public_key
@@ -134,6 +134,92 @@ def _check_path_order(db: Session, ecv: EnvironmentContentView, environment: Lif
         )
 
 
+_LIBRARY_NAME = "Library"
+
+
+def _get_or_create_library(db: Session, current_user: User) -> LifecycleEnvironment:
+    """Library is the always-present root of THE single promotion path —
+    seeded lazily (not via migration, not protected/special-cased beyond
+    this) the first time an environment is created with no
+    prior_environment_id and the path is still empty (see
+    create_lifecycle_environment). Once seeded it's an entirely ordinary
+    environment — renameable, deletable (once nothing is assigned to it),
+    no is_library flag.
+    """
+    existing = db.execute(
+        select(LifecycleEnvironment).where(
+            LifecycleEnvironment.path_name == _LIBRARY_NAME, LifecycleEnvironment.position == 0
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    library = LifecycleEnvironment(name=_LIBRARY_NAME, path_name=_LIBRARY_NAME, position=0)
+    db.add(library)
+    db.flush()
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.create_lifecycle_environment,
+            resource_type="lifecycle_environment",
+            resource_id=str(library.id),
+            detail={"auto_seeded": True},
+        )
+    )
+    return library
+
+
+def _environment_counts(db: Session, environment_ids: list[uuid.UUID]) -> dict[uuid.UUID, tuple[int, int]]:
+    """Bulk (content_view_count, host_count) per environment id — one
+    grouped query per table instead of N+1 per-row queries. Returns an
+    entry only for ids that actually have at least one of either count;
+    callers default missing ids to (0, 0).
+    """
+    if not environment_ids:
+        return {}
+    cv_counts: dict[uuid.UUID, int] = dict(
+        db.execute(
+            select(EnvironmentContentView.environment_id, func.count())
+            .where(EnvironmentContentView.environment_id.in_(environment_ids))
+            .group_by(EnvironmentContentView.environment_id)
+        )
+        .tuples()
+        .all()
+    )
+    host_counts: dict[uuid.UUID, int] = dict(
+        db.execute(
+            select(Server.environment_id, func.count())
+            .where(Server.environment_id.in_(environment_ids))
+            .group_by(Server.environment_id)
+        )
+        .tuples()
+        .all()
+    )
+    return {eid: (cv_counts.get(eid, 0), host_counts.get(eid, 0)) for eid in environment_ids}
+
+
+def _read_environments(db: Session, environments: list[LifecycleEnvironment]) -> list[LifecycleEnvironmentRead]:
+    counts = _environment_counts(db, [e.id for e in environments])
+    return [
+        LifecycleEnvironmentRead(
+            id=e.id,
+            name=e.name,
+            description=e.description,
+            path_name=e.path_name,
+            position=e.position,
+            created_at=e.created_at,
+            updated_at=e.updated_at,
+            content_view_count=counts.get(e.id, (0, 0))[0],
+            host_count=counts.get(e.id, (0, 0))[1],
+        )
+        for e in environments
+    ]
+
+
+def _read_environment(db: Session, environment: LifecycleEnvironment) -> LifecycleEnvironmentRead:
+    return _read_environments(db, [environment])[0]
+
+
 @router.post("", response_model=LifecycleEnvironmentRead, status_code=status.HTTP_201_CREATED)
 def create_lifecycle_environment(
     payload: LifecycleEnvironmentCreate,
@@ -145,34 +231,51 @@ def create_lifecycle_environment(
     structure, with NO content view association at creation time — content
     views are assigned to it afterward, any number of them, via
     POST /{environment_id}/content-views.
+
+    There is exactly ONE promotion path in the whole system. Omitting
+    prior_environment_id appends the new environment at the current end
+    of that path — Library is seeded first (see _get_or_create_library)
+    if this is the very first environment ever created, so a fresh
+    install's first real environment naturally lands right after it.
+    Passing prior_environment_id inserts the new environment immediately
+    after that one instead, shifting every environment currently past
+    that point back by one position to make room — this is the only way
+    to place a new environment anywhere but the end.
     """
     if payload.prior_environment_id is not None:
         prior = db.get(LifecycleEnvironment, payload.prior_environment_id)
         if prior is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="prior environment not found")
-        path_name = prior.path_name
-        position = prior.position + 1
     else:
-        path_name = payload.name
-        position = 0
+        prior = _get_or_create_library(db, current_user)
+        # "No prior" means "append at the end" — if Library itself isn't
+        # actually the tail (other environments already follow it), find
+        # whatever IS currently last and treat that as the effective
+        # prior instead, so this environment lands at the end of the
+        # path, not immediately after Library specifically.
+        tail = db.execute(
+            select(LifecycleEnvironment)
+            .where(LifecycleEnvironment.path_name == prior.path_name)
+            .order_by(LifecycleEnvironment.position.desc())
+            .limit(1)
+        ).scalar_one()
+        prior = tail
 
-    existing = db.execute(
-        select(LifecycleEnvironment).where(
-            (LifecycleEnvironment.name == payload.name)
-            | ((LifecycleEnvironment.path_name == path_name) & (LifecycleEnvironment.position == position))
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="environment name already in use, or the prior environment already has a successor",
-        )
+    if db.execute(select(LifecycleEnvironment).where(LifecycleEnvironment.name == payload.name)).scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="environment name already in use")
+
+    new_position = prior.position + 1
+    db.execute(
+        update(LifecycleEnvironment)
+        .where(LifecycleEnvironment.path_name == prior.path_name, LifecycleEnvironment.position >= new_position)
+        .values(position=LifecycleEnvironment.position + 1)
+    )
 
     environment = LifecycleEnvironment(
         name=payload.name,
         description=payload.description,
-        path_name=path_name,
-        position=position,
+        path_name=prior.path_name,
+        position=new_position,
     )
     db.add(environment)
     db.flush()
@@ -186,7 +289,7 @@ def create_lifecycle_environment(
     )
     db.commit()
     db.refresh(environment)
-    return environment
+    return _read_environment(db, environment)
 
 
 @router.patch("/{environment_id}", response_model=LifecycleEnvironmentRead)
@@ -220,7 +323,7 @@ def update_lifecycle_environment(
     )
     db.commit()
     db.refresh(environment)
-    return environment
+    return _read_environment(db, environment)
 
 
 @router.get("", response_model=list[LifecycleEnvironmentRead])
@@ -235,7 +338,51 @@ def list_lifecycle_environments(
     if path_name is not None:
         query = query.where(LifecycleEnvironment.path_name == path_name)
     query = query.order_by(LifecycleEnvironment.path_name, LifecycleEnvironment.position).limit(limit).offset(offset)
-    return list(db.execute(query).scalars())
+    environments = list(db.execute(query).scalars())
+    return _read_environments(db, environments)
+
+
+@router.delete("/{environment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_lifecycle_environment(
+    environment_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.operator)),
+):
+    """Blocked (409) while any content view is still assigned to this
+    environment (EnvironmentContentView) or any server still points at it
+    (Server.environment_id) — deleting it out from under either would
+    orphan a real FK. No special protection for Library itself: once
+    nothing references it, it deletes like any other environment. Does
+    NOT renumber remaining environments' positions — a gap left behind by
+    a deleted middle environment is harmless, since only relative order
+    (via position comparisons) is ever depended on, never contiguity.
+    """
+    environment = db.get(LifecycleEnvironment, environment_id)
+    if environment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="environment not found")
+
+    cv_count, host_count = _environment_counts(db, [environment_id]).get(environment_id, (0, 0))
+    if cv_count or host_count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"cannot delete: {cv_count} content view(s) and {host_count} server(s) still assigned — "
+                "unassign/reassign them first"
+            ),
+        )
+
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action=AuditAction.delete_lifecycle_environment,
+            resource_type="lifecycle_environment",
+            resource_id=str(environment.id),
+            detail={"name": environment.name},
+        )
+    )
+    db.delete(environment)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def do_promote(

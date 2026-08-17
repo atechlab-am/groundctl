@@ -31,14 +31,17 @@ def create(
     prior_environment_id: uuid.UUID = typer.Option(
         None,
         "--prior-environment-id",
-        help="Insert this environment right after another one in its promotion path. Omit to start a new path at "
-        "position 0.",
+        help="Insert this environment right after another one in the single promotion path (everything past that "
+        "point shifts back to make room). Omit to append at the end — Library is auto-created as the root if this "
+        "is the very first environment.",
     ),
 ) -> None:
     """Create a lifecycle environment. Matches Satellite's own "New
-    Lifecycle Environment" dialog — just name/description/prior. An
-    environment has NO content view of its own; assign one afterward with
-    `groundctl environment content-view assign`."""
+    Lifecycle Environment" dialog — just name/description/prior. There is
+    exactly one promotion path, always rooted at an auto-created
+    "Library" environment. An environment has NO content view of its
+    own; assign one afterward with `groundctl environment content-view
+    assign`."""
     output = get_output(ctx)
     payload = {
         "name": name,
@@ -80,6 +83,20 @@ def list_environments(
             params={"path_name": path_name, "limit": limit, "offset": offset},
         )
     render_list(response.json(), output=output)
+
+
+@app.command()
+def delete(
+    environment_id: uuid.UUID = typer.Argument(..., help="Environment UUID to delete."),
+) -> None:
+    """Delete a lifecycle environment. Blocked if any content view is
+    still assigned to it or any server still points at it — unassign/
+    reassign them first (see `content-view unassign` and each's own
+    content_view_count/host_count from `list`). No special protection
+    for Library itself."""
+    with authed_client() as client:
+        client.delete(f"/lifecycle-environments/{environment_id}")
+    console.print("Deleted.")
 
 
 @content_view_app.command("assign")

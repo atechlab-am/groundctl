@@ -119,34 +119,48 @@ curl -X POST https://<HOST>/api/content-views/$CV_ID/publish -H "Authorization: 
 
 ## 5. Create a lifecycle environment and assign a content view to it
 
-A **lifecycle environment** is a named slot in an ordered **path** (e.g.
-`Library` → `qa` → `dev` → `prod`) — pure promotion-path structure, with
-NO content view of its own. Any number of content views can be assigned
-to the same environment, independently. Creating one asks only for name,
-description, and its **prior** (predecessor in the path) — matches
-Satellite's own "New Lifecycle Environment" dialog.
+A **lifecycle environment** is a named slot in THE promotion path — there is
+exactly one path in the whole system, always rooted at an auto-created
+`Library` environment. An environment is pure promotion-path structure,
+with NO content view of its own; any number of content views can be
+assigned to it independently. Creating one asks only for name, description,
+and its **prior** (predecessor in the path) — matches Satellite's own "New
+Lifecycle Environment" dialog.
 
 ```bash
 curl -X POST https://<HOST>/api/lifecycle-environments \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"name": "jammy-qa", "description": "First stop for jammy-baseline"}'
-# save the returned "id" as $ENV_ID — prior_environment_id omitted, so this
-# starts a new path at position 0
+# save the returned "id" as $ENV_ID — prior_environment_id omitted, so
+# this appends at the end of the path. This is the very first environment
+# ever created on a fresh install, so "Library" is auto-created ahead of
+# it as the root: the path is now Library -> jammy-qa.
 ```
 
-Assigning a content view to an environment publishes it there in the same
-call — this is that pair's first promote:
+Content lands in Library first, same as Satellite — assign it there before
+anything downstream:
+
+```bash
+curl -X GET https://<HOST>/api/lifecycle-environments -H "Authorization: Bearer $TOKEN"
+# find the auto-created "Library" row's "id", save as $LIBRARY_ID
+
+curl -X POST https://<HOST>/api/lifecycle-environments/$LIBRARY_ID/content-views \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"content_view_id": "'$CV_ID'", "content_view_version_id": "'$VERSION_ID'", "allow_unsigned": true}'
+# content_view_version_id is REQUIRED on an assignment's first promote —
+# this is the moment release/publish_prefix get derived (publish_prefix =
+# "Library/jammy-baseline"). GPG signing is on by default (see
+# docs/gpg-signing.md) — allow_unsigned=true opts out for this example;
+# for anything beyond a lab, pass a real gpg_key_id instead.
+```
+
+Now assign the same content view to `jammy-qa` (position 1, right after
+Library):
 
 ```bash
 curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/content-views \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"content_view_id": "'$CV_ID'", "content_view_version_id": "'$VERSION_ID'", "allow_unsigned": true}'
-# save the returned "id" as $ECV_ID (the assignment itself)
-# content_view_version_id is REQUIRED on an assignment's first promote —
-# this is the moment release/publish_prefix get derived (publish_prefix =
-# "<environment-name>/<content-view-name>"). GPG signing is on by default
-# (see docs/gpg-signing.md) — allow_unsigned=true opts out for this
-# example; for anything beyond a lab, pass a real gpg_key_id instead.
 #
 # jammy-qa/jammy-baseline is now live at
 # https://<FLEET_HOSTNAME>:8080/jammy-qa/jammy-baseline/
@@ -163,9 +177,11 @@ curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/content-views/$CV
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}'
 ```
 
-**Path enforcement**: a content view assigned at position N can only be promoted into once the SAME content view is already live at position N-1 in the same path — position 0 has no such gate. Create a second environment with `"prior_environment_id": "'$ENV_ID'"` and assign `jammy-baseline` there too (a separate `POST .../content-views` call) — promoting it before `jammy-qa` has the version returns `409`. Chaining `qa → dev → prod` this way is how content eventually converges for THAT content view; a different content view assigned to the same path tracks its own position independently.
+**Path enforcement**: a content view assigned at position N can only be promoted into once the SAME content view is already live at position N-1 in the path — position 0 (Library) has no such gate, which is why it must go first. Trying to assign `jammy-baseline` to `jammy-qa` before assigning it to Library returns `409`. Create a third environment (e.g. `"name": "jammy-dev"`, no prior — appends after `jammy-qa`) and assign the same content view there too once `jammy-qa` has it live — chaining `Library → qa → dev → prod` this way is how content eventually converges for THAT content view; a different content view assigned to the same path tracks its own position independently. To insert an environment somewhere other than the end, pass `"prior_environment_id"` explicitly — everything currently after that point shifts back by one position to make room.
 
 You can assign as many content views to `jammy-qa` as you want, each with its own publish prefix and version — e.g. a separate `security-only` content view lives at `jammy-qa/security-only/`, promoted on its own schedule.
+
+**Deleting an environment**: `DELETE /api/lifecycle-environments/$ENV_ID` — blocked (`409`) while any content view is still assigned to it or any server still points at it; the `GET` list response's `content_view_count`/`host_count` fields tell you what's in the way. No special protection for Library itself, but in practice it rarely ends up empty.
 
 ## 6. Add a server
 

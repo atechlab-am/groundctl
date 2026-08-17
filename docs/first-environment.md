@@ -58,13 +58,21 @@ own "New Lifecycle Environment" dialog — an environment is pure
 
 | Field | What it means |
 |---|---|
-| Name | Display name, e.g. `Library`, `QA`, `Dev`, `Prod`. Environments have no auto-created root — if you want a Library-style starting point, create one yourself with that name, same as any other. |
+| Name | Display name, e.g. `QA`, `Dev`, `Prod`. |
 | Description | Free text, optional. |
-| Prior | Which environment this one comes right after in its promotion path (e.g. `Library → QA` means QA's prior is Library). Leave blank to start a brand-new path at position 0. Position N can only be promoted into once position N-1 in the same path currently has that content view's version live. |
+| Prior | Which environment this one comes right after in the single promotion path (e.g. `Library → QA` means QA's prior is Library). Leave blank to append at the end of the path — the very first environment you ever create automatically gets `Library` created ahead of it as the root, so you never create Library yourself. Setting Prior to an environment that already has a successor inserts this one there instead, shifting everything after it back by one position. Position N can only be promoted into once position N-1 in the path currently has that content view's version live. |
 
-Content view, GPG signing, and publish prefix are **not** asked here —
-none of it is needed until you actually assign a content view to the
-environment. Create it now; it starts empty, with nothing assigned.
+There is exactly **one** promotion path in the whole system — no
+independent second path, no manual Library creation. Content view, GPG
+signing, and publish prefix are **not** asked here — none of it is needed
+until you actually assign a content view to the environment. Create it
+now; it starts empty, with nothing assigned.
+
+An environment can be deleted (from its row's **Delete** action) once
+nothing is assigned to it — no content views, no servers. The page shows
+both counts per environment; unassign/reassign first if either is
+nonzero. Library itself isn't protected — it deletes like any other
+environment once empty, though in practice it rarely will be.
 
 ### Assign a content view — this is where publishing actually happens
 

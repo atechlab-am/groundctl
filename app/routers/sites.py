@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.auth import require_role
 from app.database import get_db
 from app.models import AuditAction, AuditLog, LifecycleEnvironment, Relay, Role, Site, SiteEnvironment, User
+from app.routers.lifecycle_environments import _read_environments
 from app.schemas import (
     LifecycleEnvironmentRead,
     RelayCreate,
@@ -158,7 +159,7 @@ def list_site_environments(
     if db.get(Site, site_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="site not found")
 
-    return list(
+    environments = list(
         db.execute(
             select(LifecycleEnvironment)
             .join(SiteEnvironment, SiteEnvironment.environment_id == LifecycleEnvironment.id)
@@ -168,6 +169,7 @@ def list_site_environments(
             .offset(offset)
         ).scalars()
     )
+    return _read_environments(db, environments)
 
 
 @router.put("/{site_id}/environments", response_model=list[LifecycleEnvironmentRead])
@@ -212,4 +214,4 @@ def replace_site_environments(
         )
     )
     db.commit()
-    return environments
+    return _read_environments(db, environments)

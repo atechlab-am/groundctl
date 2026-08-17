@@ -25,6 +25,39 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-08-31
+
+### Changed: single promotion path, always rooted at auto-created Library (BREAKING)
+
+Pre-1.0 — see `docs/releasing.md`, no stability guarantee yet. Collapses
+0.39.0's "any number of independent promotion paths" back down to exactly
+**one** path system-wide, always starting with an environment named
+`Library` — matching real Satellite, where Library is always present and
+every other environment descends from it. `EnvironmentContentView`
+(assign/promote/rollback per content view) is unchanged; this only
+affects `LifecycleEnvironment` creation/ordering/deletion.
+
+- `POST /lifecycle-environments`: omitting `prior_environment_id` now
+  always appends at the end of the single path — auto-creating `Library`
+  first (position 0) if this is the very first environment ever created,
+  rather than starting an independent position-0 path. Passing
+  `prior_environment_id` explicitly inserts the new environment
+  immediately after that one, shifting every environment currently past
+  that point back by one position to make room (new: real insert-in-place,
+  not just append).
+- New `DELETE /lifecycle-environments/{id}` — blocked (409) while any
+  content view is still assigned to it (`EnvironmentContentView`) or any
+  server still points at it (`Server.environment_id`); the 409 detail
+  states both counts. No special protection for Library itself — once
+  nothing references it, it deletes like any other environment. Does not
+  renumber remaining environments (position gaps are harmless).
+- `LifecycleEnvironmentRead` gains `content_view_count`/`host_count` —
+  computed per environment (not stored), driving the delete guard and
+  shown directly in list responses without a second call.
+- Web UI: environment table gains Content-views/Hosts count columns and a
+  Delete action (disabled with an explanatory tooltip while either count
+  is nonzero). CLI: new `groundctl environment delete`.
+
 ## [0.39.0] - 2026-08-24
 
 ### Changed: many content views per lifecycle environment (BREAKING)

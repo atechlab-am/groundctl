@@ -163,6 +163,7 @@ class AuditAction(str, enum.Enum):
     update_lifecycle_environment = "update_lifecycle_environment"
     assign_content_view_to_environment = "assign_content_view_to_environment"
     unassign_content_view_from_environment = "unassign_content_view_from_environment"
+    delete_lifecycle_environment = "delete_lifecycle_environment"
 
 
 class User(Base):
@@ -447,6 +448,13 @@ class LifecycleEnvironment(Base):
 
     name is unique globally again (not scoped to a content view — an
     environment doesn't belong to one).
+
+    There is exactly ONE path system-wide, always rooted at an
+    auto-seeded "Library" environment at position 0 (see
+    _get_or_create_library, lifecycle_environments.py) — path_name is
+    effectively constant in practice but kept as a real column rather
+    than removed, to avoid schema churn for a value that's always
+    "Library" today.
     """
 
     __tablename__ = "lifecycle_environments"
@@ -467,7 +475,16 @@ class LifecycleEnvironment(Base):
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
 
-    __table_args__ = (UniqueConstraint("path_name", "position"),)
+    # deferrable/initially="DEFERRED": create_lifecycle_environment's
+    # insert-with-shift bulk-UPDATEs every environment at position >= the
+    # insertion point up by one, in the same transaction as the new row's
+    # INSERT — a non-deferred constraint checks after each row write, not
+    # at commit, so shifting b(4->5) while c is still at 5 trips a
+    # spurious "duplicate key" even though the end state is valid. See
+    # migration d3f8b60c14e2.
+    __table_args__ = (
+        UniqueConstraint("path_name", "position", deferrable=True, initially="DEFERRED"),
+    )
 
 
 class EnvironmentContentView(Base):

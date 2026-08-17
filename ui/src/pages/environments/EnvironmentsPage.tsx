@@ -25,6 +25,7 @@ import {
   listLifecycleEnvironments,
   createLifecycleEnvironment,
   updateLifecycleEnvironment,
+  deleteLifecycleEnvironment,
   listEnvironmentContentViews,
   assignContentViewToEnvironment,
   unassignContentViewFromEnvironment,
@@ -52,6 +53,7 @@ export function EnvironmentsPage() {
   const [editingEnv, setEditingEnv] = useState<LifecycleEnvironmentRead | null>(null);
   const [editDescription, setEditDescription] = useState("");
   const [contentViewsTarget, setContentViewsTarget] = useState<LifecycleEnvironmentRead | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<LifecycleEnvironmentRead | null>(null);
 
   const environmentsQuery = useQuery({
     queryKey: ["environments"],
@@ -81,6 +83,16 @@ export function EnvironmentsPage() {
       toast.success("Environment updated");
       void queryClient.invalidateQueries({ queryKey: ["environments"] });
       setEditingEnv(null);
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (environmentId: string) => deleteLifecycleEnvironment(environmentId),
+    onSuccess: () => {
+      toast.success("Environment deleted");
+      void queryClient.invalidateQueries({ queryKey: ["environments"] });
+      setDeleteTarget(null);
     },
     onError: (err) => toast.error(errorMessage(err)),
   });
@@ -115,8 +127,10 @@ export function EnvironmentsPage() {
                   <DialogHeader>
                     <DialogTitle>Create lifecycle environment</DialogTitle>
                     <DialogDescription>
-                      Just name, description, and prior — this is pure path structure, with no content view of its
-                      own. Assign content views afterward from the environment's "Content views" action.
+                      Just name, description, and prior — there's exactly one promotion path, always rooted at an
+                      auto-created "Library" environment. Omit prior to append at the end; pick one to insert right
+                      after it instead (everything past that point shifts back). No content view of its own —
+                      assign content views afterward from the environment's "Content views" action.
                     </DialogDescription>
                   </DialogHeader>
                   <div className="mt-4 flex flex-col gap-4">
@@ -143,7 +157,7 @@ export function EnvironmentsPage() {
                       <Label>Prior</Label>
                       {environmentsQuery.data?.length === 0 ? (
                         <p className="text-sm text-muted-foreground">
-                          No environments yet — this will start a new path.
+                          No environments yet — this creates "Library" automatically as the root.
                         </p>
                       ) : (
                         <Select
@@ -153,10 +167,10 @@ export function EnvironmentsPage() {
                           }
                         >
                           <SelectTrigger>
-                            <SelectValue placeholder="None — start a new path" />
+                            <SelectValue placeholder="None — append at the end" />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="__none__">None — start a new path</SelectItem>
+                            <SelectItem value="__none__">None — append at the end</SelectItem>
                             {environmentsQuery.data?.map((env) => (
                               <SelectItem key={env.id} value={env.id}>
                                 {env.name} ({env.path_name} #{env.position})
@@ -192,6 +206,8 @@ export function EnvironmentsPage() {
               <TableHead>Name</TableHead>
               <TableHead>Path / position</TableHead>
               <TableHead>Description</TableHead>
+              <TableHead>Content views</TableHead>
+              <TableHead>Hosts</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -203,6 +219,8 @@ export function EnvironmentsPage() {
                   {env.path_name} #{env.position}
                 </TableCell>
                 <TableCell className="text-muted-foreground">{env.description ?? "—"}</TableCell>
+                <TableCell className="text-muted-foreground">{env.content_view_count}</TableCell>
+                <TableCell className="text-muted-foreground">{env.host_count}</TableCell>
                 <TableCell>
                   <div className="flex justify-end gap-2">
                     <Button variant="outline" size="sm" onClick={() => setContentViewsTarget(env)}>
@@ -214,6 +232,24 @@ export function EnvironmentsPage() {
                         <Pencil className="h-3.5 w-3.5" />
                         Edit
                       </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          env.content_view_count > 0 ||
+                          env.host_count > 0 ||
+                          (deleteMutation.isPending && deleteMutation.variables === env.id)
+                        }
+                        title={
+                          env.content_view_count > 0 || env.host_count > 0
+                            ? "Still has content views or hosts assigned — unassign/reassign them first"
+                            : undefined
+                        }
+                        onClick={() => setDeleteTarget(env)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Delete
+                      </Button>
                     </RoleGate>
                   </div>
                 </TableCell>
@@ -222,6 +258,27 @@ export function EnvironmentsPage() {
           </TableBody>
         </Table>
       </QueryState>
+
+      <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete {deleteTarget?.name}?</DialogTitle>
+            <DialogDescription>This cannot be undone.</DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-6">
+            <Button type="button" variant="outline" onClick={() => setDeleteTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleteMutation.isPending}
+              onClick={() => deleteMutation.mutate(deleteTarget!.id)}
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={editingEnv !== null} onOpenChange={(open) => !open && setEditingEnv(null)}>
         <DialogContent>

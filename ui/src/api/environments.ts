@@ -1,14 +1,18 @@
 import { api, apiRequestRaw } from "./client";
 
 // Matches Satellite's own "New Lifecycle Environment" dialog — name,
-// description, prior. An environment is pure promotion-path structure with
-// NO content view of its own — any number of content views get assigned to
-// it afterward, independently, via EnvironmentContentViewCreate below.
+// description, prior. There is exactly ONE promotion path in the whole
+// system, always rooted at an auto-created "Library" environment. An
+// environment is pure promotion-path structure with NO content view of its
+// own — any number of content views get assigned to it afterward,
+// independently, via EnvironmentContentViewCreate below.
 export interface LifecycleEnvironmentCreate {
   name: string;
   description?: string | null;
-  // Omit to start a brand-new promotion path at position 0. Set to insert
-  // this environment immediately after another one in its existing path.
+  // Omit to append at the end of the single path (Library is auto-created
+  // as the root first if this is the very first environment). Set to
+  // insert this environment immediately after another one already in the
+  // path — everything past that point shifts back to make room.
   prior_environment_id?: string | null;
 }
 
@@ -24,6 +28,10 @@ export interface LifecycleEnvironmentRead {
   position: number;
   created_at: string;
   updated_at: string;
+  // How many content views / servers currently reference this environment
+  // — drives the delete guard (DELETE is blocked while either is nonzero).
+  content_view_count: number;
+  host_count: number;
 }
 
 // Assigns a content view to an environment AND performs its first promote
@@ -93,6 +101,12 @@ export function updateLifecycleEnvironment(
   payload: LifecycleEnvironmentUpdate,
 ): Promise<LifecycleEnvironmentRead> {
   return api.patch<LifecycleEnvironmentRead>(`/lifecycle-environments/${environmentId}`, payload);
+}
+
+// 409 if content_view_count or host_count is nonzero — unassign/reassign
+// first.
+export function deleteLifecycleEnvironment(environmentId: string): Promise<void> {
+  return api.delete<void>(`/lifecycle-environments/${environmentId}`);
 }
 
 export function listEnvironmentContentViews(environmentId: string): Promise<EnvironmentContentViewRead[]> {

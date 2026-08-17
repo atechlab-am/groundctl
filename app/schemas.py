@@ -474,17 +474,22 @@ class ContentViewFilterRead(BaseModel):
 
 class LifecycleEnvironmentCreate(BaseModel):
     """Matches Satellite's own "New Environment" dialog: name, description,
-    and prior (predecessor in the promotion path). An environment is pure
-    promotion-path structure with NO content view of its own — any number
-    of content views get assigned to it afterward, independently, via
+    and prior (predecessor in the promotion path). There is exactly ONE
+    promotion path in the whole system, always rooted at an auto-seeded
+    "Library" environment (see _get_or_create_library,
+    lifecycle_environments.py) — an environment is pure path structure
+    with NO content view of its own; any number of content views get
+    assigned to it afterward, independently, via
     EnvironmentContentViewCreate below.
     """
 
     name: str
     description: str | None = None
-    # Omit to start a brand-new promotion path at position 0. Set to
-    # insert this environment immediately after another one in its
-    # existing path (same path_name, position + 1).
+    # Omit to append this environment at the end of the single path
+    # (Library is seeded first if this is the very first environment ever
+    # created). Set to insert this environment immediately after another
+    # one already in the path — every environment currently after that
+    # point shifts back by one position to make room.
     prior_environment_id: uuid.UUID | None = None
 
     _validate_name = field_validator("name")(validate_aptly_name)
@@ -498,6 +503,12 @@ class LifecycleEnvironmentRead(BaseModel):
     position: int
     created_at: datetime
     updated_at: datetime
+    # Computed, not stored — how many EnvironmentContentView assignments /
+    # servers currently reference this environment. Drives the delete
+    # guard (DELETE /lifecycle-environments/{id} is blocked while either
+    # is nonzero) and lets the UI/CLI show it without a second call.
+    content_view_count: int
+    host_count: int
 
     model_config = {"from_attributes": True}
 
