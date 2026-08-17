@@ -497,6 +497,23 @@ def _library(client, operator_token):
     return next(e for e in listed if e["name"] == "Library")
 
 
+def _promote_library_first(client, operator_token, cv, version_id):
+    # _check_path_order gates every non-Library environment on its
+    # predecessor already being live at the SAME version — this isn't just
+    # a first-promote requirement, it holds for every later promote too.
+    # Any test that promotes an env past its Library-assigned v1 (e.g. to
+    # v2) must promote Library to that same version first, or the env-level
+    # promote 409s. Assumes Library is already assigned this content view
+    # (true for anything created via _create_env's default assign=True).
+    library = _library(client, operator_token)
+    r = client.post(
+        f"/lifecycle-environments/{library['id']}/content-views/{cv['id']}/promote",
+        json={"content_view_version_id": version_id},
+        headers=auth_headers(operator_token),
+    )
+    assert r.status_code == 200, r.text
+
+
 def _create_env(
     client, operator_token, cv, name="env", path_name="path", position=0, publish_prefix="prefix", prior=None,
     version=None, assign=True,
@@ -674,11 +691,25 @@ def test_publish_and_promote_task_cuts_version_sets_description_and_promotes(cli
     cv = client.post(
         "/content-views", json={"name": "pp-cv4", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
     ).json()
-    env = _create_env(client, operator_token, cv, "pp-env4", "pp-path4", 0, "pp-prefix4")
-    # _create_env's default assign=True already did this pair's first
-    # promote (create_environment_content_view), which counts as one
-    # publish_snapshot call of its own — count from here so this test only
-    # asserts on the promote publish_and_promote_task triggers itself.
+    # publish_and_promote_task always cuts a brand-new version and promotes
+    # the target environment straight to it (a "later promote" —
+    # trigger_publish_and_promote's own docstring). _check_path_order
+    # requires that new, not-yet-known version to already be live on the
+    # target's predecessor too — unsatisfiable for a chained environment
+    # since the version doesn't exist until the task itself cuts it. Target
+    # Library directly (position 0, gate-free) so this test can focus on
+    # publish_and_promote_task's own mechanics rather than path-order setup.
+    env = _library(client, operator_token)
+    version_id = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]["id"]
+    first_assign_r = client.post(
+        f"/lifecycle-environments/{env['id']}/content-views",
+        json={"content_view_id": cv["id"], "content_view_version_id": version_id, "allow_unsigned": True},
+        headers=auth_headers(operator_token),
+    )
+    assert first_assign_r.status_code == 201, first_assign_r.text
+    # This first assign+promote counts as one publish_snapshot call of its
+    # own — count from here so this test only asserts on the promote
+    # publish_and_promote_task triggers itself.
     publish_calls_before = mock_aptly.publish_snapshot.call_count
 
     with patch("app.tasks.publish_and_promote_task.delay"):
@@ -910,6 +941,7 @@ def test_trigger_delete_version_past_promoted_blocked(client, operator_token, mo
     publish_r = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
     assert publish_r.status_code == 201, publish_r.text
     v2 = publish_r.json()["content_view_version"]
+    _promote_library_first(client, operator_token, cv, v2["id"])
     promote2_r = client.post(
         f"/lifecycle-environments/{env['id']}/content-views/{cv['id']}/promote",
         json={"content_view_version_id": v2["id"]},
@@ -1112,6 +1144,7 @@ def test_delete_content_view_version_task_rechecks_promotion_race(client, operat
     job_id = job_r.json()["id"]
 
     # Promote AFTER the delete job was created but BEFORE the task runs.
+    _promote_library_first(client, operator_token, cv, version["id"])
     promote_r = client.post(
         f"/lifecycle-environments/{env['id']}/content-views/{cv['id']}/promote",
         json={"content_view_version_id": version["id"], "allow_unsigned": True},
