@@ -107,9 +107,11 @@ curl -X POST https://<HOST>/api/content-views \
 # save the returned "id" as $CV_ID
 ```
 
-## 4. Publish a version
+## 4. Publish a version — and meet your content view's Library
 
 Publishing cuts an immutable **content view version** — a snapshot of every member repository's current contents, frozen together. Publishing again with no upstream changes is a fast no-op; it never wastes a snapshot on unchanged content.
+
+Content view creation already did this once for you: every content view auto-creates and auto-publishes an implicit root environment called **Library** (matching Satellite) the moment it exists, so `jammy-baseline` is already live at `https://<FLEET_HOSTNAME>:8080/jammy-baseline/library/` before you do anything else in this section.
 
 ```bash
 curl -X POST https://<HOST>/api/content-views/$CV_ID/publish -H "Authorization: Bearer $TOKEN"
@@ -120,32 +122,35 @@ curl -X POST https://<HOST>/api/content-views/$CV_ID/publish -H "Authorization: 
 ## 5. Create a lifecycle environment and promote into it
 
 A **lifecycle environment** is a named slot in an ordered **path** (e.g.
-`library` → `dev` → `qa` → `prod`). Creating one only asks for name,
-description, and its **prior** (predecessor in the path) — matches
-Satellite's own "New Lifecycle Environment" dialog. Everything
-apt-specific (which content view, release, publish prefix) is deferred to
-the environment's first promote, derived from whatever version you push
-to it there — not asked up front.
+`Library` → `qa` → `dev` → `prod`). Everything you promote flows outward
+from Library first — Library always has it before anything downstream
+can. Creating an environment asks for name, description, its content
+view, and its **prior** (predecessor in the path, defaulting to that
+content view's Library if omitted) — matches Satellite's own "New
+Lifecycle Environment" dialog. `release`/`publish_prefix` stay deferred
+to the environment's first promote, derived from whatever version you
+push to it there — not asked up front.
 
 ```bash
 curl -X POST https://<HOST>/api/lifecycle-environments \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name": "jammy-library", "description": "First environment on the default path"}'
+  -d '{"name": "jammy-qa", "description": "First stop after Library", "content_view_id": "'$CV_ID'"}'
 # save the returned "id" as $ENV_ID — prior_environment_id omitted, so this
-# starts a new path at position 0
+# chains directly onto jammy-baseline's Library at position 0 on a new path
+# one step out from it
 
 curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/promote \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"content_view_version_id": "'$VERSION_ID'", "allow_unsigned": true}'
 # content_view_version_id is REQUIRED on an environment's first promote —
-# this is the moment it gets permanently tied to that content view, and
-# its release/publish_prefix get derived (publish_prefix = the
-# environment's own name). GPG signing is on by default (see
-# docs/gpg-signing.md) — allow_unsigned=true opts out for this example;
-# for anything beyond a lab, PATCH the environment with a real gpg_key_id
-# first instead (see step 5b), or pass it directly here.
+# this is the moment its release/publish_prefix get derived (publish_prefix
+# = the environment's own name); content_view_id was already fixed at
+# creation. GPG signing is on by default (see docs/gpg-signing.md) —
+# allow_unsigned=true opts out for this example; for anything beyond a lab,
+# PATCH the environment with a real gpg_key_id first instead (see step 5b),
+# or pass it directly here.
 #
-# jammy-library is now live at https://<FLEET_HOSTNAME>:8080/jammy-library/
+# jammy-qa is now live at https://<FLEET_HOSTNAME>:8080/jammy-qa/
 # (8080 is install.sh's default nginx port, self-signed HTTPS by default —
 # see docs/install.md and docs/https.md)
 ```
@@ -159,7 +164,7 @@ curl -X POST https://<HOST>/api/lifecycle-environments/$ENV_ID/promote \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}'
 ```
 
-**Path enforcement**: an environment at position N can only be promoted into once the environment at position N-1 in the same path already has that version live. Position 0 has no such gate. Create a second environment with `"prior_environment_id": "'$ENV_ID'"` and promote the same way — skipping straight past it before it's ever had the version returns `409`.
+**Path enforcement**: an environment at position N can only be promoted into once the environment at position N-1 in the same path already has that version live — Library (position 0) has no such gate, it's live from creation. Create a second environment with `"prior_environment_id": "'$ENV_ID'"` (content_view_id inherited automatically) and promote the same way — skipping straight past it before it's ever had the version returns `409`. Chaining `jammy-qa → jammy-dev → jammy-prod` this way is how content eventually converges: every environment in the path ends up on the same version once each has been promoted in order.
 
 ### 5b. Set a signing key before first promote (optional)
 

@@ -431,34 +431,59 @@ class ContentViewVersion(Base):
 
 
 class LifecycleEnvironment(Base):
-    """Creation only asks for name/description/prior (matches Satellite's
-    own "New Lifecycle Environment" dialog) — content_view_id/release/
-    publish_prefix are all null until the environment's FIRST promote,
-    at which point they're derived and locked in permanently: publish_prefix
-    from a slugified name, release from the promoted version's content
-    view's first member repository, content_view_id from the version being
-    promoted (do_promote, lifecycle_environments.py). Every later promote
-    on this environment must target a version of that same content view —
-    an environment can only ever belong to one content view, exactly like
-    before, just decided at first-use instead of at creation.
+    """Every content view gets exactly one auto-created, protected root
+    environment named "Library" (is_library=True), created alongside
+    version 1 the moment the content view exists and immediately
+    promoted to that version — matches Satellite: every content view has
+    an implicit Library, publishing always lands there first, and it can
+    never be deleted/renamed/reparented (see create_content_view,
+    lifecycle_environments.py's delete/update guards). Every other
+    environment is created explicitly by an operator, always scoped to
+    ONE content view (content_view_id set at creation, never deferred —
+    a reversal of an earlier design that deferred it to first-promote;
+    Satellite has no cross-content-view environment sharing, so once
+    Library needed to be real, environments needed to be scoped again
+    too). release/publish_prefix stay derived at first-promote for
+    non-Library environments (Library's are derived immediately at
+    creation, since its content view is always already known).
+
+    name is unique per content view, not globally — every content view's
+    root is literally "Library", which would collide under a global
+    constraint. publish_prefix stays GLOBALLY unique regardless (it's a
+    flat aptly/nginx URL path, not scoped by content view) — Library's
+    publish_prefix is derived as "<content-view-name>/library", not the
+    literal name, specifically to avoid that collision.
     """
 
     __tablename__ = "lifecycle_environments"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Ordered-path model: environments sharing path_name form one ordered
-    # chain by position (0-based). Promotion into position N requires the
-    # target version to already be current at position N-1 in the same path.
-    # Set from LifecycleEnvironmentCreate.prior_environment_id at creation
-    # (no prior = starts a new path at position 0, path_name = this
-    # environment's own name).
+    # Ordered-path model: environments sharing (content_view_id, path_name)
+    # form one ordered chain by position (0-based), always rooted at that
+    # content view's Library (position 0). Promotion into position N
+    # requires the target version to already be current at position N-1
+    # in the same path. Set from LifecycleEnvironmentCreate.
+    # prior_environment_id at creation (Library itself has no prior — it's
+    # always position 0 of its own path, path_name = "Library").
     path_name: Mapped[str] = mapped_column(String, nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Nullable at the DB/column level only for backward compatibility with
+    # rows created under an earlier design that deferred this to first-
+    # promote (never backfilled — no correct guess exists for an
+    # environment that was never promoted to anything). The application
+    # always sets this at creation time now (create_lifecycle_environment
+    # requires it explicitly, or inherits it from prior_environment_id;
+    # every content view's auto-created Library sets it immediately). No
+    # router or task should ever leave this None on a NEW row.
     content_view_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("content_views.id"), nullable=True
     )
+    # True only for the one auto-created root per content view. Protected
+    # from delete/rename/reparent — see update_lifecycle_environment and
+    # the content view delete path.
+    is_library: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     release: Mapped[str | None] = mapped_column(String, nullable=True)
     publish_prefix: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -473,7 +498,10 @@ class LifecycleEnvironment(Base):
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
 
-    __table_args__ = (UniqueConstraint("path_name", "position"),)
+    __table_args__ = (
+        UniqueConstraint("content_view_id", "name"),
+        UniqueConstraint("content_view_id", "path_name", "position"),
+    )
 
 
 class Server(Base):

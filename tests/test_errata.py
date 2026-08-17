@@ -59,7 +59,9 @@ def _create_env(client, operator_token, cv, name="dev", path_name="main", positi
     # (content_view_id/publish_prefix/release staying null) is harmless —
     # cv/path_name/position/publish_prefix args kept for call-site
     # compatibility only.
-    r = client.post("/lifecycle-environments", json={"name": name}, headers=auth_headers(operator_token))
+    r = client.post(
+        "/lifecycle-environments", json={"name": name, "content_view_id": cv["id"]}, headers=auth_headers(operator_token)
+    )
     assert r.status_code == 201, r.text
     return r.json()
 

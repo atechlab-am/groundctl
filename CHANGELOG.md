@@ -25,6 +25,47 @@ history, even though the phases were built sequentially.
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-08-17
+
+### Added: auto-created "Library" root environment per content view (BREAKING)
+
+Pre-1.0 — see `docs/releasing.md`, no stability guarantee yet — but this
+partially reverses 0.37.0's environment/content-view decoupling, called
+out explicitly for the same reason that release was.
+
+Matches Satellite's real Library model: every content view now gets an
+implicit, protected root environment that's live from the moment the
+content view exists, and every other environment is created as part of a
+promotion path flowing outward from it — e.g. `Library → QA → Dev →
+Prod`, publishing to QA first, then Dev, then Prod, until all of them
+converge on the same version.
+
+- `POST /content-views` now auto-creates and auto-promotes a `Library`
+  environment (`is_library=true`, position 0, path_name `Library`)
+  immediately after cutting the content view's first version. Library is
+  protected: it can't be renamed, reparented, or deleted through any
+  endpoint, and is excluded from the "referenced by lifecycle
+  environment" delete-guard so content views remain deletable.
+- `POST /lifecycle-environments` requires `content_view_id` again unless
+  `prior_environment_id` is given, in which case it's inherited from the
+  prior environment — 0.37.0's fully content-view-agnostic creation is
+  gone. `release`/`publish_prefix` stay deferred to first-promote for
+  every non-Library environment, same as 0.37.0.
+- `LifecycleEnvironment.name` uniqueness moved from global to
+  `(content_view_id, name)` — every content view's root is literally
+  named `Library`, which a global constraint would reject on the second
+  content view. `publish_prefix` stays globally unique (it's a flat
+  aptly/nginx URL path) — Library's is derived as
+  `<content-view-name>/library` instead of the literal name, to avoid
+  colliding with that constraint.
+- `LifecycleEnvironmentRead` gains `is_library: bool`.
+- Cross-content-view `prior_environment_id` chaining is rejected —
+  `content_view_id`, if also given, must match the prior environment's.
+- Web UI: creation dialog gains a required content-view picker (skipped
+  when chaining via prior), the prior picker scopes to the chosen content
+  view, and Library rows get a badge in the environments table. CLI:
+  `groundctl environment create` gains `--content-view-id`.
+
 ## [0.37.0] - 2026-08-17
 
 ### Changed: simplified lifecycle environment creation (BREAKING)

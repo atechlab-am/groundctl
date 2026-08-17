@@ -39,7 +39,10 @@ def create(
         ..., "--repository-id", help="Repeatable. At least one repository UUID."
     ),
 ) -> None:
-    """Create a content view from one or more repositories."""
+    """Create a content view from one or more repositories. This also
+    auto-creates and publishes the content view's "Library" root
+    environment (see `groundctl environment create`) — every content
+    view has one, matching Satellite."""
     output = get_output(ctx)
     payload = {"name": name, "repository_ids": [str(r) for r in repository_id]}
     with authed_client() as client:

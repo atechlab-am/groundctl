@@ -37,18 +37,13 @@ def _create_cv(client, operator_token, repo, name="cv"):
 
 
 def _create_env(client, operator_token, cv, name="dev", path_name="main", position=0, publish_prefix="dev"):
+    # path_name/position/publish_prefix are no longer creation-time fields
+    # (see LifecycleEnvironmentCreate) — accepted here for call-site
+    # compatibility but unused; content_view_id is the only thing that
+    # actually needs to be set explicitly now.
     r = client.post(
         "/lifecycle-environments",
-        json={
-            "name": name,
-            "path_name": path_name,
-            "position": position,
-            "content_view_id": cv["id"],
-            "distro": "ubuntu",
-            "release": "jammy",
-            "publish_prefix": publish_prefix,
-            "allow_unsigned": True,
-        },
+        json={"name": name, "content_view_id": cv["id"]},
         headers=auth_headers(operator_token),
     )
     assert r.status_code == 201, r.text

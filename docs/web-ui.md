@@ -73,16 +73,6 @@ direct API call still gets a 403 regardless of what the UI shows.
 
 ## Known gaps
 
-- **No `GET /api/content-views` list or `GET /api/content-views/{id}` detail
-  endpoint exists on the backend.** Content views can only be created
-  (which returns the full object) and then referenced by ID elsewhere
-  (e.g. `LifecycleEnvironmentRead.content_view_id`). The Content Views
-  screen works around this client-side (`useKnownContentViews.ts`) by
-  remembering every content view this browser has created/viewed in
-  `localStorage` — a real, visible limitation (a fresh browser profile
-  won't see content views created elsewhere), not a substitute for the
-  missing backend endpoint. Add `GET /api/content-views` if this becomes a
-  real pain point; it's a small, additive router change.
 - Audit-log CSV export (`GET /api/audit-logs/export`, admin-only, Bearer-auth)
   is fetched as a blob and downloaded via a temporary object URL rather
   than a plain `<a href>` — a Bearer-authenticated endpoint can't be a

@@ -41,39 +41,52 @@ managing them separately.
 
 Give it a name, select the repositories you just created, and create it.
 
-### Publish a version
+### Publish a version — and meet your content view's Library
 
-Still on the Content Views page, open the one you just created and click
-**Publish**. This cuts an immutable **content view version** — a snapshot
-of every member repository's current contents, frozen together. You need
-at least one published version before you can create a lifecycle
-environment against this content view.
+Still on the Content Views page, click **Create** and this happens
+automatically: the content view cuts its first immutable **content view
+version** (a snapshot of every member repository's current contents,
+frozen together) and publishes it to an auto-created root environment
+called **Library** — matching Satellite exactly. You don't create Library
+yourself, can't rename or delete it, and it's already live the moment the
+content view exists.
 
-## 3. Lifecycle Environments — the thing servers actually point at
+Everything you promote later flows outward from Library — first to
+whatever environment you chain onto it (e.g. QA), then the next
+(Dev), then the next (Prod), typically converging so every environment in
+the path eventually carries the same patch level. Click **Publish** again
+any time member repositories change to cut a new version (still lands in
+Library first).
+
+## 3. Lifecycle Environments — the promotion path from Library outward
 
 **Environments** page → **New environment**. Creation matches Satellite's
-own "New Lifecycle Environment" dialog — just three fields:
+own "New Lifecycle Environment" dialog, plus which content view it
+belongs to:
 
 | Field | What it means |
 |---|---|
-| Name | Display name, e.g. `jammy-prod`. Also becomes the publish URL segment once you promote something to it (see below), so keep it something you'd want in a URL. |
+| Name | Display name, e.g. `jammy-qa`. Also becomes the publish URL segment once you promote something to it (see below), so keep it something you'd want in a URL. |
 | Description | Free text, optional. |
-| Prior | Which environment this one comes right after in its promotion path (e.g. `jammy-dev` → `jammy-prod` means `jammy-prod`'s prior is `jammy-dev`). Leave blank if this is the first/only environment on a new path — position N can only be promoted into once position N-1 in the same path currently has that version live. |
+| Content view | Required — every environment belongs to exactly one content view, same as its Library. |
+| Prior | Which environment this one comes right after in its promotion path — defaults to that content view's Library if left blank, so a fresh environment naturally starts one step out from Library (e.g. `Library → jammy-qa`, then `jammy-qa → jammy-dev`, then `jammy-dev → jammy-prod`). Position N can only be promoted into once position N-1 in the same path currently has that version live. |
 
-GPG signing (which content view, distro/release, publish prefix) is
-**not** asked here — none of it is needed until you actually publish
-something to the environment. Create it now; it starts as an empty shell
-with nothing published.
+GPG signing and publish prefix are **not** asked here — none of it is
+needed until you actually publish something to the environment. Create
+it now; it starts as an empty shell with nothing published (Library, by
+contrast, is never an empty shell — it's live from the moment its content
+view exists).
 
 ### Promote — actually point it at content (and lock in the rest)
 
-Click **Promote** and pick the content view version you just published.
-This is the step that permanently ties the environment to that content
-view (every later promote must use a version of the same one), derives
-its `release` from the content view's first repository, and sets its
-publish prefix to the environment's name — same "just push a content
-view to it" flow as Satellite. It's also the step that actually makes the
-environment serve real package data.
+Click **Promote** and pick the content view version you just published
+(or leave it to promote whatever's newest). This is the step that derives
+`release` from the content view's first repository and sets the publish
+prefix to the environment's name — same "just push a content view to it"
+flow as Satellite. It's also the step that actually makes the environment
+serve real package data. The content view itself was already fixed at
+creation, so this step never changes which content view an environment
+belongs to.
 
 No GPG key configured yet? You'll be asked to either set one first
 (**Edit** on the environment page, or `PATCH /api/lifecycle-environments/{id}`)

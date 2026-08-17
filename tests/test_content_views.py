@@ -485,19 +485,22 @@ def test_set_version_description_wrong_content_view_404s(client, operator_token)
 
 
 def _create_env(client, operator_token, cv, name="env", path_name="path", position=0, publish_prefix="prefix", prior=None):
-    # path_name/position/content_view_id/publish_prefix are no longer
-    # creation-time fields (see LifecycleEnvironmentCreate) — deliberately
-    # NOT auto-promoted here (unlike other test files' _create_env
-    # helpers) since several tests in this file specifically need an
-    # unpromoted environment (e.g. path-order enforcement, delete-guard
-    # tests that promote explicitly at the point they need it). Pass
-    # `prior` (another env dict) to chain into an existing path instead
-    # of starting a new one at position 0. cv/path_name/position/
+    # path_name/position/publish_prefix are no longer creation-time fields
+    # (see LifecycleEnvironmentCreate) — deliberately NOT auto-promoted
+    # here (unlike other test files' _create_env helpers) since several
+    # tests in this file specifically need an unpromoted environment (e.g.
+    # path-order enforcement, delete-guard tests that promote explicitly
+    # at the point they need it). Pass `prior` (another env dict) to chain
+    # into an existing path instead of starting a new one at position 0 —
+    # content_view_id is required either way: inherited from `prior` when
+    # given, otherwise taken explicitly from `cv`. path_name/position/
     # publish_prefix args are accepted for call-site compatibility but
-    # only `prior` and `name` actually affect anything now.
+    # only `prior`/`cv`/`name` actually affect anything now.
     payload = {"name": name}
     if prior is not None:
         payload["prior_environment_id"] = prior["id"]
+    else:
+        payload["content_view_id"] = cv["id"]
     r = client.post("/lifecycle-environments", json=payload, headers=auth_headers(operator_token))
     assert r.status_code == 201, r.text
     return r.json()
@@ -613,6 +616,10 @@ def test_publish_and_promote_task_cuts_version_sets_description_and_promotes(cli
         "/content-views", json={"name": "pp-cv4", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
     ).json()
     env = _create_env(client, operator_token, cv, "pp-env4", "pp-path4", 0, "pp-prefix4")
+    # Content view creation already auto-promoted Library, which counts as
+    # one publish_snapshot call of its own — count from here so this test
+    # only asserts on the promote it triggers itself.
+    publish_calls_before = mock_aptly.publish_snapshot.call_count
 
     with patch("app.tasks.publish_and_promote_task.delay"):
         job_r = client.post(
@@ -648,7 +655,7 @@ def test_publish_and_promote_task_cuts_version_sets_description_and_promotes(cli
     ).json()
     env_after = next(e for e in envs_after if e["id"] == env["id"])
     assert env_after["current_version_id"] == newest["id"]
-    mock_aptly.publish_snapshot.assert_called_once()
+    assert mock_aptly.publish_snapshot.call_count == publish_calls_before + 1
 
 
 def test_publish_and_promote_task_fails_job_on_path_order_violation(client, operator_token, mock_aptly):
@@ -690,17 +697,17 @@ def test_publish_and_promote_task_fails_job_on_path_order_violation(client, oper
     assert "dev5" in job_after.json()["log_output"] or "position" in job_after.json()["log_output"]
 
     # dev being untouched confirms staging's promotion never applied —
-    # dev itself was never promoted either, so content_view_id is still
-    # null; use promotable_for_content_view_id (matches never-promoted
-    # environments too) rather than the exact-match content_view_id filter.
+    # dev itself was never promoted either, so current_version_id is still
+    # null (content_view_id, unlike before, IS set — it's required at
+    # creation now regardless of promote state).
     envs_after = client.get(
         "/lifecycle-environments",
-        params={"promotable_for_content_view_id": cv["id"]},
+        params={"content_view_id": cv["id"]},
         headers=auth_headers(operator_token),
     ).json()
     dev_after = next(e for e in envs_after if e["id"] == dev["id"])
     assert dev_after["current_version_id"] is None
-    assert dev_after["content_view_id"] is None
+    assert dev_after["content_view_id"] == cv["id"]
 
 
 # ---------------------------------------------------------------------------
@@ -716,7 +723,13 @@ def test_trigger_delete_version_creates_job(client, operator_token, mock_aptly):
     cv = client.post(
         "/content-views", json={"name": "del-cv1", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
     ).json()
-    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+    # Version 1 is always auto-promoted to the content view's Library
+    # environment now, so it can't be deleted (version_ever_promoted
+    # guard) — cut a second, never-promoted version to delete instead.
+    mock_aptly.publish_exists.return_value = False
+    version = client.post(
+        f"/content-views/{cv['id']}/publish", json={"force": True}, headers=auth_headers(operator_token)
+    ).json()["content_view_version"]
 
     from unittest.mock import patch
 
@@ -902,7 +915,13 @@ def test_delete_content_view_version_task_deletes_snapshots_and_row(client, oper
     cv = client.post(
         "/content-views", json={"name": "del-cv7", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
     ).json()
-    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+    # Version 1 is always auto-promoted to Library now, so it can't be
+    # deleted (version_ever_promoted guard) — cut a second, never-promoted
+    # version to delete instead.
+    mock_aptly.publish_exists.return_value = False
+    version = client.post(
+        f"/content-views/{cv['id']}/publish", json={"force": True}, headers=auth_headers(operator_token)
+    ).json()["content_view_version"]
 
     with patch("app.tasks.delete_content_view_version_task.delay"):
         job_r = client.post(
@@ -1013,7 +1032,12 @@ def test_delete_content_view_version_task_rechecks_promotion_race(client, operat
         "/content-views", json={"name": "del-cv9", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
     ).json()
     env = _create_env(client, operator_token, cv, "del-env9", "del-path9", 0, "del-prefix9")
-    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+    # Version 1 is already Library-promoted at creation, so it would be
+    # rejected before the race even starts — cut a second, never-promoted
+    # version so the delete-trigger step below actually succeeds.
+    version = client.post(
+        f"/content-views/{cv['id']}/publish", json={"force": True}, headers=auth_headers(operator_token)
+    ).json()["content_view_version"]
 
     with patch("app.tasks.delete_content_view_version_task.delay"):
         job_r = client.post(
@@ -1042,18 +1066,17 @@ def test_delete_content_view_version_task_rechecks_promotion_race(client, operat
     assert any(v["id"] == version["id"] for v in versions_after)
 
 
-def test_publish_and_promote_task_rejects_environment_linked_to_different_content_view_by_race(
+def test_publish_and_promote_task_rejects_environment_belonging_to_different_content_view(
     client, operator_token, mock_aptly
 ):
-    """Security-review finding: publish_and_promote_task only checked
-    environment.content_view_id is None before promoting — it never
-    validated the version's content view actually matched whatever
-    content view a CONCURRENT request had already linked the environment
-    to. Simulates that race: trigger publish-and-promote for cv_a against
-    a never-promoted environment, then (before the task runs) a separate
-    request links that same environment to cv_b via the synchronous
-    /promote endpoint. The task must fail rather than silently publish
-    cv_a's content onto an environment now recorded as belonging to cv_b.
+    """content_view_id is now fixed at an environment's creation (explicit
+    or inherited via prior_environment_id — never re-derived at promote
+    time), so an environment can no longer be raced onto a content view it
+    wasn't created against. What's still live: triggering publish-and-
+    promote through the WRONG content view's URL for an environment that
+    belongs to a different one — both the synchronous trigger endpoint and
+    (defense in depth, same as every other re-check in tasks.py) the task
+    itself must reject it rather than mixing content across content views.
     """
     from unittest.mock import patch
 
@@ -1072,39 +1095,61 @@ def test_publish_and_promote_task_rejects_environment_linked_to_different_conten
         "/content-views", json={"name": "race-cv-b", "repository_ids": [repo_b["id"]]}, headers=auth_headers(operator_token)
     ).json()
     env = _create_env(client, operator_token, cv_a, "race-env", "race-path", 0, "race-prefix")
-    version_b_id = client.get(f"/content-views/{cv_b['id']}/versions", headers=auth_headers(operator_token)).json()[0]["id"]
 
-    with patch("app.tasks.publish_and_promote_task.delay"):
-        job_r = client.post(
-            f"/content-views/{cv_a['id']}/publish-and-promote",
-            json={"environment_id": env["id"], "allow_unsigned": True},
-            headers=auth_headers(operator_token),
-        )
-    assert job_r.status_code == 201, job_r.text
-    job_id = job_r.json()["id"]
-
-    # A DIFFERENT request links the same never-promoted environment to
-    # cv_b — simulates a concurrent operator winning the race before the
-    # queued job above ever runs.
-    promote_r = client.post(
-        f"/lifecycle-environments/{env['id']}/promote",
-        json={"content_view_version_id": version_b_id, "allow_unsigned": True},
+    # Trigger via cv_b's URL for an environment that belongs to cv_a — the
+    # synchronous endpoint must reject this before a Job is even created.
+    job_r = client.post(
+        f"/content-views/{cv_b['id']}/publish-and-promote",
+        json={"environment_id": env["id"], "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
-    assert promote_r.status_code == 200, promote_r.text
+    assert job_r.status_code == 404, job_r.text
+
+    # Same mismatch, but reached by calling the task directly against a
+    # job row that (however it got there) targets the wrong content
+    # view — the task's own guard must independently reject it too.
+    from app.models import Job, JobStatus, JobTargetType, JobType
+
+    job = Job(
+        job_type=JobType.publish_and_promote,
+        target_type=JobTargetType.environment,
+        environment_id=env["id"],
+        created_by_user_id=None,
+    )
+    from app.database import SessionLocal
+
+    with SessionLocal() as db:
+        from app.models import Role, User
+
+        user = db.query(User).filter(User.role == Role.operator).first()
+        job.created_by_user_id = user.id
+        db.add(job)
+        db.flush()
+        from app.models import AuditAction, AuditLog
+
+        db.add(
+            AuditLog(
+                user_id=user.id,
+                action=AuditAction.trigger_publish_and_promote,
+                resource_type="job",
+                resource_id=str(job.id),
+                detail={
+                    "content_view_id": str(cv_b["id"]),
+                    "environment_id": str(env["id"]),
+                    "force": False,
+                    "description": None,
+                    "allow_unsigned": True,
+                },
+            )
+        )
+        db.commit()
+        job_id = str(job.id)
 
     with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
         publish_and_promote_task(job_id)
 
     job_after = client.get(f"/jobs/{job_id}", headers=auth_headers(operator_token))
     assert job_after.json()["status"] == "failed"
-
-    # The environment must still be linked to cv_b (whatever won the
-    # race), never silently switched to cv_a by the queued job.
-    envs_after = client.get(
-        "/lifecycle-environments", params={"content_view_id": cv_b["id"]}, headers=auth_headers(operator_token)
-    ).json()
-    assert any(e["id"] == env["id"] for e in envs_after)
 
 
 def test_promote_environment_lock_contention_returns_409(client, operator_token, mock_aptly):
@@ -1164,7 +1209,13 @@ def test_delete_content_view_version_task_lock_contention_fails_job(client, oper
     cv = client.post(
         "/content-views", json={"name": "del-lock-cv", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
     ).json()
-    version = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
+    # Version 1 is always auto-promoted to Library now, so it can't be
+    # deleted (version_ever_promoted guard) — cut a second, never-promoted
+    # version to delete instead.
+    mock_aptly.publish_exists.return_value = False
+    version = client.post(
+        f"/content-views/{cv['id']}/publish", json={"force": True}, headers=auth_headers(operator_token)
+    ).json()["content_view_version"]
 
     with patch("app.tasks.delete_content_view_version_task.delay"):
         job_r = client.post(
@@ -1212,9 +1263,13 @@ def test_delete_content_view_version_task_partial_failure_shrinks_remaining_snap
     filter_r_cv = client.post(
         "/content-views", json={"name": "partial-del-cv", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
     ).json()
-    version = client.get(
-        f"/content-views/{filter_r_cv['id']}/versions", headers=auth_headers(operator_token)
-    ).json()[0]
+    # Version 1 is always auto-promoted to Library now, so it can't be
+    # deleted (version_ever_promoted guard) — cut a second, never-promoted
+    # version to delete instead.
+    mock_aptly.publish_exists.return_value = False
+    version = client.post(
+        f"/content-views/{filter_r_cv['id']}/publish", json={"force": True}, headers=auth_headers(operator_token)
+    ).json()["content_view_version"]
 
     import uuid as _uuid
 
@@ -1331,15 +1386,18 @@ def test_delete_content_view_referenced_by_lifecycle_environment_conflicts(clien
     ).json()
     version_id = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]["id"]
     env_r = client.post(
-        "/lifecycle-environments", json={"name": "delete-cv-env"}, headers=auth_headers(operator_token)
+        "/lifecycle-environments",
+        json={"name": "delete-cv-env", "content_view_id": cv["id"]},
+        headers=auth_headers(operator_token),
     )
     assert env_r.status_code == 201, env_r.text
     env = env_r.json()
 
-    # content_view_id is only set once something's actually been promoted
-    # to the environment — the delete-guard below checks an exact
-    # content_view_id reference, so this must be a real promote, not just
-    # a raw creation payload the old (pre-simplification) schema allowed.
+    # content_view_id is set at creation now, but release/publish_prefix
+    # are still deferred to first-promote — the delete-guard below only
+    # cares that the environment references this content view, which is
+    # already true post-creation, but promote it anyway so the guard is
+    # exercised against a fully "live" environment, matching real usage.
     promote_r = client.post(
         f"/lifecycle-environments/{env['id']}/promote",
         json={"content_view_version_id": version_id, "allow_unsigned": True},

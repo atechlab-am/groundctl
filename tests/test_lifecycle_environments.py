@@ -36,13 +36,20 @@ def _create_cv(client, operator_token, repo, name="cv"):
     return r.json()
 
 
-def _create_env(client, operator_token, name="dev", description=None, prior_environment_id=None, gpg_key_id=None):
+def _create_env(client, operator_token, cv, name="dev", description=None, prior_environment_id=None, gpg_key_id=None):
+    # content_view_id is required at creation now unless chaining off a
+    # prior environment (in which case it's inherited) — see
+    # LifecycleEnvironmentCreate's validator. Mirrors the pattern in
+    # test_content_views.py / test_compliance.py's own _create_env helpers.
     payload = {
         "name": name,
         "description": description,
-        "prior_environment_id": prior_environment_id,
         "gpg_key_id": gpg_key_id,
     }
+    if prior_environment_id is not None:
+        payload["prior_environment_id"] = prior_environment_id
+    else:
+        payload["content_view_id"] = cv["id"]
     r = client.post("/lifecycle-environments", json=payload, headers=auth_headers(operator_token))
     assert r.status_code == 201, r.text
     return r.json()
@@ -59,28 +66,45 @@ def _version_id(client, operator_token, cv):
 
 
 def test_create_lifecycle_environment_minimal(client, operator_token):
-    env = _create_env(client, operator_token, "dev1")
+    repo = _create_repo(client, operator_token, "le-repo1")
+    cv = _create_cv(client, operator_token, repo, "le-cv1")
+    env = _create_env(client, operator_token, cv, "dev1")
     assert env["name"] == "dev1"
     assert env["description"] is None
     assert env["path_name"] == "dev1"  # no prior -> path_name defaults to own name
     assert env["position"] == 0
-    assert env["content_view_id"] is None
+    assert env["content_view_id"] == cv["id"]  # now required up front, not deferred
+    assert env["is_library"] is False
     assert env["release"] is None
     assert env["publish_prefix"] is None
     assert env["gpg_key_id"] is None
 
 
+def test_create_lifecycle_environment_requires_content_view_or_prior(client, operator_token):
+    # Omitting BOTH content_view_id and prior_environment_id is now rejected
+    # at the schema layer — there's nothing to derive content_view_id from.
+    r = client.post(
+        "/lifecycle-environments", json={"name": "orphan1b"}, headers=auth_headers(operator_token)
+    )
+    assert r.status_code == 422, r.text
+
+
 def test_create_lifecycle_environment_with_description_and_gpg_key(client, operator_token):
-    env = _create_env(client, operator_token, "dev2", description="dev tier", gpg_key_id="A" * 40)
+    repo = _create_repo(client, operator_token, "le-repo2")
+    cv = _create_cv(client, operator_token, repo, "le-cv2")
+    env = _create_env(client, operator_token, cv, "dev2", description="dev tier", gpg_key_id="A" * 40)
     assert env["description"] == "dev tier"
     assert env["gpg_key_id"] == "A" * 40
 
 
 def test_create_lifecycle_environment_with_prior_chains_path(client, operator_token):
-    dev = _create_env(client, operator_token, "dev3")
-    staging = _create_env(client, operator_token, "staging3", prior_environment_id=dev["id"])
+    repo = _create_repo(client, operator_token, "le-repo3")
+    cv = _create_cv(client, operator_token, repo, "le-cv3")
+    dev = _create_env(client, operator_token, cv, "dev3")
+    staging = _create_env(client, operator_token, cv, "staging3", prior_environment_id=dev["id"])
     assert staging["path_name"] == dev["path_name"]
     assert staging["position"] == dev["position"] + 1
+    assert staging["content_view_id"] == cv["id"]  # inherited from prior
 
 
 def test_create_lifecycle_environment_prior_not_found(client, operator_token):
@@ -93,16 +117,34 @@ def test_create_lifecycle_environment_prior_not_found(client, operator_token):
 
 
 def test_create_lifecycle_environment_duplicate_name_conflicts(client, operator_token):
-    _create_env(client, operator_token, "dev5")
+    repo = _create_repo(client, operator_token, "le-repo5")
+    cv = _create_cv(client, operator_token, repo, "le-cv5")
+    _create_env(client, operator_token, cv, "dev5")
     r = client.post(
-        "/lifecycle-environments", json={"name": "dev5"}, headers=auth_headers(operator_token)
+        "/lifecycle-environments",
+        json={"name": "dev5", "content_view_id": cv["id"]},
+        headers=auth_headers(operator_token),
     )
     assert r.status_code == 409, r.text
 
 
+def test_create_lifecycle_environment_same_name_different_content_view_allowed(client, operator_token):
+    # name uniqueness is scoped to (content_view_id, name) now, not global.
+    repo_a = _create_repo(client, operator_token, "le-repo5b-a")
+    cv_a = _create_cv(client, operator_token, repo_a, "le-cv5b-a")
+    repo_b = _create_repo(client, operator_token, "le-repo5b-b")
+    cv_b = _create_cv(client, operator_token, repo_b, "le-cv5b-b")
+    env_a = _create_env(client, operator_token, cv_a, "dev5b")
+    env_b = _create_env(client, operator_token, cv_b, "dev5b")
+    assert env_a["id"] != env_b["id"]
+    assert env_a["content_view_id"] != env_b["content_view_id"]
+
+
 def test_create_lifecycle_environment_prior_already_has_successor_conflicts(client, operator_token):
-    dev = _create_env(client, operator_token, "dev6")
-    _create_env(client, operator_token, "staging6a", prior_environment_id=dev["id"])
+    repo = _create_repo(client, operator_token, "le-repo6")
+    cv = _create_cv(client, operator_token, repo, "le-cv6")
+    dev = _create_env(client, operator_token, cv, "dev6")
+    _create_env(client, operator_token, cv, "staging6a", prior_environment_id=dev["id"])
     r = client.post(
         "/lifecycle-environments",
         json={"name": "staging6b", "prior_environment_id": dev["id"]},
@@ -112,8 +154,12 @@ def test_create_lifecycle_environment_prior_already_has_successor_conflicts(clie
 
 
 def test_create_lifecycle_environment_as_viewer_forbidden(client, operator_token, viewer_token):
+    repo = _create_repo(client, operator_token, "le-repo7")
+    cv = _create_cv(client, operator_token, repo, "le-cv7")
     r = client.post(
-        "/lifecycle-environments", json={"name": "dev7"}, headers=auth_headers(viewer_token)
+        "/lifecycle-environments",
+        json={"name": "dev7", "content_view_id": cv["id"]},
+        headers=auth_headers(viewer_token),
     )
     assert r.status_code == 403, r.text
 
@@ -124,7 +170,9 @@ def test_create_lifecycle_environment_as_viewer_forbidden(client, operator_token
 
 
 def test_update_lifecycle_environment_sets_description_and_gpg_key(client, operator_token):
-    env = _create_env(client, operator_token, "dev8")
+    repo = _create_repo(client, operator_token, "le-repo8")
+    cv = _create_cv(client, operator_token, repo, "le-cv8")
+    env = _create_env(client, operator_token, cv, "dev8")
     r = client.patch(
         f"/lifecycle-environments/{env['id']}",
         json={"description": "now described", "gpg_key_id": "B" * 40},
@@ -137,7 +185,9 @@ def test_update_lifecycle_environment_sets_description_and_gpg_key(client, opera
 
 
 def test_update_lifecycle_environment_partial_leaves_other_field_untouched(client, operator_token):
-    env = _create_env(client, operator_token, "dev9", gpg_key_id="C" * 40)
+    repo = _create_repo(client, operator_token, "le-repo9")
+    cv = _create_cv(client, operator_token, repo, "le-cv9")
+    env = _create_env(client, operator_token, cv, "dev9", gpg_key_id="C" * 40)
     r = client.patch(
         f"/lifecycle-environments/{env['id']}",
         json={"description": "only this changed"},
@@ -159,7 +209,9 @@ def test_update_lifecycle_environment_not_found(client, operator_token):
 
 
 def test_update_lifecycle_environment_as_viewer_forbidden(client, operator_token, viewer_token):
-    env = _create_env(client, operator_token, "dev10")
+    repo = _create_repo(client, operator_token, "le-repo10")
+    cv = _create_cv(client, operator_token, repo, "le-cv10")
+    env = _create_env(client, operator_token, cv, "dev10")
     r = client.patch(
         f"/lifecycle-environments/{env['id']}",
         json={"description": "x"},
@@ -174,8 +226,10 @@ def test_update_lifecycle_environment_as_viewer_forbidden(client, operator_token
 
 
 def test_list_lifecycle_environments_paginated_and_filtered(client, operator_token, viewer_token):
-    dev = _create_env(client, operator_token, "dev11")
-    _create_env(client, operator_token, "staging11", prior_environment_id=dev["id"])
+    repo = _create_repo(client, operator_token, "le-repo11")
+    cv = _create_cv(client, operator_token, repo, "le-cv11")
+    dev = _create_env(client, operator_token, cv, "dev11")
+    _create_env(client, operator_token, cv, "staging11", prior_environment_id=dev["id"])
 
     r = client.get(
         "/lifecycle-environments", params={"path_name": dev["path_name"]}, headers=auth_headers(viewer_token)
@@ -184,7 +238,11 @@ def test_list_lifecycle_environments_paginated_and_filtered(client, operator_tok
     assert len(r.json()) == 2
 
 
-def test_list_lifecycle_environments_content_view_id_excludes_never_promoted(client, operator_token, mock_aptly):
+def test_list_lifecycle_environments_content_view_id_excludes_other_content_view(client, operator_token, mock_aptly):
+    # content_view_id is now required at creation, so every environment
+    # belongs to exactly one content view from the start — there's no more
+    # "never linked" state to exclude. What content_view_id (exact match)
+    # still excludes is environments belonging to a DIFFERENT content view.
     mock_aptly.get_mirror_packages.return_value = [
         {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
     ]
@@ -192,22 +250,33 @@ def test_list_lifecycle_environments_content_view_id_excludes_never_promoted(cli
     repo = _create_repo(client, operator_token, "le-repo12")
     cv = _create_cv(client, operator_token, repo, "le-cv12")
     version_id = _version_id(client, operator_token, cv)
-    linked = _create_env(client, operator_token, "linked12")
+    linked = _create_env(client, operator_token, cv, "linked12")
     client.post(
         f"/lifecycle-environments/{linked['id']}/promote",
         json={"content_view_version_id": version_id, "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
-    _create_env(client, operator_token, "unlinked12")
+    _create_env(client, operator_token, cv, "unlinked12")
+
+    other_repo = _create_repo(client, operator_token, "le-repo12b")
+    other_cv = _create_cv(client, operator_token, other_repo, "le-cv12b")
+    _create_env(client, operator_token, other_cv, "other12")
 
     r = client.get(
         "/lifecycle-environments", params={"content_view_id": cv["id"]}, headers=auth_headers(operator_token)
     )
     names = {e["name"] for e in r.json()}
-    assert names == {"linked12"}  # exact-match only — excludes the never-promoted one
+    # Both environments on cv match, promoted or not — Library also belongs
+    # to cv, so it's included too.
+    assert names == {"linked12", "unlinked12", "Library"}
+    assert "other12" not in names
 
 
 def test_list_lifecycle_environments_promotable_includes_never_promoted(client, operator_token, mock_aptly):
+    # promotable_for_content_view_id matches content_view_id == target OR
+    # content_view_id IS NULL. Legacy-only in practice now (content_view_id
+    # is never null on new rows), but a never-promoted environment on the
+    # target content view must still show up via the exact-match arm.
     mock_aptly.get_mirror_packages.return_value = [
         {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
     ]
@@ -215,19 +284,19 @@ def test_list_lifecycle_environments_promotable_includes_never_promoted(client, 
     repo = _create_repo(client, operator_token, "le-repo13")
     cv = _create_cv(client, operator_token, repo, "le-cv13")
     version_id = _version_id(client, operator_token, cv)
-    linked = _create_env(client, operator_token, "linked13")
+    linked = _create_env(client, operator_token, cv, "linked13")
     client.post(
         f"/lifecycle-environments/{linked['id']}/promote",
         json={"content_view_version_id": version_id, "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
-    _create_env(client, operator_token, "unlinked13")
+    _create_env(client, operator_token, cv, "unlinked13")
 
     # A THIRD environment linked to a DIFFERENT content view must be excluded.
     other_repo = _create_repo(client, operator_token, "le-repo13b")
     other_cv = _create_cv(client, operator_token, other_repo, "le-cv13b")
     other_version_id = _version_id(client, operator_token, other_cv)
-    other_env = _create_env(client, operator_token, "other13")
+    other_env = _create_env(client, operator_token, other_cv, "other13")
     client.post(
         f"/lifecycle-environments/{other_env['id']}/promote",
         json={"content_view_version_id": other_version_id, "allow_unsigned": True},
@@ -240,12 +309,14 @@ def test_list_lifecycle_environments_promotable_includes_never_promoted(client, 
         headers=auth_headers(operator_token),
     )
     names = {e["name"] for e in r.json()}
-    assert names == {"linked13", "unlinked13"}
+    assert names == {"linked13", "unlinked13", "Library"}
     assert "other13" not in names
 
 
 def test_get_gpg_key_404_when_not_configured(client, operator_token, viewer_token):
-    env = _create_env(client, operator_token, "dev14")
+    repo = _create_repo(client, operator_token, "le-repo14")
+    cv = _create_cv(client, operator_token, repo, "le-cv14")
+    env = _create_env(client, operator_token, cv, "dev14")
     r = client.get(f"/lifecycle-environments/{env['id']}/gpg-key", headers=auth_headers(viewer_token))
     assert r.status_code == 404, r.text
 
@@ -263,7 +334,9 @@ def test_get_gpg_key_environment_not_found(client, viewer_token):
 
 
 def test_first_promote_requires_content_view_version_id(client, operator_token):
-    env = _create_env(client, operator_token, "dev15")
+    repo = _create_repo(client, operator_token, "le-repo15")
+    cv = _create_cv(client, operator_token, repo, "le-cv15")
+    env = _create_env(client, operator_token, cv, "dev15")
     r = client.post(f"/lifecycle-environments/{env['id']}/promote", json={}, headers=auth_headers(operator_token))
     assert r.status_code == 422, r.text
 
@@ -275,7 +348,7 @@ def test_first_promote_requires_signing_choice(client, operator_token, mock_aptl
     repo = _create_repo(client, operator_token, "le-repo16")
     cv = _create_cv(client, operator_token, repo, "le-cv16")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev16")
+    env = _create_env(client, operator_token, cv, "dev16")
 
     r = client.post(
         f"/lifecycle-environments/{env['id']}/promote",
@@ -293,7 +366,7 @@ def test_first_promote_derives_release_publish_prefix_and_content_view(client, o
     repo = _create_repo(client, operator_token, "le-repo17")
     cv = _create_cv(client, operator_token, repo, "le-cv17")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev17")
+    env = _create_env(client, operator_token, cv, "dev17")
 
     r = client.post(
         f"/lifecycle-environments/{env['id']}/promote",
@@ -304,7 +377,14 @@ def test_first_promote_derives_release_publish_prefix_and_content_view(client, o
     body = r.json()
     assert body["current_version_id"] == version_id
     assert body["publish_prefix"] == "dev17"
-    mock_aptly.publish_snapshot.assert_called_once()
+    # Called twice, not once: _create_cv's auto-created Library environment
+    # is itself immediately promoted to version 1 (create_library_environment,
+    # lifecycle_environments.py), and this test's own explicit promote of
+    # dev17 is a second, independent publish_snapshot call.
+    assert mock_aptly.publish_snapshot.call_count == 2
+    dev17_call = mock_aptly.publish_snapshot.call_args_list[-1]
+    assert dev17_call.args[0] == "dev17"
+    assert dev17_call.args[1] == "jammy"
 
     envs = client.get(
         "/lifecycle-environments", params={"content_view_id": cv["id"]}, headers=auth_headers(operator_token)
@@ -322,7 +402,7 @@ def test_first_promote_gpg_key_already_set_skips_allow_unsigned(client, operator
     repo = _create_repo(client, operator_token, "le-repo18")
     cv = _create_cv(client, operator_token, repo, "le-cv18")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev18", gpg_key_id="D" * 40)
+    env = _create_env(client, operator_token, cv, "dev18", gpg_key_id="D" * 40)
 
     r = client.post(
         f"/lifecycle-environments/{env['id']}/promote",
@@ -340,7 +420,7 @@ def test_second_promote_omits_version_and_reuses_locked_content_view(client, ope
     repo = _create_repo(client, operator_token, "le-repo19")
     cv = _create_cv(client, operator_token, repo, "le-cv19")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev19")
+    env = _create_env(client, operator_token, cv, "dev19")
 
     client.post(
         f"/lifecycle-environments/{env['id']}/promote",
@@ -360,7 +440,7 @@ def test_promote_environment_as_viewer_forbidden(client, operator_token, viewer_
     repo = _create_repo(client, operator_token, "le-repo20")
     cv = _create_cv(client, operator_token, repo, "le-cv20")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev20")
+    env = _create_env(client, operator_token, cv, "dev20")
 
     r = client.post(
         f"/lifecycle-environments/{env['id']}/promote",
@@ -387,8 +467,8 @@ def test_promote_environment_path_order_enforced(client, operator_token, mock_ap
     repo = _create_repo(client, operator_token, "le-repo21")
     cv = _create_cv(client, operator_token, repo, "le-cv21")
     version_id = _version_id(client, operator_token, cv)
-    dev = _create_env(client, operator_token, "dev21")
-    staging = _create_env(client, operator_token, "staging21", prior_environment_id=dev["id"])
+    dev = _create_env(client, operator_token, cv, "dev21")
+    staging = _create_env(client, operator_token, cv, "staging21", prior_environment_id=dev["id"])
 
     # staging attempts to promote first — dev (position 0) has never had
     # anything live, so staging (position 1) must be rejected.
@@ -427,7 +507,7 @@ def test_promote_environment_aptly_unreachable_returns_502(db_session, mock_aptl
             repo = _create_repo(c, token, "le-repo22")
             cv = _create_cv(c, token, repo, "le-cv22")
             version_id = _version_id(c, token, cv)
-            env = _create_env(c, token, "dev22")
+            env = _create_env(c, token, cv, "dev22")
     finally:
         app.dependency_overrides.clear()
 
@@ -457,7 +537,7 @@ def test_rollback_environment_requires_previously_live_version(client, operator_
     repo = _create_repo(client, operator_token, "le-repo23")
     cv = _create_cv(client, operator_token, repo, "le-cv23")
     v1 = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev23")
+    env = _create_env(client, operator_token, cv, "dev23")
 
     client.post(
         f"/lifecycle-environments/{env['id']}/promote",
@@ -491,7 +571,7 @@ def test_rollback_environment_rejects_never_live_version(client, operator_token,
     repo = _create_repo(client, operator_token, "le-repo24")
     cv = _create_cv(client, operator_token, repo, "le-cv24")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev24")
+    env = _create_env(client, operator_token, cv, "dev24")
 
     client.post(
         f"/lifecycle-environments/{env['id']}/promote",
@@ -529,7 +609,7 @@ def test_rollback_environment_as_viewer_forbidden(client, operator_token, viewer
     repo = _create_repo(client, operator_token, "le-repo25")
     cv = _create_cv(client, operator_token, repo, "le-cv25")
     version_id = _version_id(client, operator_token, cv)
-    env = _create_env(client, operator_token, "dev25")
+    env = _create_env(client, operator_token, cv, "dev25")
     v1 = client.post(
         f"/lifecycle-environments/{env['id']}/promote",
         json={"content_view_version_id": version_id, "allow_unsigned": True},

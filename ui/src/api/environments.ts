@@ -1,14 +1,23 @@
 import { api, apiRequestRaw } from "./client";
 
 // Matches Satellite's own "New Lifecycle Environment" dialog — name,
-// description, prior. content_view_id/release/publish_prefix are all
-// deferred to the environment's first promote (see PromoteRequest below),
-// derived from whatever version gets pushed to it, instead of asked here.
+// description, prior. Every content view auto-creates its own "Library"
+// root environment (see LifecycleEnvironmentRead.is_library) — this
+// interface is for every OTHER environment, always scoped to exactly one
+// content view. content_view_id is required unless prior_environment_id is
+// set, in which case it's inherited from the prior environment instead.
+// release/publish_prefix stay deferred to the environment's first promote
+// (see PromoteRequest below), derived from whatever version gets pushed to
+// it, instead of asked here.
 export interface LifecycleEnvironmentCreate {
   name: string;
   description?: string | null;
-  // Omit to start a brand-new promotion path at position 0. Set to
-  // insert this environment immediately after another one in its path.
+  // Required unless prior_environment_id is set.
+  content_view_id?: string | null;
+  // Omit to start a brand-new promotion path at position 0 on
+  // content_view_id. Set to insert this environment immediately after
+  // another one in its existing path (content_view_id is then inherited
+  // from the prior environment, and must not be set to a different one).
   prior_environment_id?: string | null;
   gpg_key_id?: string | null;
 }
@@ -24,8 +33,15 @@ export interface LifecycleEnvironmentRead {
   description: string | null;
   path_name: string;
   position: number;
-  // Null until this environment's first promote — see PromoteRequest.
+  // Always set now (explicit at creation, inherited from a prior
+  // environment, or auto-set for Library) — no longer deferred to first
+  // promote. Still nullable in the type for legacy pre-Library rows.
   content_view_id: string | null;
+  // True only for the one auto-created root environment per content view
+  // (name "Library", position 0) — see create_content_view server-side.
+  // Protected from delete/rename/reparent; never creatable through
+  // LifecycleEnvironmentCreate.
+  is_library: boolean;
   release: string | null;
   publish_prefix: string | null;
   current_version_id: string | null;
@@ -35,9 +51,10 @@ export interface LifecycleEnvironmentRead {
 }
 
 export interface PromoteRequest {
-  // Required on an environment's FIRST promote (content_view_id is still
-  // null) — that's the moment it gets permanently tied to a content view.
-  // Omit on every later promote to promote the content view's latest version.
+  // Required on an environment's FIRST promote (release is still null) —
+  // that's the moment release/publish_prefix get derived and locked in.
+  // content_view_id is already set from creation. Omit on every later
+  // promote to promote the content view's latest version.
   content_view_version_id?: string | null;
   // Only consulted on a first promote when the environment has no
   // gpg_key_id set — same "signing on by default, explicit opt-out"
@@ -58,11 +75,13 @@ export interface RollbackRequest {
 
 export interface ListEnvironmentsParams {
   path_name?: string;
+  // Exact match — every environment on this content view, Library
+  // included.
   content_view_id?: string;
-  // Environments already tied to this content view OR never promoted
-  // anywhere yet (any content view can be their first) — use this for
-  // "which environments can I promote this content view's versions to",
-  // not content_view_id (exact-match only, excludes never-promoted ones).
+  // Matches content_view_id == target OR content_view_id IS NULL — the
+  // null arm only still matters for legacy pre-Library rows now that
+  // content_view_id is always set on new environments. Kept distinct from
+  // content_view_id above for that legacy case.
   promotable_for_content_view_id?: string;
   limit?: number;
   offset?: number;

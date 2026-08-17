@@ -84,16 +84,22 @@ def derive_release_for_content_view(db: Session, content_view_id: uuid.UUID) -> 
 
 
 def _check_path_order(db: Session, environment: LifecycleEnvironment, version_id: uuid.UUID) -> None:
-    """Position 0 in a path has no predecessor and is always allowed. Position
-    N requires the target version to currently be live (current_version_id)
-    at position N-1 in the same path — a version must move through the path
-    in order, matching Satellite's promotion-follows-the-path behavior.
+    """Position 0 (always Library, see create_content_view) has no
+    predecessor and is always allowed. Position N requires the target
+    version to currently be live (current_version_id) at position N-1 in
+    the same path — a version must move through the path in order,
+    matching Satellite's promotion-follows-the-path behavior. Scoped to
+    content_view_id — path_name alone isn't unique across content views
+    (every content view's root path is named "Library"), so an unscoped
+    query could match a same-named path belonging to a DIFFERENT content
+    view entirely.
     """
     if environment.position == 0:
         return
 
     predecessor = db.execute(
         select(LifecycleEnvironment).where(
+            LifecycleEnvironment.content_view_id == environment.content_view_id,
             LifecycleEnvironment.path_name == environment.path_name,
             LifecycleEnvironment.position == environment.position - 1,
         )
@@ -113,40 +119,93 @@ def _check_path_order(db: Session, environment: LifecycleEnvironment, version_id
         )
 
 
+def create_library_environment(
+    db: Session, content_view: ContentView, version: ContentViewVersion, aptly: AptlyClient, user: User
+) -> LifecycleEnvironment:
+    """Every content view gets exactly one of these, created here
+    (called from create_content_view, never via POST /lifecycle-
+    environments — that endpoint explicitly rejects is_library) alongside
+    version 1, and immediately promoted to it (a real aptly publish call,
+    same do_promote every other promote uses — Library is genuinely live,
+    not just a DB placeholder). Matches Satellite: a content view's
+    Library is implicit, always exists, and is never something an
+    operator creates by hand.
+
+    release is derived immediately (not deferred to a later first-promote
+    the way non-Library environments work) since content_view_id — the
+    only prerequisite derive_release_for_content_view needs — is already
+    known here. publish_prefix is "<content-view-name>/library", not the
+    literal name "Library" every content view's root shares — publish_prefix
+    stays globally unique (it's a flat aptly/nginx URL path, not scoped by
+    content view), so the literal name would collide on the second
+    content view.
+    """
+    library = LifecycleEnvironment(
+        name="Library",
+        path_name="Library",
+        position=0,
+        content_view_id=content_view.id,
+        is_library=True,
+        release=derive_release_for_content_view(db, content_view.id),
+        publish_prefix=f"{content_view.name}/library",
+    )
+    db.add(library)
+    db.flush()
+    return do_promote(library, version, db, aptly, user)
+
+
 @router.post("", response_model=LifecycleEnvironmentRead, status_code=status.HTTP_201_CREATED)
 def create_lifecycle_environment(
     payload: LifecycleEnvironmentCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(Role.operator)),
 ):
-    """Matches Satellite's own "New Lifecycle Environment" dialog — name,
-    description, prior. content_view_id/release/publish_prefix are left
-    null and get derived/locked in on this environment's first promote
-    (see do_promote below) instead of collected here.
+    """Matches Satellite's "New Environment" dialog — name, description,
+    prior. Every content view's Library root is auto-created instead (see
+    create_content_view/create_library_environment) — this endpoint is
+    for every OTHER environment, always explicitly chained onto an
+    existing one (Library or otherwise) via prior_environment_id, or
+    given content_view_id directly to start a second, independent path on
+    that same content view. release/publish_prefix are left null and get
+    derived/locked in on this environment's first promote (see do_promote
+    below) instead of collected here — content_view_id, unlike those, is
+    always known up front now (inherited from prior, or explicit).
     """
     if payload.prior_environment_id is not None:
         prior = db.get(LifecycleEnvironment, payload.prior_environment_id)
         if prior is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="prior environment not found")
+        if payload.content_view_id is not None and payload.content_view_id != prior.content_view_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="content_view_id, if given, must match the prior environment's content view",
+            )
+        content_view_id = prior.content_view_id
         path_name = prior.path_name
         position = prior.position + 1
     else:
-        # No prior — starts a brand-new path. path_name = this
-        # environment's own name, same convention every existing path's
-        # position-0 environment already follows (see docs/first-environment.md).
+        # payload's own validator guarantees content_view_id is set here.
+        assert payload.content_view_id is not None
+        if db.get(ContentView, payload.content_view_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view not found")
+        content_view_id = payload.content_view_id
+        # No prior — starts a brand-new path on this content view. Never
+        # "Library" (reserved for the auto-created root) and never
+        # position 0 sharing that reserved path_name.
         path_name = payload.name
         position = 0
 
     existing = db.execute(
         select(LifecycleEnvironment).where(
+            LifecycleEnvironment.content_view_id == content_view_id,
             (LifecycleEnvironment.name == payload.name)
-            | ((LifecycleEnvironment.path_name == path_name) & (LifecycleEnvironment.position == position))
+            | ((LifecycleEnvironment.path_name == path_name) & (LifecycleEnvironment.position == position)),
         )
     ).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="environment name already in use, or the prior environment already has a successor",
+            detail="environment name already in use on this content view, or the prior environment already has a successor",
         )
 
     environment = LifecycleEnvironment(
@@ -154,6 +213,7 @@ def create_lifecycle_environment(
         description=payload.description,
         path_name=path_name,
         position=position,
+        content_view_id=content_view_id,
         gpg_key_id=payload.gpg_key_id,
     )
     db.add(environment)
@@ -344,61 +404,51 @@ def promote_environment(
             detail="another job is already running against this environment — retry once it completes",
         )
     try:
-        is_first_promote = environment.content_view_id is None
+        # content_view_id is always set for any environment created going
+        # forward (create_lifecycle_environment requires/inherits it, and
+        # Library gets it at auto-creation) — only a row from BEFORE this
+        # change (deferred-content-view design) could still have it null.
+        content_view = db.get(ContentView, environment.content_view_id) if environment.content_view_id else None
+        if content_view is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="this environment has no content view — set content_view_id via PATCH first",
+            )
+
+        # release/publish_prefix are still deferred to first-promote (not
+        # creation) for non-Library environments — this environment's
+        # OWN first promote, not "does this content view have a Library
+        # yet" (Library already has both, set at auto-creation).
+        is_first_promote = environment.release is None
+
+        if is_first_promote and environment.gpg_key_id is None and not payload.allow_unsigned:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "this environment has no signing key configured — set one via PATCH, or pass "
+                    "allow_unsigned=true explicitly to publish unsigned (see docs/gpg-signing.md)"
+                ),
+            )
+
+        if payload.content_view_version_id is not None:
+            version = db.get(ContentViewVersion, payload.content_view_version_id)
+            if version is None or version.content_view_id != content_view.id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="content view version not found for this environment's content view",
+                )
+        else:
+            # No version specified: publish-if-needed, then promote the latest —
+            # preserves v0's "first promote call cuts+publishes" convenience.
+            version, _cut = do_publish(content_view, db, aptly, current_user)
 
         if is_first_promote:
-            # No content view yet — "omit to promote the latest version"
-            # doesn't mean anything until a content view is chosen, so the
-            # first promote must say explicitly which version. Deriving/
-            # locking content_view_id/release/publish_prefix/gpg_key_id
-            # happens below, once, right before the actual aptly call.
-            if payload.content_view_version_id is None:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=(
-                        "this environment has never been promoted — content_view_version_id is required "
-                        "to choose which content view it belongs to"
-                    ),
-                )
-            version = db.get(ContentViewVersion, payload.content_view_version_id)
-            if version is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view version not found")
-            content_view = db.get(ContentView, version.content_view_id)
-            if content_view is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="content view not found")
-
-            if environment.gpg_key_id is None and not payload.allow_unsigned:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=(
-                        "this environment has no signing key configured — set one via PATCH, or pass "
-                        "allow_unsigned=true explicitly to publish unsigned (see docs/gpg-signing.md)"
-                    ),
-                )
-
-            environment.content_view_id = content_view.id
             environment.release = derive_release_for_content_view(db, content_view.id)
             # name is already validated against the same charset publish_prefix
             # requires (validate_aptly_name, schemas.py) — no separate
             # slugification needed, and this keeps the two visually identical
             # for the common case where an operator never renames anything.
             environment.publish_prefix = environment.name
-        else:
-            content_view = db.get(ContentView, environment.content_view_id)
-            if content_view is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="environment's content view no longer exists")
-
-            if payload.content_view_version_id is not None:
-                version = db.get(ContentViewVersion, payload.content_view_version_id)
-                if version is None or version.content_view_id != content_view.id:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="content view version not found for this environment's content view",
-                    )
-            else:
-                # No version specified: publish-if-needed, then promote the latest —
-                # preserves v0's "first promote call cuts+publishes" convenience.
-                version, _cut = do_publish(content_view, db, aptly, current_user)
 
         try:
             environment = do_promote(environment, version, db, aptly, current_user)

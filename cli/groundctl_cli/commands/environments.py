@@ -21,23 +21,34 @@ app = typer.Typer(no_args_is_help=True)
 def create(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="aptly object name: letters, numbers, dots, underscores, hyphens only."),
+    content_view_id: uuid.UUID = typer.Option(
+        None,
+        "--content-view-id",
+        help="Content view this environment belongs to. Required unless --prior-environment-id is given, in which "
+        "case it's inherited from that environment instead.",
+    ),
     description: str = typer.Option(None, "--description"),
     prior_environment_id: uuid.UUID = typer.Option(
         None,
         "--prior-environment-id",
-        help="Insert this environment right after another one in its promotion path. Omit to start a new path at position 0.",
+        help="Insert this environment right after another one in its promotion path (inherits its content view). "
+        "Omit to start a new path at position 0 on --content-view-id.",
     ),
     gpg_key_id: str = typer.Option(
         None, "--gpg-key-id", help="Uppercase hex GPG key ID/fingerprint (16-40 chars). Can also be set later via `update`."
     ),
 ) -> None:
     """Create a lifecycle environment. Matches Satellite's own "New
-    Lifecycle Environment" dialog — just name/description/prior.
-    content_view_id/release/publish_prefix are NOT set here; they're
+    Lifecycle Environment" dialog — name/description/prior, plus which
+    content view it belongs to. Every content view already has its own
+    auto-created "Library" root (see `groundctl content-view create`) —
+    this command is for every OTHER environment in that content view's
+    promotion path. release/publish_prefix are NOT set here; they're
     derived automatically the first time you `promote` something to it."""
     output = get_output(ctx)
     payload = {
         "name": name,
+        "content_view_id": str(content_view_id) if content_view_id else None,
         "description": description,
         "prior_environment_id": str(prior_environment_id) if prior_environment_id else None,
         "gpg_key_id": gpg_key_id,
@@ -70,12 +81,12 @@ def list_environments(
     ctx: typer.Context,
     path_name: str = typer.Option(None, "--path-name"),
     content_view_id: uuid.UUID = typer.Option(
-        None, "--content-view-id", help="Exact match only — excludes environments never promoted yet."
+        None, "--content-view-id", help="Exact match — every environment on this content view, Library included."
     ),
     promotable_for_content_view_id: uuid.UUID = typer.Option(
         None,
         "--promotable-for-content-view-id",
-        help="Environments already tied to this content view, OR never promoted anywhere yet (valid first-promote targets).",
+        help="Environments tied to this content view, OR (legacy rows only) never promoted anywhere yet.",
     ),
     limit: int = typer.Option(100, "--limit"),
     offset: int = typer.Option(0, "--offset"),
@@ -105,8 +116,9 @@ def promote(
     content_view_version_id: uuid.UUID = typer.Option(
         None,
         "--content-view-version-id",
-        help="Version to promote to. REQUIRED on this environment's first-ever promote (that's the moment it gets "
-        "tied to a content view). Omit on later promotes to publish-if-needed and promote the latest version.",
+        help="Version to promote to. REQUIRED on this environment's first-ever promote (that's when release/"
+        "publish_prefix get derived and locked in). Omit on later promotes to publish-if-needed and promote the "
+        "latest version.",
     ),
     allow_unsigned: bool = typer.Option(
         False,

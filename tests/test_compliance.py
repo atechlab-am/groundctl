@@ -59,7 +59,9 @@ def _create_env(client, operator_token, cv, name="dev", path_name="main", positi
     # getting back a fully linked, published environment exactly like
     # before. No caller in this file uses position>0, so prior-chaining
     # isn't needed here.
-    r = client.post("/lifecycle-environments", json={"name": name}, headers=auth_headers(operator_token))
+    r = client.post(
+        "/lifecycle-environments", json={"name": name, "content_view_id": cv["id"]}, headers=auth_headers(operator_token)
+    )
     assert r.status_code == 201, r.text
     env = r.json()
 
@@ -140,7 +142,16 @@ def test_check_compliance_environment_not_published_422(client, operator_token, 
     # Deliberately NOT using _create_env — that helper now creates AND
     # promotes (so other tests get a fully-linked environment by default),
     # but this test specifically needs current_version_id to stay null.
-    env_r = client.post("/lifecycle-environments", json={"name": "env-unpub"}, headers=auth_headers(operator_token))
+    # content_view_id is required at creation regardless (see
+    # LifecycleEnvironmentCreate) — a throwaway content view supplies it
+    # without this environment ever being promoted to anything.
+    repo = _create_repo(client, operator_token, "unpub-repo")
+    cv = _create_cv(client, operator_token, repo, "unpub-cv")
+    env_r = client.post(
+        "/lifecycle-environments",
+        json={"name": "env-unpub", "content_view_id": cv["id"]},
+        headers=auth_headers(operator_token),
+    )
     assert env_r.status_code == 201, env_r.text
     env = env_r.json()
     server = _create_server(client, operator_token, env, "host-unpub.example.com")

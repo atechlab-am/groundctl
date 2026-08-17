@@ -39,7 +39,9 @@ def seeded_chain(client, operator_token, db_session):
         "/content-views", json={"name": "rbac-cv", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
     ).json()
     env = client.post(
-        "/lifecycle-environments", json={"name": "rbac-env"}, headers=auth_headers(operator_token)
+        "/lifecycle-environments",
+        json={"name": "rbac-env", "content_view_id": cv["id"]},
+        headers=auth_headers(operator_token),
     ).json()
     server = client.post(
         "/servers",

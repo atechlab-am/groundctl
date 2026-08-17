@@ -902,15 +902,32 @@ def publish_and_promote_task(self, job_id: str) -> str:
             )
             db.commit()
 
-            if environment.content_view_id is None:
+            if environment.content_view_id != content_view.id:
+                # content_view_id is always set at creation now (explicit or
+                # inherited via prior_environment_id — see
+                # create_lifecycle_environment/create_library_environment in
+                # lifecycle_environments.py), never derived here. A mismatch
+                # means this environment belongs to a different content view
+                # entirely — fail loudly rather than mixing content from two
+                # content views onto one environment.
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"environment {environment.name} belongs to a different content view "
+                        "than the one being published"
+                    ),
+                )
+
+            is_first_promote = environment.release is None
+            if is_first_promote:
                 # First-ever promote for this environment — derive/lock
-                # content_view_id/release/publish_prefix, same as
-                # promote_environment's is_first_promote branch
-                # (lifecycle_environments.py). Re-checks the signing guard
-                # here too (already validated at trigger time in
-                # trigger_publish_and_promote, but this closes the race
-                # window between that request and this task running, same
-                # pattern as every other re-check in this file).
+                # release/publish_prefix, same as promote_environment's
+                # is_first_promote branch (lifecycle_environments.py).
+                # Re-checks the signing guard here too (already validated at
+                # trigger time in trigger_publish_and_promote, but this
+                # closes the race window between that request and this task
+                # running, same pattern as every other re-check in this
+                # file).
                 if environment.gpg_key_id is None and not allow_unsigned:
                     raise HTTPException(
                         status_code=422,
@@ -919,25 +936,8 @@ def publish_and_promote_task(self, job_id: str) -> str:
                             "or the request must pass allow_unsigned=true"
                         ),
                     )
-                environment.content_view_id = content_view.id
                 environment.release = derive_release_for_content_view(db, content_view.id)
                 environment.publish_prefix = environment.name
-            elif environment.content_view_id != content_view.id:
-                # Race: the endpoint validated this environment was either
-                # unlinked or already tied to THIS content view at request
-                # time, but a concurrent first-promote (via the synchronous
-                # /promote endpoint, or another queued job) could have
-                # linked it to a DIFFERENT content view before this task
-                # ran. Promoting content_view's version onto it now would
-                # silently mix content from two different content views on
-                # one environment — fail loudly instead.
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"environment {environment.name} was linked to a different content view "
-                        "by a concurrent request — retry"
-                    ),
-                )
 
             do_promote(environment, version, db, aptly, user)
 

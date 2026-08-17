@@ -71,10 +71,17 @@ def _get_content_view_or_404(db: Session, content_view_id: uuid.UUID) -> Content
 
 
 def _referencing_lifecycle_environment_names(db: Session, content_view_id: uuid.UUID) -> list[str]:
+    # Excludes is_library — every content view has exactly one Library,
+    # always (auto-created alongside it, see create_content_view), so an
+    # unfiltered query would make every content view permanently
+    # undeletable the moment it exists. Library is OWNED by this content
+    # view, not merely referencing it — delete_content_view deletes it
+    # alongside the content view itself; this only blocks on OTHER
+    # (operator-created) environments still pointing here.
     return list(
         db.execute(
             select(LifecycleEnvironment.name)
-            .where(LifecycleEnvironment.content_view_id == content_view_id)
+            .where(LifecycleEnvironment.content_view_id == content_view_id, ~LifecycleEnvironment.is_library)
             .order_by(LifecycleEnvironment.name)
         ).scalars()
     )
@@ -162,7 +169,18 @@ def create_content_view(
     whole creation is rolled back (502) rather than left as a content
     view with zero versions to promote — same "no dangling half-created
     state" posture as every other aptly-backed endpoint in this router.
+
+    Also auto-creates and publishes this content view's "Library"
+    environment (create_library_environment, lifecycle_environments.py)
+    — every content view has exactly one, always, matching Satellite;
+    it's never something an operator creates by hand. Deferred import:
+    lifecycle_environments.py already imports do_publish FROM this
+    module, so importing it back at module load time would be circular
+    (same pattern repositories.py's sync_repository endpoint already uses
+    for app.tasks).
     """
+    from app.routers.lifecycle_environments import create_library_environment
+
     existing = db.execute(select(ContentView).where(ContentView.name == payload.name)).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="content view name already in use")
@@ -193,7 +211,8 @@ def create_content_view(
     db.commit()
     db.refresh(content_view)
 
-    do_publish(content_view, db, aptly, current_user, force=True)
+    version, _cut = do_publish(content_view, db, aptly, current_user, force=True)
+    create_library_environment(db, content_view, version, aptly, current_user)
 
     return _read_content_view(db, content_view)
 
@@ -247,6 +266,14 @@ def delete_content_view(
             detail=f"content view is used by lifecycle environment(s): {', '.join(referencing)}",
         )
 
+    # Library first — its current_version_id FK references a
+    # ContentViewVersion row deleted below (no ON DELETE cascade on that
+    # FK), so it must go before the version delete, not after.
+    db.execute(
+        delete(LifecycleEnvironment).where(
+            LifecycleEnvironment.content_view_id == content_view_id, LifecycleEnvironment.is_library
+        )
+    )
     db.execute(delete(ContentViewRepository).where(ContentViewRepository.content_view_id == content_view_id))
     db.execute(delete(ContentViewFilter).where(ContentViewFilter.content_view_id == content_view_id))
     db.execute(delete(ContentViewVersion).where(ContentViewVersion.content_view_id == content_view_id))
@@ -667,21 +694,18 @@ def trigger_publish_and_promote(
     content_view = _get_content_view_or_404(db, content_view_id)
 
     environment = db.get(LifecycleEnvironment, payload.environment_id)
-    # None matches too — an environment's content_view_id is deferred
-    # until its first-ever promote (lifecycle_environments.py's
-    # promote_environment); this may BE that first promote, in which case
-    # do_promote/publish_and_promote_task locks the environment to THIS
-    # content view. Once set, every later promote must match it exactly,
-    # same as before.
-    if environment is None or (
-        environment.content_view_id is not None and environment.content_view_id != content_view.id
-    ):
+    # content_view_id is always set at creation now (explicit, inherited
+    # via prior_environment_id, or auto-set for Library — see
+    # create_lifecycle_environment/create_library_environment in
+    # lifecycle_environments.py), so this must match exactly; there is no
+    # more "still unlinked" case to special-case here.
+    if environment is None or environment.content_view_id != content_view.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="lifecycle environment not found for this content view",
         )
 
-    if environment.content_view_id is None and environment.gpg_key_id is None and not payload.allow_unsigned:
+    if environment.release is None and environment.gpg_key_id is None and not payload.allow_unsigned:
         # Fail fast, before a Job is even created — same "validate before
         # dispatching work" posture promote_environment uses for the
         # equivalent synchronous case.

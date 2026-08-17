@@ -473,31 +473,50 @@ class ContentViewFilterRead(BaseModel):
 
 
 class LifecycleEnvironmentCreate(BaseModel):
-    """Matches Satellite's own "New Lifecycle Environment" dialog: name,
-    description, and prior (predecessor in the promotion path). Everything
-    apt-specific — which content view, release, publish_prefix — is
-    deferred to the environment's first promote (do_promote,
-    lifecycle_environments.py), derived from whatever version gets pushed
-    to it, instead of asked up front. gpg_key_id stays optional here for
-    an operator who already knows their signing key; if left unset, the
-    signed-vs-unsigned choice is enforced at first-promote time instead
-    (see PromoteRequest.allow_unsigned) — CLAUDE.md's "signing on by
-    default, unsigned an explicit opt-out" posture still applies, just at
-    the point content actually gets published rather than at creation.
+    """Matches Satellite's own "New Environment" dialog: name, description,
+    and prior (predecessor in the promotion path) — every content view has
+    its own auto-created "Library" root (see create_content_view), and
+    every OTHER environment is created explicitly, chained off an existing
+    one via prior_environment_id. content_view_id is required directly
+    only when NOT chaining off a prior (there's nothing to inherit it
+    from) — Satellite has no cross-content-view environment sharing, so
+    every environment always belongs to exactly one content view from the
+    moment it's created, never deferred. release/publish_prefix still get
+    derived at first-promote (do_promote, lifecycle_environments.py).
+    gpg_key_id stays optional; if left unset, the signed-vs-unsigned
+    choice is enforced at first-promote time instead (see PromoteRequest.
+    allow_unsigned) — CLAUDE.md's "signing on by default, unsigned an
+    explicit opt-out" posture still applies, just at the point content
+    actually gets published rather than at creation.
     """
 
     name: str
     description: str | None = None
-    # None = start a new path at position 0 (path_name = this
-    # environment's own name). Set = insert immediately after that
+    # Required unless prior_environment_id is set (in which case
+    # content_view_id is inherited from the prior environment — see the
+    # router's validation). Set = insert immediately after that
     # environment in its existing path (same path_name, position + 1).
     prior_environment_id: uuid.UUID | None = None
+    # validate_default=True: without it, pydantic v2 skips field
+    # validators entirely for a field left at its default (omitted from
+    # the request body is exactly the "neither field set" case this
+    # validator exists to catch) — same class of bug already caught once
+    # this session on LifecycleEnvironmentCreate.allow_unsigned, before
+    # that field was removed from this schema.
+    content_view_id: uuid.UUID | None = Field(default=None, validate_default=True)
     gpg_key_id: str | None = None
 
     _validate_name = field_validator("name")(validate_aptly_name)
     _validate_gpg_key_id = field_validator("gpg_key_id")(
         lambda v: validate_gpg_key_id(v) if v is not None else v
     )
+
+    @field_validator("content_view_id")
+    @classmethod
+    def _validate_content_view_or_prior(cls, v: uuid.UUID | None, info) -> uuid.UUID | None:
+        if v is None and info.data.get("prior_environment_id") is None:
+            raise ValueError("content_view_id is required unless prior_environment_id is set")
+        return v
 
 
 class LifecycleEnvironmentRead(BaseModel):
@@ -507,6 +526,7 @@ class LifecycleEnvironmentRead(BaseModel):
     path_name: str
     position: int
     content_view_id: uuid.UUID | None
+    is_library: bool
     release: str | None
     publish_prefix: str | None
     current_version_id: uuid.UUID | None

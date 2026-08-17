@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
@@ -31,11 +32,13 @@ import {
   type LifecycleEnvironmentCreate,
   type LifecycleEnvironmentRead,
 } from "@/api/environments";
+import { listContentViews } from "@/api/contentViews";
 import { errorMessage } from "@/lib/errors";
 
 const EMPTY_FORM: LifecycleEnvironmentCreate = {
   name: "",
   description: "",
+  content_view_id: "",
   prior_environment_id: "",
   gpg_key_id: "",
 };
@@ -60,11 +63,20 @@ export function EnvironmentsPage() {
     queryFn: () => listLifecycleEnvironments({ limit: 100 }),
   });
 
+  const contentViewsQuery = useQuery({
+    queryKey: ["content-views"],
+    queryFn: () => listContentViews({ limit: 100 }),
+  });
+
   const createMutation = useMutation({
     mutationFn: (payload: LifecycleEnvironmentCreate) =>
       createLifecycleEnvironment({
         ...payload,
         description: payload.description || null,
+        // content_view_id is only sent when NOT chaining off a prior — the
+        // server inherits it from the prior environment otherwise, and
+        // rejects a mismatched explicit value if both were sent.
+        content_view_id: payload.prior_environment_id ? null : payload.content_view_id || null,
         prior_environment_id: payload.prior_environment_id || null,
         gpg_key_id: payload.gpg_key_id || null,
       }),
@@ -101,10 +113,11 @@ export function EnvironmentsPage() {
     onError: (err) => toast.error(errorMessage(err)),
   });
 
-  // An environment with no content_view_id yet has never been promoted —
-  // "promote latest" doesn't mean anything until a content view is
-  // chosen, so this is a separate flow (dialog, explicit version id)
-  // rather than the one-click button already-linked environments use.
+  // An environment with no release yet has never been promoted — content_view_id
+  // is already fixed at creation now, but "promote latest" still doesn't
+  // mean anything until a version is chosen for the FIRST time, so this
+  // stays a separate flow (dialog, explicit version id) rather than the
+  // one-click button already-promoted environments use.
   const firstPromoteMutation = useMutation({
     mutationFn: () =>
       promoteEnvironment(firstPromoteTarget!.id, {
@@ -154,6 +167,10 @@ export function EnvironmentsPage() {
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (!form.content_view_id && !form.prior_environment_id) {
+      setFormError("Pick a content view (or a prior environment to chain onto)");
+      return;
+    }
     setFormError(null);
     createMutation.mutate(form);
   }
@@ -204,8 +221,10 @@ export function EnvironmentsPage() {
                   <DialogHeader>
                     <DialogTitle>Create lifecycle environment</DialogTitle>
                     <DialogDescription>
-                      Just name, description, and prior — which content view, release, and publish prefix get
-                      decided the first time you promote something to it.
+                      Every content view already has its own auto-created "Library" root — pick the content view
+                      this environment belongs to, then optionally chain it onto an existing environment in that
+                      content view's path (defaults to Library). Release and publish prefix get decided the
+                      first time you promote something to it.
                     </DialogDescription>
                   </DialogHeader>
                   <div className="mt-4 flex flex-col gap-4">
@@ -229,30 +248,62 @@ export function EnvironmentsPage() {
                       />
                     </div>
                     <div className="flex flex-col gap-1.5">
+                      <Label>Content view</Label>
+                      <Select
+                        value={form.content_view_id || "__none__"}
+                        onValueChange={(v) =>
+                          setForm((f) => ({
+                            ...f,
+                            content_view_id: v === "__none__" ? "" : v,
+                            prior_environment_id: "",
+                          }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select a content view" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__" disabled>
+                            Select a content view
+                          </SelectItem>
+                          {contentViewsQuery.data?.map((cv) => (
+                            <SelectItem key={cv.id} value={cv.id}>
+                              {cv.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
                       <Label>Prior</Label>
-                      {environmentsQuery.data?.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">
-                          No environments yet — this will start a new path.
-                        </p>
+                      {!form.content_view_id ? (
+                        <p className="text-sm text-muted-foreground">Pick a content view first.</p>
                       ) : (
-                        <Select
-                          value={form.prior_environment_id || "__none__"}
-                          onValueChange={(v) =>
-                            setForm((f) => ({ ...f, prior_environment_id: v === "__none__" ? "" : v }))
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="None — start a new path" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="__none__">None — start a new path</SelectItem>
-                            {environmentsQuery.data?.map((env) => (
-                              <SelectItem key={env.id} value={env.id}>
-                                {env.name} ({env.path_name} #{env.position})
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        (() => {
+                          const priorCandidates =
+                            environmentsQuery.data?.filter((env) => env.content_view_id === form.content_view_id) ??
+                            [];
+                          return (
+                            <Select
+                              value={form.prior_environment_id || "__none__"}
+                              onValueChange={(v) =>
+                                setForm((f) => ({ ...f, prior_environment_id: v === "__none__" ? "" : v }))
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="None — start a new path" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="__none__">None — start a new path</SelectItem>
+                                {priorCandidates.map((env) => (
+                                  <SelectItem key={env.id} value={env.id}>
+                                    {env.name} ({env.path_name} #{env.position})
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          );
+                        })()
                       )}
                     </div>
                     <div className="flex flex-col gap-1.5">
@@ -298,7 +349,16 @@ export function EnvironmentsPage() {
           <TableBody>
             {environmentsQuery.data?.map((env) => (
               <TableRow key={env.id}>
-                <TableCell className="font-medium">{env.name}</TableCell>
+                <TableCell className="font-medium">
+                  <div className="flex items-center gap-2">
+                    {env.name}
+                    {env.is_library && (
+                      <Badge variant="secondary" title="Auto-created root environment — every content view has one">
+                        Library
+                      </Badge>
+                    )}
+                  </div>
+                </TableCell>
                 <TableCell className="text-muted-foreground">
                   {env.path_name} #{env.position}
                 </TableCell>
@@ -322,7 +382,7 @@ export function EnvironmentsPage() {
                         <Pencil className="h-3.5 w-3.5" />
                         Edit
                       </Button>
-                      {env.content_view_id === null ? (
+                      {env.release === null ? (
                         <Button variant="outline" size="sm" onClick={() => openFirstPromote(env)}>
                           <ArrowUpCircle className="h-3.5 w-3.5" />
                           Promote…
@@ -438,9 +498,9 @@ export function EnvironmentsPage() {
             <DialogHeader>
               <DialogTitle>Promote {firstPromoteTarget?.name}</DialogTitle>
               <DialogDescription>
-                This environment has never been promoted — pick a content view version to publish. This
-                permanently ties the environment to that version's content view; every later promote must use
-                another version of the same one.
+                This environment has never been promoted — pick a content view version to publish. Must be a
+                version of this environment's own content view; every later promote reuses the latest version of
+                that same content view.
               </DialogDescription>
             </DialogHeader>
             <div className="mt-4 flex flex-col gap-4">
