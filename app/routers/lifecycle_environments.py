@@ -389,13 +389,22 @@ def create_environment_content_view(
                 detail={"environment_id": str(environment_id), "content_view_id": str(payload.content_view_id)},
             )
         )
-        db.commit()
-        db.refresh(ecv)
-
+        # Deliberately NOT committed here — do_promote below re-checks
+        # path order (_check_path_order) and can reject with a 409. If the
+        # assignment row were already committed at that point, a rejected
+        # first-promote would still leave a phantom, never-published
+        # EnvironmentContentView behind (permanently blocking any retry
+        # with "already assigned"). Flushed so do_promote's own query for
+        # this row's predecessor lookups sees it, but the whole thing only
+        # actually persists once do_promote's own commit succeeds.
         try:
             ecv = do_promote(ecv, environment, version, db, aptly, current_user)
         except AptlyError as exc:
+            db.rollback()
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        except HTTPException:
+            db.rollback()
+            raise
     finally:
         lock.release()
 

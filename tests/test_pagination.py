@@ -18,20 +18,9 @@ def _reset_login_rate_limit():
 
 
 def test_servers_pagination_bounds_and_pages(client, operator_token, viewer_token, db_session):
-    from app.models import ContentView, LifecycleEnvironment, Server
+    from app.models import LifecycleEnvironment, Server
 
-    cv = ContentView(name="pg-cv")
-    db_session.add(cv)
-    db_session.flush()
-    env = LifecycleEnvironment(
-        name="pg-env",
-        path_name="pg-path",
-        position=0,
-        content_view_id=cv.id,
-        release="jammy",
-        publish_prefix="pg-prefix",
-        gpg_key_id=None,
-    )
+    env = LifecycleEnvironment(name="pg-env", path_name="pg-path", position=0)
     db_session.add(env)
     db_session.flush()
 
@@ -77,20 +66,9 @@ def test_servers_pagination_bounds_and_pages(client, operator_token, viewer_toke
 
 
 def test_jobs_pagination_bounds_and_pages(client, operator_token, admin_token, db_session):
-    from app.models import ContentView, Job, JobStatus, JobTargetType, JobType, LifecycleEnvironment, Server
+    from app.models import Job, JobStatus, JobTargetType, JobType, LifecycleEnvironment, Server
 
-    cv = ContentView(name="pgjobs-cv")
-    db_session.add(cv)
-    db_session.flush()
-    env = LifecycleEnvironment(
-        name="pgjobs-env",
-        path_name="pgjobs-path",
-        position=0,
-        content_view_id=cv.id,
-        release="jammy",
-        publish_prefix="pgjobs-prefix",
-        gpg_key_id=None,
-    )
+    env = LifecycleEnvironment(name="pgjobs-env", path_name="pgjobs-path", position=0)
     db_session.add(env)
     db_session.flush()
     server = Server(hostname="pgjobs-host.example.com", ip_address="10.0.1.1", ssh_user="ubuntu", environment_id=env.id)
