@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type * as React from "react";
 import { NavLink } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -17,6 +18,7 @@ import {
   TrendingUp,
   BookOpen,
   Settings,
+  ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getBranding, logoUrl } from "@/api/branding";
@@ -40,10 +42,15 @@ const MONITOR_ITEMS: NavItem[] = [
   { to: "/trends", label: "Trends", icon: TrendingUp },
 ];
 
-const NAV_ITEMS: NavItem[] = [
-  { to: "/repositories", label: "Repositories", icon: Package },
+// Lifecycle groups content-view/environment management — the pieces of the
+// promotion pipeline (define content, define the path it moves through).
+const LIFECYCLE_ITEMS: NavItem[] = [
   { to: "/content-views", label: "Content Views", icon: Layers },
   { to: "/environments", label: "Lifecycle Environments", icon: GitBranch },
+];
+
+const NAV_ITEMS: NavItem[] = [
+  { to: "/repositories", label: "Repositories", icon: Package },
   { to: "/servers", label: "Servers", icon: Server },
   { to: "/errata", label: "Errata", icon: Newspaper },
   { to: "/host-groups", label: "Host Groups", icon: Users },
@@ -63,6 +70,48 @@ function navLinkClass(isActive: boolean): string {
     isActive
       ? "bg-accent text-accent-foreground before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-primary"
       : "text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground",
+  );
+}
+
+interface NavSectionProps {
+  label: string;
+  items: NavItem[];
+  defaultOpen?: boolean;
+  children?: React.ReactNode;
+}
+
+// Collapsible sidebar group — header toggles a chevron + list visibility,
+// state lives per-section (not persisted) so it just resets on reload,
+// matching JobStatusIndicator's existing expand/collapse pattern elsewhere
+// in the UI.
+function NavSection({ label, items, defaultOpen = true, children }: NavSectionProps) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <div className="mb-4">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex w-full items-center justify-between rounded-md px-3 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+        aria-expanded={open}
+      >
+        <span>{label}</span>
+        <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform", open ? "" : "-rotate-90")} />
+      </button>
+      {open && (
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {items.map((item) => (
+            <li key={item.to}>
+              <NavLink to={item.to} end={item.to === "/"} className={({ isActive }) => navLinkClass(isActive)}>
+                <item.icon className="h-4 w-4 shrink-0" />
+                <span className="truncate">{item.label}</span>
+              </NavLink>
+            </li>
+          ))}
+          {children}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -90,16 +139,7 @@ export function Sidebar() {
         <span className="text-sm font-semibold tracking-tight">Groundctl</span>
       </div>
       <div className="flex-1 overflow-y-auto px-2 py-3">
-        <p className="px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Monitor</p>
-        <ul className="mb-4 flex flex-col gap-0.5">
-          {MONITOR_ITEMS.map((item) => (
-            <li key={item.to}>
-              <NavLink to={item.to} end={item.to === "/"} className={({ isActive }) => navLinkClass(isActive)}>
-                <item.icon className="h-4 w-4 shrink-0" />
-                <span className="truncate">{item.label}</span>
-              </NavLink>
-            </li>
-          ))}
+        <NavSection label="Monitor" items={MONITOR_ITEMS}>
           <RoleGate minRole="admin">
             <li>
               <NavLink to="/audit-logs" className={({ isActive }) => navLinkClass(isActive)}>
@@ -108,7 +148,9 @@ export function Sidebar() {
               </NavLink>
             </li>
           </RoleGate>
-        </ul>
+        </NavSection>
+
+        <NavSection label="Lifecycle" items={LIFECYCLE_ITEMS} />
 
         <ul className="flex flex-col gap-0.5">
           {NAV_ITEMS.map((item) => (
