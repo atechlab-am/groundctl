@@ -38,12 +38,9 @@ def _create_cv(client, operator_token, repo, name="beacon-cv"):
 
 
 def _library(client, operator_token):
-    # Position 0 is always Library and never path-order-gated. A freshly
-    # created environment with no prior_environment_id now lands at
-    # position 1+ (chained after auto-seeded Library), so any env this
-    # file wants to assign+promote directly must chain onto Library
-    # explicitly. Seeds Library via a throwaway create if it doesn't
-    # exist yet in this test's fresh DB.
+    # Position 0 is always Library, auto-seeded the first time an
+    # environment is created with no prior_environment_id. Seeds it via a
+    # throwaway create if it doesn't exist yet in this test's fresh DB.
     listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
     library = next((e for e in listed if e["name"] == "Library"), None)
     if library is not None:
@@ -58,27 +55,18 @@ def _create_env(client, operator_token, cv, name="beacon-env", path_name="beacon
     # own (LifecycleEnvironmentCreate takes only name/description/
     # prior_environment_id) — content views are assigned to it afterward
     # via POST /{id}/content-views, which also performs that pair's first
-    # promote in the same call. _check_path_order gates position > 0
-    # regardless of chaining — a version must already be live for THIS
-    # content view at position N-1 — so chaining the new environment after
-    # Library isn't enough on its own; the content view must first be
-    # assigned+promoted to Library itself, THEN to the new environment.
-    # cv/path_name/position/publish_prefix args kept for call-site
-    # compatibility; only `name` and `cv` actually matter now.
+    # promote in the same call, directly, regardless of position (no
+    # path-order gate). Every beacon checkin call in this file needs at
+    # least one genuinely PUBLISHED assignment now (checkin's
+    # `content_views` list is populated from published EnvironmentContentView
+    # rows — app/routers/beacon.py), so this helper chains the new
+    # environment after Library then assigns+promotes the content view's
+    # already-published version 1 straight to it. cv/path_name/position/
+    # publish_prefix args kept for call-site compatibility; only `name`
+    # and `cv` actually matter now.
     library = _library(client, operator_token)
     versions_r = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token))
     version_id = versions_r.json()[0]["id"]
-
-    library_ecvs = client.get(
-        f"/lifecycle-environments/{library['id']}/content-views", headers=auth_headers(operator_token)
-    ).json()
-    if not any(e["content_view_id"] == cv["id"] for e in library_ecvs):
-        library_assign_r = client.post(
-            f"/lifecycle-environments/{library['id']}/content-views",
-            json={"content_view_id": cv["id"], "content_view_version_id": version_id, "allow_unsigned": True},
-            headers=auth_headers(operator_token),
-        )
-        assert library_assign_r.status_code == 201, library_assign_r.text
 
     r = client.post(
         "/lifecycle-environments",

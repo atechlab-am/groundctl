@@ -463,11 +463,11 @@ class LifecycleEnvironment(Base):
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Ordered-path model: environments sharing path_name form one ordered
-    # chain by position (0-based). Promotion of a given content view into
-    # position N requires that SAME content view to already be current at
-    # position N-1 in the same path (see _check_path_order,
-    # lifecycle_environments.py) — position 0 has no such gate. Set from
-    # LifecycleEnvironmentCreate's prior_environment_id at creation.
+    # chain by position (0-based), purely organizational — position does
+    # NOT gate promotion. A content view can be assigned+promoted to any
+    # environment directly, regardless of what's live elsewhere in the
+    # path. Set from LifecycleEnvironmentCreate's prior_environment_id at
+    # creation.
     path_name: Mapped[str] = mapped_column(String, nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)

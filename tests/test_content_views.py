@@ -485,9 +485,9 @@ def test_set_version_description_wrong_content_view_404s(client, operator_token)
 
 
 def _library(client, operator_token):
-    # Position 0 is always Library and never path-order-gated. Seeds
-    # Library via a throwaway create if it doesn't exist yet in this
-    # test's fresh DB.
+    # Position 0 is always Library, auto-seeded the first time an
+    # environment is created with no prior_environment_id. Seeds it via a
+    # throwaway create if it doesn't exist yet in this test's fresh DB.
     listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
     library = next((e for e in listed if e["name"] == "Library"), None)
     if library is not None:
@@ -495,23 +495,6 @@ def _library(client, operator_token):
     client.post("/lifecycle-environments", json={"name": "_seed"}, headers=auth_headers(operator_token))
     listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
     return next(e for e in listed if e["name"] == "Library")
-
-
-def _promote_library_first(client, operator_token, cv, version_id):
-    # _check_path_order gates every non-Library environment on its
-    # predecessor already being live at the SAME version — this isn't just
-    # a first-promote requirement, it holds for every later promote too.
-    # Any test that promotes an env past its Library-assigned v1 (e.g. to
-    # v2) must promote Library to that same version first, or the env-level
-    # promote 409s. Assumes Library is already assigned this content view
-    # (true for anything created via _create_env's default assign=True).
-    library = _library(client, operator_token)
-    r = client.post(
-        f"/lifecycle-environments/{library['id']}/content-views/{cv['id']}/promote",
-        json={"content_view_version_id": version_id},
-        headers=auth_headers(operator_token),
-    )
-    assert r.status_code == 200, r.text
 
 
 def _create_env(
@@ -522,12 +505,11 @@ def _create_env(
     # own (LifecycleEnvironmentCreate takes only name/description/
     # prior_environment_id) — content views are assigned to it afterward
     # via POST /{id}/content-views, which also performs that pair's first
-    # promote in the same call. Pass `prior` (another env dict) to chain
-    # into an existing path; omitting it chains onto Library (seeding it
-    # if needed) so the new environment lands at position 1 and is
-    # immediately assignable, since Library's own position 0 is gate-free.
-    # By default this helper also assigns+first-promotes `cv` to the new
-    # environment (most callers in this file need
+    # promote in the same call, directly, regardless of position (no
+    # path-order gate). Pass `prior` (another env dict) to chain into an
+    # existing path; omitting it chains onto Library (seeding it if
+    # needed). By default this helper also assigns+first-promotes `cv` to
+    # the new environment (most callers in this file need
     # trigger_publish_and_promote to find an existing assignment, since it
     # 404s otherwise) — pass assign=False for the few tests that
     # specifically need an environment with NO assignment yet. `version`
@@ -535,35 +517,7 @@ def _create_env(
     # the content view's current latest). path_name/position/publish_prefix
     # args are accepted for call-site compatibility but no longer affect
     # anything directly.
-    #
-    # _check_path_order gates position > 0 regardless of chaining — a
-    # version must already be live for THIS content view at position N-1.
-    # When no explicit `prior` is given, the effective prior is Library, so
-    # the content view must be assigned+promoted to Library FIRST (if not
-    # already) before it can be assigned to the new environment. When an
-    # explicit `prior` IS given, the caller is deliberately building a real
-    # chain (e.g. dev then staging with prior=dev) and is responsible for
-    # having already promoted that predecessor itself — no Library step
-    # needed here in that case.
-    if prior is not None:
-        effective_prior = prior
-    else:
-        effective_prior = _library(client, operator_token)
-        if assign:
-            v = version
-            if v is None:
-                v = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
-            library_ecvs = client.get(
-                f"/lifecycle-environments/{effective_prior['id']}/content-views", headers=auth_headers(operator_token)
-            ).json()
-            if not any(e["content_view_id"] == cv["id"] for e in library_ecvs):
-                library_assign_r = client.post(
-                    f"/lifecycle-environments/{effective_prior['id']}/content-views",
-                    json={"content_view_id": cv["id"], "content_view_version_id": v["id"], "allow_unsigned": True},
-                    headers=auth_headers(operator_token),
-                )
-                assert library_assign_r.status_code == 201, library_assign_r.text
-            version = v
+    effective_prior = prior if prior is not None else _library(client, operator_token)
 
     payload = {"name": name, "prior_environment_id": effective_prior["id"]}
     r = client.post("/lifecycle-environments", json=payload, headers=auth_headers(operator_token))
@@ -691,25 +645,11 @@ def test_publish_and_promote_task_cuts_version_sets_description_and_promotes(cli
     cv = client.post(
         "/content-views", json={"name": "pp-cv4", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
     ).json()
-    # publish_and_promote_task always cuts a brand-new version and promotes
-    # the target environment straight to it (a "later promote" —
-    # trigger_publish_and_promote's own docstring). _check_path_order
-    # requires that new, not-yet-known version to already be live on the
-    # target's predecessor too — unsatisfiable for a chained environment
-    # since the version doesn't exist until the task itself cuts it. Target
-    # Library directly (position 0, gate-free) so this test can focus on
-    # publish_and_promote_task's own mechanics rather than path-order setup.
-    env = _library(client, operator_token)
-    version_id = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]["id"]
-    first_assign_r = client.post(
-        f"/lifecycle-environments/{env['id']}/content-views",
-        json={"content_view_id": cv["id"], "content_view_version_id": version_id, "allow_unsigned": True},
-        headers=auth_headers(operator_token),
-    )
-    assert first_assign_r.status_code == 201, first_assign_r.text
-    # This first assign+promote counts as one publish_snapshot call of its
-    # own — count from here so this test only asserts on the promote
-    # publish_and_promote_task triggers itself.
+    env = _create_env(client, operator_token, cv, "pp-env4", "pp-path4", 0, "pp-prefix4")
+    # _create_env's default assign=True already did this pair's first
+    # promote (create_environment_content_view), which counts as one
+    # publish_snapshot call of its own — count from here so this test only
+    # asserts on the promote publish_and_promote_task triggers itself.
     publish_calls_before = mock_aptly.publish_snapshot.call_count
 
     with patch("app.tasks.publish_and_promote_task.delay"):
@@ -749,21 +689,13 @@ def test_publish_and_promote_task_cuts_version_sets_description_and_promotes(cli
     assert mock_aptly.publish_snapshot.call_count == publish_calls_before + 1
 
 
-def test_publish_and_promote_task_fails_job_on_path_order_violation(client, operator_token, mock_aptly):
-    """do_promote's _check_path_order raises HTTPException (409), not
-    AptlyError — proves the task's except clause actually catches both,
-    not just aptly failures.
-
-    Path order is enforced PER CONTENT VIEW now (_check_path_order,
-    lifecycle_environments.py): position N requires THIS SAME content
-    view's current_version_id to already equal the version being promoted
-    at position N-1. A pair's very first promote (create_environment_
-    content_view) is itself path-order-gated, so to reach a violation via
-    publish_and_promote_task specifically (always a LATER promote of an
-    already-assigned pair, per its own docstring) both dev and staging are
-    first assigned+promoted in order to v1 — a legitimate state — and only
-    THEN does staging attempt to jump straight to v2 while dev is still on
-    v1.
+def test_publish_and_promote_task_fails_job_on_unassignment_race(client, operator_token, mock_aptly):
+    """The task re-checks that the (environment, content_view) assignment
+    still exists immediately before promoting — proves its except clause
+    actually catches HTTPException, not just AptlyError. Simulated by
+    unassigning the content view from the environment in the window
+    between the trigger request (which validates the assignment exists)
+    and the task actually running.
     """
     from unittest.mock import patch
 
@@ -777,46 +709,29 @@ def test_publish_and_promote_task_fails_job_on_path_order_violation(client, oper
     cv = client.post(
         "/content-views", json={"name": "pp-cv5", "repository_ids": [repo["id"]]}, headers=auth_headers(operator_token)
     ).json()
-    v1 = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]
-    dev = _create_env(client, operator_token, cv, "pp-dev5", "pp-path5", 0, "pp-dev5-prefix")
-    staging = _create_env(
-        client, operator_token, cv, "pp-staging5", "pp-path5", 1, "pp-staging5-prefix", prior=dev, version=v1
-    )
-
-    # Cut v2 but only ever get dev this far — staging attempting to skip
-    # straight to v2 must be rejected, since dev (position 0) is still on
-    # v1 for this content view.
-    mock_aptly.get_mirror_packages.return_value = [
-        {"Package": "nginx", "Version": "1.19.0-1", "Architecture": "amd64"}
-    ]
-    publish_r = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
-    assert publish_r.status_code == 201, publish_r.text
-    v2 = publish_r.json()["content_view_version"]
+    env = _create_env(client, operator_token, cv, "pp-env5", "pp-path5", 0, "pp-prefix5")
 
     with patch("app.tasks.publish_and_promote_task.delay"):
         job_r = client.post(
             f"/content-views/{cv['id']}/publish-and-promote",
-            json={"environment_id": staging["id"], "allow_unsigned": True},
+            json={"environment_id": env["id"], "allow_unsigned": True},
             headers=auth_headers(operator_token),
         )
     assert job_r.status_code == 201, job_r.text
     job_id = job_r.json()["id"]
+
+    # Unassign AFTER the Job was created but BEFORE the task runs.
+    unassign_r = client.delete(
+        f"/lifecycle-environments/{env['id']}/content-views/{cv['id']}", headers=auth_headers(operator_token)
+    )
+    assert unassign_r.status_code == 204, unassign_r.text
 
     with patch("app.tasks.get_aptly_client", return_value=mock_aptly):
         publish_and_promote_task(job_id)
 
     job_after = client.get(f"/jobs/{job_id}", headers=auth_headers(operator_token))
     assert job_after.json()["status"] == "failed"
-    assert "dev5" in job_after.json()["log_output"] or "position" in job_after.json()["log_output"]
-
-    # dev being untouched confirms staging's promotion never applied — dev
-    # is still on v1, not v2.
-    dev_ecvs = client.get(
-        f"/lifecycle-environments/{dev['id']}/content-views", headers=auth_headers(operator_token)
-    ).json()
-    dev_ecv = next(e for e in dev_ecvs if e["content_view_id"] == cv["id"])
-    assert dev_ecv["current_version_id"] == v1["id"]
-    assert dev_ecv["current_version_id"] != v2["id"]
+    assert "not assigned" in job_after.json()["log_output"]
 
 
 # ---------------------------------------------------------------------------
@@ -941,7 +856,6 @@ def test_trigger_delete_version_past_promoted_blocked(client, operator_token, mo
     publish_r = client.post(f"/content-views/{cv['id']}/publish", headers=auth_headers(operator_token))
     assert publish_r.status_code == 201, publish_r.text
     v2 = publish_r.json()["content_view_version"]
-    _promote_library_first(client, operator_token, cv, v2["id"])
     promote2_r = client.post(
         f"/lifecycle-environments/{env['id']}/content-views/{cv['id']}/promote",
         json={"content_view_version_id": v2["id"]},
@@ -1144,7 +1058,6 @@ def test_delete_content_view_version_task_rechecks_promotion_race(client, operat
     job_id = job_r.json()["id"]
 
     # Promote AFTER the delete job was created but BEFORE the task runs.
-    _promote_library_first(client, operator_token, cv, version["id"])
     promote_r = client.post(
         f"/lifecycle-environments/{env['id']}/content-views/{cv['id']}/promote",
         json={"content_view_version_id": version["id"], "allow_unsigned": True},
@@ -1499,12 +1412,13 @@ def test_delete_content_view_referenced_by_lifecycle_environment_conflicts(clien
         headers=auth_headers(operator_token),
     ).json()
     version_id = client.get(f"/content-views/{cv['id']}/versions", headers=auth_headers(operator_token)).json()[0]["id"]
-    # Library (position 0) is the only environment a first assign+promote
-    # can target directly — _check_path_order gates every other position
-    # regardless of chaining. This test only needs the delete guard to
-    # name SOME assigned environment, so it assigns straight to Library
-    # rather than creating (and Library-promoting) a separate one.
-    env = _library(client, operator_token)
+    env_r = client.post(
+        "/lifecycle-environments",
+        json={"name": "delete-cv-env"},
+        headers=auth_headers(operator_token),
+    )
+    assert env_r.status_code == 201, env_r.text
+    env = env_r.json()
 
     # Assign+first-promote cv to env — this is what the delete guard
     # actually keys on now (an EnvironmentContentView row), not creation
@@ -1518,7 +1432,7 @@ def test_delete_content_view_referenced_by_lifecycle_environment_conflicts(clien
 
     r = client.delete(f"/content-views/{cv['id']}", headers=auth_headers(operator_token))
     assert r.status_code == 409, r.text
-    assert env["name"] in r.json()["detail"]
+    assert "delete-cv-env" in r.json()["detail"]
 
     # Unassign, then the delete succeeds.
     unassign_r = client.delete(

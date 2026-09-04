@@ -54,16 +54,14 @@ def _create_env(client, operator_token, name="dev", description=None, prior_envi
 
 
 def _library(client, operator_token):
-    # Position 0 is always Library and never path-order-gated — tests
-    # that just need ONE directly-assignable environment (no chaining)
-    # use this instead of a freshly _create_env'd one, since any new
-    # environment created with no prior now lands at position 1+ and
-    # would need its OWN predecessor promoted first (see
-    # test_path_order_enforced_for_first_promote_at_position_1 for that
-    # scenario deliberately exercised). Creates a throwaway environment
-    # first if Library doesn't exist yet in this test's fresh DB, purely
-    # to trigger auto-seeding (see create_lifecycle_environment,
-    # lifecycle_environments.py) — the throwaway itself is discarded.
+    # Position 0 is always Library, auto-seeded the first time an
+    # environment is created with no prior_environment_id (see
+    # create_lifecycle_environment, lifecycle_environments.py). Tests that
+    # just need ONE existing environment to assign against use this
+    # instead of a freshly _create_env'd one. Creates a throwaway
+    # environment first if Library doesn't exist yet in this test's fresh
+    # DB, purely to trigger auto-seeding — the throwaway itself is
+    # discarded.
     listed = client.get("/lifecycle-environments", headers=auth_headers(operator_token)).json()
     library = next((e for e in listed if e["name"] == "Library"), None)
     if library is not None:
@@ -618,15 +616,14 @@ def test_promote_environment_content_view_aptly_unreachable_returns_502(
 
 
 # ---------------------------------------------------------------------------
-# Path-order enforcement — PER CONTENT VIEW
+# No path-order enforcement — assign/promote directly, any position, any order
 # ---------------------------------------------------------------------------
 
 
-def test_path_order_enforced_for_first_promote_at_position_1(client, operator_token, mock_aptly):
-    """A content view's very first assign+promote at position 1 is itself
-    path-order-gated: position 1 requires THIS content view to already be
-    current at position 0. dev (position 0) has never had this content
-    view assigned at all when staging tries — rejected.
+def test_assign_content_view_directly_to_non_library_environment(client, operator_token, mock_aptly):
+    """A content view's first assign+promote succeeds directly at position
+    1 (staging) with no requirement that it be assigned to Library (position
+    0) first or ever — the promotion path is organizational only.
     """
     mock_aptly.get_mirror_packages.return_value = [
         {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
@@ -643,24 +640,20 @@ def test_path_order_enforced_for_first_promote_at_position_1(client, operator_to
         json={"content_view_id": cv["id"], "content_view_version_id": version_id, "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
-    assert r.status_code == 409, r.text
+    assert r.status_code == 201, r.text
 
-    # dev promotes first, then staging succeeds with the same version.
-    _assign_cv(client, operator_token, dev, cv, version_id=version_id)
-
-    r2 = client.post(
-        f"/lifecycle-environments/{staging['id']}/content-views",
-        json={"content_view_id": cv["id"], "content_view_version_id": version_id, "allow_unsigned": True},
-        headers=auth_headers(operator_token),
-    )
-    assert r2.status_code == 201, r2.text
+    # dev (Library) never got this content view assigned at all — confirms
+    # staging's promote didn't implicitly depend on it.
+    dev_ecvs = client.get(
+        f"/lifecycle-environments/{dev['id']}/content-views", headers=auth_headers(operator_token)
+    ).json()
+    assert not any(e["content_view_id"] == cv["id"] for e in dev_ecvs)
 
 
-def test_path_order_enforced_for_later_promote(client, operator_token, mock_aptly):
-    """Once both dev and staging have this content view assigned at v1,
-    staging must not be able to jump straight to v2 while dev is still on
-    v1 — the SAME check applies to later promotes via the nested route,
-    not just the first.
+def test_promote_to_newer_version_without_predecessor(client, operator_token, mock_aptly):
+    """staging can jump straight to v2 even though dev was never assigned
+    this content view at all, let alone promoted to v2 — later promotes
+    are gated by nothing but the pair's own assignment.
     """
     mock_aptly.get_mirror_packages.return_value = [
         {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
@@ -671,7 +664,6 @@ def test_path_order_enforced_for_later_promote(client, operator_token, mock_aptl
     v1 = _version_id(client, operator_token, cv)
     dev = _library(client, operator_token)
     staging = _create_env(client, operator_token, "staging21b", prior_environment_id=dev["id"])
-    _assign_cv(client, operator_token, dev, cv, version_id=v1)
     _assign_cv(client, operator_token, staging, cv, version_id=v1)
 
     mock_aptly.get_mirror_packages.return_value = [
@@ -686,30 +678,13 @@ def test_path_order_enforced_for_later_promote(client, operator_token, mock_aptl
         json={"content_view_version_id": v2},
         headers=auth_headers(operator_token),
     )
-    assert r.status_code == 409, r.text
-
-    # dev promotes to v2 first, then staging succeeds.
-    dev_promote = client.post(
-        f"/lifecycle-environments/{dev['id']}/content-views/{cv['id']}/promote",
-        json={"content_view_version_id": v2},
-        headers=auth_headers(operator_token),
-    )
-    assert dev_promote.status_code == 200, dev_promote.text
-
-    r2 = client.post(
-        f"/lifecycle-environments/{staging['id']}/content-views/{cv['id']}/promote",
-        json={"content_view_version_id": v2},
-        headers=auth_headers(operator_token),
-    )
-    assert r2.status_code == 200, r2.text
+    assert r.status_code == 200, r.text
 
 
-def test_path_order_independent_per_content_view(client, operator_token, mock_aptly):
-    """The core new capability: two DIFFERENT content views assigned to
-    the SAME environment path are promoted completely independently.
-    Content view A can be live at staging (position 1) while content view
-    B has never even been assigned there — A's promotion history imposes
-    no constraint on B, and vice versa.
+def test_content_views_assigned_independently_per_environment(client, operator_token, mock_aptly):
+    """Two different content views can be assigned to different
+    environments in any combination — content view A only at staging,
+    content view B only at dev — with no cross-dependency between them.
     """
     mock_aptly.get_mirror_packages.return_value = [
         {"Package": "nginx", "Version": "1.18.0-6", "Architecture": "amd64"}
@@ -720,12 +695,12 @@ def test_path_order_independent_per_content_view(client, operator_token, mock_ap
     cv_a = _create_cv(client, operator_token, repo_a, "le-cv-indep-a")
     cv_b = _create_cv(client, operator_token, repo_b, "le-cv-indep-b")
     v_a = _version_id(client, operator_token, cv_a)
+    v_b = _version_id(client, operator_token, cv_b)
 
     dev = _library(client, operator_token)
     staging = _create_env(client, operator_token, "staging-indep", prior_environment_id=dev["id"])
 
-    # cv_a travels the full path: dev then staging.
-    _assign_cv(client, operator_token, dev, cv_a, version_id=v_a)
+    # cv_a assigned directly to staging (position 1), never touching dev.
     r = client.post(
         f"/lifecycle-environments/{staging['id']}/content-views",
         json={"content_view_id": cv_a["id"], "content_view_version_id": v_a, "allow_unsigned": True},
@@ -733,41 +708,26 @@ def test_path_order_independent_per_content_view(client, operator_token, mock_ap
     )
     assert r.status_code == 201, r.text
 
-    # cv_b assigned DIRECTLY to staging (position 1) despite never having
-    # been assigned to dev at all — allowed, because path-order only gates
-    # a content view against ITS OWN predecessor state, and dev simply has
-    # no EnvironmentContentView row for cv_b (predecessor_ecv is None,
-    # which _check_path_order treats the same as "predecessor never had
-    # this content view live" — i.e. still gated)...
-    v_b = _version_id(client, operator_token, cv_b)
+    # cv_b assigned only to dev (position 0) — no relationship to cv_a's
+    # assignment at staging.
     r2 = client.post(
-        f"/lifecycle-environments/{staging['id']}/content-views",
-        json={"content_view_id": cv_b["id"], "content_view_version_id": v_b, "allow_unsigned": True},
-        headers=auth_headers(operator_token),
-    )
-    # ...so this specific attempt (cv_b straight to position 1) is
-    # correctly rejected — proving path-order is real per content view,
-    # not just decorative.
-    assert r2.status_code == 409, r2.text
-
-    # But assigning cv_b to dev (position 0, no predecessor gate) succeeds
-    # independently of cv_a's own state at dev.
-    r3 = client.post(
         f"/lifecycle-environments/{dev['id']}/content-views",
         json={"content_view_id": cv_b["id"], "content_view_version_id": v_b, "allow_unsigned": True},
         headers=auth_headers(operator_token),
     )
-    assert r3.status_code == 201, r3.text
+    assert r2.status_code == 201, r2.text
 
-    # Both content views are now independently assigned to dev, each with
-    # its own current_version_id.
+    staging_ecvs = client.get(
+        f"/lifecycle-environments/{staging['id']}/content-views", headers=auth_headers(operator_token)
+    ).json()
+    assert len(staging_ecvs) == 1
+    assert staging_ecvs[0]["content_view_id"] == cv_a["id"]
+
     dev_ecvs = client.get(
         f"/lifecycle-environments/{dev['id']}/content-views", headers=auth_headers(operator_token)
     ).json()
-    ecvs_by_cv = {e["content_view_id"]: e for e in dev_ecvs}
-    assert ecvs_by_cv[cv_a["id"]]["current_version_id"] == v_a
-    assert ecvs_by_cv[cv_b["id"]]["current_version_id"] == v_b
-    assert len(dev_ecvs) == 2
+    assert len(dev_ecvs) == 1
+    assert dev_ecvs[0]["content_view_id"] == cv_b["id"]
 
 
 def test_multiple_content_views_assigned_to_same_environment(client, operator_token, mock_aptly):

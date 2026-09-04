@@ -90,50 +90,6 @@ def derive_release_for_content_view(db: Session, content_view_id: uuid.UUID) -> 
     return repo.distribution
 
 
-def _check_path_order(db: Session, ecv: EnvironmentContentView, environment: LifecycleEnvironment, version_id: uuid.UUID) -> None:
-    """Position 0 has no predecessor and is always allowed. Position N
-    requires THIS SAME content view's current_version_id to already equal
-    `version_id` at position N-1 in the same path — a version must move
-    through the path in order, matching Satellite's promotion-follows-the-
-    path behavior. The predecessor environment is looked up by
-    (path_name, position - 1) — environments are globally unique on that
-    pair now — then its EnvironmentContentView row for THIS content_view_id
-    is what actually gets checked, since path-order is enforced per
-    content view, not per environment as a whole (a different content view
-    may be at a different stage of the same path).
-    """
-    if environment.position == 0:
-        return
-
-    predecessor_env = db.execute(
-        select(LifecycleEnvironment).where(
-            LifecycleEnvironment.path_name == environment.path_name,
-            LifecycleEnvironment.position == environment.position - 1,
-        )
-    ).scalar_one_or_none()
-
-    if predecessor_env is None:
-        # No environment occupies the preceding slot yet — nothing to gate against.
-        return
-
-    predecessor_ecv = db.execute(
-        select(EnvironmentContentView).where(
-            EnvironmentContentView.environment_id == predecessor_env.id,
-            EnvironmentContentView.content_view_id == ecv.content_view_id,
-        )
-    ).scalar_one_or_none()
-
-    predecessor_current_version_id = predecessor_ecv.current_version_id if predecessor_ecv is not None else None
-    if predecessor_current_version_id != version_id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"this content view's version must be promoted through '{predecessor_env.name}' "
-                f"(path '{environment.path_name}', position {predecessor_env.position}) first"
-            ),
-        )
-
-
 _LIBRARY_NAME = "Library"
 
 
@@ -403,11 +359,15 @@ def do_promote(
     implementation of "what promoting actually does" rather than several
     copies that could drift.
 
+    No path-order requirement: a content view can be assigned+promoted to
+    any environment directly, regardless of position or what's live on any
+    other environment in the path — the promotion path is purely
+    organizational (ordering/display), not an enforced gate.
+
     Callers MUST resolve publish_prefix/release before calling this — both
     are nullable on the model (deferred to a pair's first promote) but are
     always set by the time do_promote actually runs the aptly call.
     """
-    _check_path_order(db, ecv, environment, version.id)
     if ecv.publish_prefix is None or ecv.release is None:
         raise ValueError(
             f"environment_content_view {ecv.id} has no publish_prefix/release set — "
@@ -536,14 +496,14 @@ def create_environment_content_view(
                 detail={"environment_id": str(environment_id), "content_view_id": str(payload.content_view_id)},
             )
         )
-        # Deliberately NOT committed here — do_promote below re-checks
-        # path order (_check_path_order) and can reject with a 409. If the
+        # Deliberately NOT committed here — do_promote below can still fail
+        # (AptlyError, or a missing publish_prefix/release). If the
         # assignment row were already committed at that point, a rejected
         # first-promote would still leave a phantom, never-published
         # EnvironmentContentView behind (permanently blocking any retry
-        # with "already assigned"). Flushed so do_promote's own query for
-        # this row's predecessor lookups sees it, but the whole thing only
-        # actually persists once do_promote's own commit succeeds.
+        # with "already assigned"). Flushed so do_promote's own queries see
+        # it, but the whole thing only actually persists once do_promote's
+        # own commit succeeds.
         try:
             ecv = do_promote(ecv, environment, version, db, aptly, current_user)
         except AptlyError as exc:
@@ -716,9 +676,9 @@ def rollback_environment_content_view(
             status_code=status.HTTP_404_NOT_FOUND, detail="content view version not found for this content view"
         )
 
-    # Rollback bypasses path-order checks entirely — it only allows returning
-    # to a version THIS pair has actually had live before, never an
-    # arbitrary version from elsewhere in the content view.
+    # Rollback only allows returning to a version THIS pair has actually
+    # had live before, never an arbitrary version from elsewhere in the
+    # content view.
     ever_live = db.execute(
         select(AuditLog).where(
             AuditLog.resource_type == "environment_content_view",
