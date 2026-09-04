@@ -21,6 +21,24 @@ def _validate_name(value: str) -> str:
     return value
 
 
+def _validate_prefix(value: str) -> str:
+    """Publish prefixes are paths, not single object names — aptly's own
+    /api/publish/{prefix} endpoint accepts (and groundctl relies on)
+    nested prefixes like "Prod/26.04" (environment.name/content_view.name,
+    see create_environment_content_view, lifecycle_environments.py). Each
+    "/"-separated segment must independently match APTLY_NAME_RE AND not be
+    "." or "..", which do match that regex (it allows dots) but must still
+    be rejected explicitly to block traversal — this also catches empty
+    segments from a leading/trailing/doubled "/".
+    """
+    segments = value.split("/")
+    if not segments or any(
+        segment in (".", "..") or not APTLY_NAME_RE.fullmatch(segment) for segment in segments
+    ):
+        raise AptlyError(f"invalid aptly publish prefix: {value!r}")
+    return value
+
+
 class AptlyClient:
     def __init__(self, base_url: str | None = None, timeout: float = 30.0):
         self._client = httpx.Client(base_url=base_url or settings.aptly_api_url, timeout=timeout)
@@ -256,7 +274,7 @@ class AptlyClient:
     # -- publish ------------------------------------------------------------
 
     def publish_exists(self, prefix: str) -> bool:
-        _validate_name(prefix)
+        _validate_prefix(prefix)
         response = self._request("GET", "/api/publish")
         entries = response.json() if response.content else []
         for entry in entries:
@@ -277,7 +295,7 @@ class AptlyClient:
         opt-in via LifecycleEnvironmentCreate.allow_unsigned, not a
         hardcoded default.
         """
-        _validate_name(prefix)
+        _validate_prefix(prefix)
         _validate_name(distribution)
         for snapshot_name, component in sources:
             _validate_name(snapshot_name)
@@ -302,7 +320,7 @@ class AptlyClient:
         self, prefix: str, distribution: str, sources: list[tuple[str, str]], gpg_key_id: str | None = None
     ) -> dict:
         """sources: same (snapshot_name, component) pairs as publish_snapshot."""
-        _validate_name(prefix)
+        _validate_prefix(prefix)
         _validate_name(distribution)
         for snapshot_name, component in sources:
             _validate_name(snapshot_name)
