@@ -90,6 +90,7 @@ def _create_env(client, operator_token, cv, name="dev", path_name="main", positi
     assign_r = client.post(
         f"/lifecycle-environments/{env['id']}/content-views",
         json={"content_view_id": cv["id"], "content_view_version_id": version_id, "allow_unsigned": True},
+        headers=auth_headers(operator_token),
     )
     assert assign_r.status_code == 201, assign_r.text
 
