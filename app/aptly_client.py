@@ -22,10 +22,10 @@ def _validate_name(value: str) -> str:
 
 
 def _validate_prefix(value: str) -> str:
-    """Publish prefixes are paths, not single object names — aptly's own
-    /api/publish/{prefix} endpoint accepts (and groundctl relies on)
-    nested prefixes like "Prod/26.04" (environment.name/content_view.name,
-    see create_environment_content_view, lifecycle_environments.py). Each
+    """Publish prefixes are paths, not single object names — groundctl
+    builds nested prefixes like "Prod/26.04"
+    (environment.name/content_view.name, see
+    create_environment_content_view, lifecycle_environments.py). Each
     "/"-separated segment must independently match APTLY_NAME_RE AND not be
     "." or "..", which do match that regex (it allows dots) but must still
     be rejected explicitly to block traversal — this also catches empty
@@ -37,6 +37,24 @@ def _validate_prefix(value: str) -> str:
     ):
         raise AptlyError(f"invalid aptly publish prefix: {value!r}")
     return value
+
+
+def _escape_prefix_for_url(prefix: str) -> str:
+    """aptly's REST API represents a "/" in a publish prefix as "_" in the
+    URL path segment (its own documented convention — a prefix with real
+    subdirectories, e.g. "Prod/26.04", is addressed as
+    "/api/publish/Prod_26.04", not the literal nested path, which 404s:
+    aptly's router has no route for it). Only the outgoing URL is escaped
+    here — the `Prefix` field in aptly's JSON responses/requests, and every
+    prefix comparison/storage on the groundctl side (EnvironmentContentView.
+    publish_prefix, the UI, publish_exists' entry.get("Prefix") match), keep
+    the real "/"-containing value, matching what aptly itself returns for
+    Prefix in GET /api/publish. A literal "_" already present in a name
+    segment is fine to carry through unescaped — aptly's own escaping is
+    one-directional (only "/" needs representing) and this client never
+    needs to decode a prefix back out of a URL.
+    """
+    return prefix.replace("/", "_")
 
 
 class AptlyClient:
@@ -305,7 +323,7 @@ class AptlyClient:
         # rationale as sync_mirror's extended timeout.
         response = self._request(
             "POST",
-            f"/api/publish/{prefix}",
+            f"/api/publish/{_escape_prefix_for_url(prefix)}",
             json={
                 "SourceKind": "snapshot",
                 "Sources": [{"Name": name, "Component": component} for name, component in sources],
@@ -327,7 +345,7 @@ class AptlyClient:
             _validate_name(component)
         response = self._request(
             "PUT",
-            f"/api/publish/{prefix}/{distribution}",
+            f"/api/publish/{_escape_prefix_for_url(prefix)}/{distribution}",
             json={
                 "Snapshots": [{"Component": component, "Name": name} for name, component in sources],
                 # Must match publish_snapshot's Signing config — aptly
