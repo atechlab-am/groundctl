@@ -192,6 +192,28 @@ def create_content_view(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"repository ids not found: {sorted(str(m) for m in missing)}"
         )
 
+    # aptly's publish API accepts exactly one snapshot source per component
+    # name (do_publish below emits one entry per (repository, component)
+    # pair — see its snapshots.append loop) — two member repositories that
+    # both declare the same component (e.g. two mirrors both using "main")
+    # would collide at publish time with aptly's own "duplicate component
+    # name" error. Reject that combination here, before any snapshot work
+    # happens, rather than surfacing aptly's error deep inside do_publish.
+    component_owners: dict[str, list[str]] = {}
+    for repo in repos:
+        for component in repo.components:
+            component_owners.setdefault(component, []).append(repo.name)
+    colliding = {component: names for component, names in component_owners.items() if len(names) > 1}
+    if colliding:
+        detail_parts = [f"component {c!r} used by repositories {names}" for c, names in colliding.items()]
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "member repositories have colliding apt components — a content view can only publish one "
+                "snapshot per component: " + "; ".join(detail_parts)
+            ),
+        )
+
     content_view = ContentView(name=payload.name, description=payload.description)
     db.add(content_view)
     db.flush()
